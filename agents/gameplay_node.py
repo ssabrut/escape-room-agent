@@ -10,11 +10,24 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from config.settings import get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, Mission, PartyMember, PartyState, RoomItem, TickAction
+from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
 
 MAX_TICKS = 30
+
+
+def _stream(line: str = "") -> None:
+    """Print immediately so live gameplay shows up in real time."""
+    print(line, flush=True)
+
+
+def _render_party_map(world: GameWorld, current_room: str) -> None:
+    _stream()
+    _stream("  ┌── party location ──┐")
+    render_room_layout(world.rooms, party_room=current_room, party_label="★ PARTY")
+    _stream()
 
 
 def _parse_json(text: str) -> dict | None:
@@ -136,18 +149,26 @@ def gameplay_node(state: GameState) -> dict:
     ps = state.party_state or _build_initial_party_state(world)
     new_messages: list[AIMessage] = []
 
+    _stream("\n" + "=" * 94)
+    _stream(" LIVE GAMEPLAY")
+    _stream("=" * 94)
+    _render_party_map(world, ps.current_room)
+
     while not ps.game_over and ps.tick < MAX_TICKS:
         mission = _current_mission(state.missions, ps)
         if mission is None:
             ps.game_over = True
             ps.victory = True
-            new_messages.append(AIMessage(content=f"[gameplay] VICTORY — all missions complete at tick {ps.tick}"))
+            _stream(f"  >>> VICTORY — all missions complete at tick {ps.tick}")
+            new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
             break
 
         # Sync party into the mission's room if they're not already there
         if mission.room != ps.current_room:
             ps.current_room = mission.room
             ps.visited.add(mission.room)
+            _stream(f"  >>> Party teleports to mission room: {mission.room}")
+            _render_party_map(world, ps.current_room)
 
         # If a mission has no required actions, auto-complete it without spending a tick
         if not mission.required_actions:
@@ -156,12 +177,19 @@ def gameplay_node(state: GameState) -> dict:
             if next_room is None:
                 ps.game_over = True
                 ps.victory = True
-                new_messages.append(AIMessage(content=f"[gameplay] VICTORY (auto, no actions) at tick {ps.tick}"))
+                _stream(f"  >>> VICTORY (auto, no actions) at tick {ps.tick}")
+                new_messages.append(AIMessage(content=f"[gameplay] VICTORY (auto) at tick {ps.tick}"))
                 break
             ps.current_room = next_room
             ps.visited.add(next_room)
-            new_messages.append(AIMessage(content=f"[gameplay] Auto-completed gate {mission.gate_index}; moved to {next_room}"))
+            _stream(f"  >>> Auto-completed gate {mission.gate_index}; moved to {next_room}")
+            _render_party_map(world, ps.current_room)
             continue
+
+        ps.tick += 1
+        _stream(f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  mission: {mission.description[:70]}")
+        _stream(f"     remaining required actions: "
+                f"{[a for a in mission.required_actions if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]}")
 
         teammate_last_per_agent = {m.agent_id: None for m in state.party}
         for entry in reversed(ps.log):
@@ -193,7 +221,7 @@ def gameplay_node(state: GameState) -> dict:
 
             tick_actions.append(
                 TickAction(
-                    tick=ps.tick + 1,
+                    tick=ps.tick,
                     agent_id=member.agent_id,
                     say=decided["say"],
                     action=decided["action"],
@@ -202,33 +230,45 @@ def gameplay_node(state: GameState) -> dict:
                 )
             )
 
-        ps.tick += 1
+            marker = "✓" if matched else "·"
+            label = f"{member.agent_id} ({member.character.name})"
+            _stream(f"     {marker} {label}")
+            _stream(f"         say   : \"{decided['say']}\"")
+            _stream(f"         action: {decided['action']}  ({note})")
+
         ps.log.extend(tick_actions)
 
         # Check mission completion after both agents acted
         done = ps.completed_actions_by_gate.get(mission.gate_index, [])
         if mission.required_actions and set(done) >= set(mission.required_actions):
             ps.completed_gates.append(mission.gate_index)
+            _stream(f"  >>> Mission complete: gate {mission.gate_index}")
+
             if mission.reward_item:
                 room = next((r for r in world.rooms if r.name == mission.room), None)
                 reward = next((i for i in (room.items if room else []) if i.name == mission.reward_item), None)
                 if reward and not any(i.name == reward.name for i in ps.inventory):
                     ps.inventory.append(reward)
+                    _stream(f"  >>> Party picked up: {reward.name}")
                     new_messages.append(AIMessage(content=f"[gameplay] Party picked up {reward.name}"))
 
             next_room = _next_room_for_completed_mission(world, mission)
             if next_room is None:
                 ps.game_over = True
                 ps.victory = True
+                _stream(f"  >>> VICTORY at tick {ps.tick}")
                 new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
             else:
                 ps.current_room = next_room
                 ps.visited.add(next_room)
+                _stream(f"  >>> Party moved to {next_room}")
                 new_messages.append(AIMessage(content=f"[gameplay] Party moved to {next_room} at tick {ps.tick}"))
+                _render_party_map(world, ps.current_room)
 
     if not ps.game_over:
         ps.game_over = True
-        new_messages.append(AIMessage(content=f"[gameplay] Stopped: hit MAX_TICKS={MAX_TICKS} without victory"))
+        _stream(f"  >>> Stopped: hit MAX_TICKS={MAX_TICKS} without victory")
+        new_messages.append(AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}"))
 
     return {
         "messages": new_messages,
