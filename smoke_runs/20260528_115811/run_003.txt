@@ -1,0 +1,74 @@
+
+==============================================================================================
+ ESCAPE ROOM MAP
+==============================================================================================
+
+┌────────────────────────────┐     ┌────────────────────────────┐
+│ HOLDINGS ROOM              │─────│ WHEELHOUSE                 │
+├────────────────────────────┤     ├────────────────────────────┤
+│ Items:                     │     │ Items:                     │
+│   [*] Captain's Log        │     │   [*] Captain's Keypad     │
+│                            │     │                            │
+└────────────────────────────┘     └────────────────────────────┘
+               │
+               │
+               │
+┌────────────────────────────┐
+│ GALLEY                     │
+├────────────────────────────┤
+│ Items:                     │
+│   [*] Rusty Dagger         │
+│                            │
+└────────────────────────────┘
+
+[Game Master Narrative]:
+{
+  "narrative": {
+    "title": "The Sunken Galleon's Keel",
+    "setup": "You wake up on the rotting floor of a sunken pirate ship, bound by heavy chains. The air is thick with salt and decay.",
+    "atmosphere": "Dark, damp, and filled with the groans of settling timber and distant whale songs."
+  },
+  "objective": "Find the Captain's Keypad hidden in the Wheelhouse to cut your chains and escape the wreck.",
+  "room_layout": [
+    {
+      "name": "Galley",
+      "description": "A cramped mess hall with overturned tables, rusted cutlery, and a large iron pot on a cold stove.",
+      "adjacency": {
+        "north": "Holdings Room"
+      },
+      "items": [
+        {
+          "name": "Rusty Dagger",
+          "description": "A jagged blade covered in barnacles, useless for cutting chains."
+        }
+      ]
+    },
+    {
+      "name": "Holdings Room",
+      "description": "The ship's storage area. Stacks of rotting crates block the path to a narrow tunnel leading forward.",
+      "adjacency": {
+        "south": "Galley",
+        "east": "Wheelhouse"
+      },
+      "items": [
+        {
+          "name": "Captain's Log",
+          "description": "A water-damaged journal detailing the ship's route and mentioning a keypad near the helm."
+        }
+      ]
+    },
+    {
+      "name": "Wheelhouse",
+      "description": "The captain's quarters, now a dark cavern dominated by a massive steering wheel. A small console sits nearby.",
+      "adjacency": {
+        "west": "Holdings Room"
+      },
+      "items": [
+        {
+          "name": "Captain's Keypad",
+          "description": "A brass panel with four slots, etched with symbols for North, South, East, and West."
+        }
+      ]
+    }
+  ]
+}
