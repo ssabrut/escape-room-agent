@@ -1,0 +1,39 @@
+Generate one interactive mission for each gate in the following escape room scenario.
+
+Title: {title}
+Theme: {theme}
+Objective: {objective}
+
+Rooms and their items:
+{rooms_and_items}
+
+Gates to generate missions for:
+{gates}
+
+Rules for each mission:
+- room: the exact room name where this mission takes place
+- gate_index: the zero-based index of the gate in the gates list
+- description: a narrative task description shown to the player (1-3 sentences). It must describe something the player physically does in the room — examine, pull, open, move, combine, etc. Do NOT phrase it as a riddle or question
+- required_actions: a list of 2-4 short interaction keywords (single verb or verb+noun) that represent valid player actions that count as completing the mission. Examples: ["examine desk", "pull lever", "open drawer"], ["light candle", "read journal"]. These must be thematically consistent with the description
+- reward_item: the exact name of one item from that room that the player receives upon completing the mission. Must match an item that exists in that room
+- unlocks_exit_to: the exact name of the next room this mission's completion unlocks access to. Use "VICTORY" if this is the final gate
+
+Important:
+- Every mission must require direct interaction, not just answering a question
+- reward_item must be an existing item in that room — never invent new items
+- required_actions must be things the player would naturally do in the room based on the description
+
+Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
+
+{{
+    "missions": [
+        {{
+            "room": "exact room name from the gates list",
+            "gate_index": 0,
+            "description": "narrative task the player must perform in this room",
+            "required_actions": ["action one", "action two"],
+            "reward_item": "exact item name from that room",
+            "unlocks_exit_to": "exact name of the next room, or VICTORY"
+        }}
+    ]
+}}
