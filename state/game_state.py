@@ -36,6 +36,17 @@ class Item(BaseModel):
     location: str = ""
 
 
+class RoomItem(BaseModel):
+    name: str
+    description: str
+
+
+class Room(BaseModel):
+    name: str
+    description: str
+    items: list[RoomItem] = Field(default_factory=list)
+
+
 class HintRecord(BaseModel):
     puzzle_id: str
     hint_text: str
@@ -66,6 +77,8 @@ class GameState(BaseModel):
     # Routing / flow control
     next_agent: str = "game_master"
     game_over: bool = False
+
+    room_layout: list[Room] = Field(default_factory=list)
 
     # Scratch space for inter-agent data
     context: dict[str, Any] = Field(default_factory=dict)

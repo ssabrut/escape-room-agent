@@ -6,11 +6,10 @@ Include:
 * The narrative (intro + atmosphere)
 * Main objective
 * Room layout (3–4 rooms)
-    * Items in rooms (could be none, but max of 2 items per rooms)
+    * Items in rooms (could be none, but max of 2 items per room)
 
-Provide the output in JSON format as below, without preamble or postamble
+Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
-```JSON
 {{
     "narrative": {{
         "title": "escape room title goes here",
@@ -20,13 +19,14 @@ Provide the output in JSON format as below, without preamble or postamble
     "objective": "objective goes here",
     "room_layout": [
         {{
-            "name:" "room name goes here",
-            "description: "room description goes here",
+            "name": "room name goes here",
+            "description": "room description goes here",
             "items": [
-                "name": "item name goes here",
-                "description": "item description goes here"
+                {{
+                    "name": "item name goes here",
+                    "description": "item description goes here"
+                }}
             ]
         }}
     ]
 }}
-```

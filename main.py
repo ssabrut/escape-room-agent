@@ -2,6 +2,7 @@
 
 from graph import graph
 from state import GameState
+from visualization import render_room_layout
 
 
 def run():
@@ -9,9 +10,21 @@ def run():
 
     result = graph.invoke(state)
 
+    rooms = result.get("room_layout", [])
+
+    print("\n" + "=" * 94)
+    print(" ESCAPE ROOM MAP")
+    print("=" * 94 + "\n")
+
+    if rooms:
+        render_room_layout(rooms)
+    else:
+        print("  [No room layout could be parsed from the LLM response]\n")
+
     messages = result.get("messages", [])
     if messages:
-        print(f"\n[Game Master]: {messages[-1].content}\n")
+        print("\n[Game Master Narrative]:")
+        print(messages[-1].content)
 
 
 if __name__ == "__main__":
