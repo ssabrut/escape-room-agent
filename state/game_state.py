@@ -69,6 +69,17 @@ class Character(BaseModel):
     special_trait: str
 
 
+class Puzzle(BaseModel):
+    """A riddle that guards a gate in a specific room."""
+
+    room: str
+    gate_index: int
+    riddle: str
+    answer: str
+    clue_on_solve: str    # narrative hint pointing to the unlocked item
+    unlocks_item: str     # item name in that room that becomes accessible
+
+
 class GameState(BaseModel):
     """Top-level LangGraph state."""
 
@@ -78,3 +89,4 @@ class GameState(BaseModel):
     player: PlayerState | None = None
     characters: list[Character] = Field(default_factory=list)
     selected_character: Character | None = None
+    puzzles: list[Puzzle] = Field(default_factory=list)
