@@ -68,7 +68,7 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
     if not available:
         return None
 
-    llm = get_llm(model="qwen3.5:0.8b-mlx")
+    llm = get_llm()
     prompt = SELECTION_PROMPT.format(
         agent_id=agent_id,
         title=world.title if world else "",

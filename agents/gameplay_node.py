@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -16,6 +17,47 @@ SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
 
 MAX_TICKS = 30
+
+
+class WorldGraph:
+    """Strict directed adjacency graph built from world.rooms.
+
+    Edges are taken literally from each room's adjacency dict — if A lists B
+    as a neighbor but B doesn't list A, you cannot walk back from B to A.
+    """
+
+    def __init__(self, world: GameWorld) -> None:
+        self._adj: dict[str, list[str]] = {}
+        names = {r.name for r in world.rooms}
+        for room in world.rooms:
+            self._adj[room.name] = [n for n in room.adjacency.values() if n in names]
+
+    def neighbors(self, room: str) -> list[str]:
+        return list(self._adj.get(room, []))
+
+    def path(self, src: str, dst: str) -> list[str]:
+        if src == dst:
+            return [src]
+        if src not in self._adj or dst not in self._adj:
+            return []
+        parents: dict[str, str] = {src: src}
+        queue: deque[str] = deque([src])
+        while queue:
+            cur = queue.popleft()
+            if cur == dst:
+                break
+            for nxt in self._adj[cur]:
+                if nxt in parents:
+                    continue
+                parents[nxt] = cur
+                queue.append(nxt)
+        if dst not in parents:
+            return []
+        out = [dst]
+        while out[-1] != src:
+            out.append(parents[out[-1]])
+        out.reverse()
+        return out
 
 
 def _stream(line: str = "") -> None:
@@ -65,13 +107,6 @@ def _match_required_action(action: str, remaining: list[str]) -> str | None:
 
 
 def _current_mission(missions: list[Mission], party_state: PartyState) -> Mission | None:
-    # Prefer a mission in the current room
-    for m in sorted(missions, key=lambda x: x.gate_index):
-        if m.gate_index in party_state.completed_gates:
-            continue
-        if m.room == party_state.current_room:
-            return m
-    # Fallback: any uncompleted mission (lowest gate_index)
     for m in sorted(missions, key=lambda x: x.gate_index):
         if m.gate_index not in party_state.completed_gates:
             return m
@@ -147,6 +182,7 @@ def gameplay_node(state: GameState) -> dict:
         return {"party_state": state.party_state or PartyState(game_over=True)}
 
     ps = state.party_state or _build_initial_party_state(world)
+    graph = WorldGraph(world)
     new_messages: list[AIMessage] = []
 
     _stream("\n" + "=" * 94)
@@ -163,12 +199,26 @@ def gameplay_node(state: GameState) -> dict:
             new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
             break
 
-        # Sync party into the mission's room if they're not already there
+        # Walk one step along the shortest path to the mission's room
         if mission.room != ps.current_room:
-            ps.current_room = mission.room
-            ps.visited.add(mission.room)
-            _stream(f"  >>> Party teleports to mission room: {mission.room}")
+            route = graph.path(ps.current_room, mission.room)
+            if len(route) < 2:
+                ps.game_over = True
+                _stream(f"  >>> No route from {ps.current_room} to {mission.room} — aborting")
+                new_messages.append(
+                    AIMessage(content=f"[gameplay] No route to {mission.room} from {ps.current_room}")
+                )
+                break
+            next_step = route[1]
+            ps.tick += 1
+            ps.current_room = next_step
+            ps.visited.add(next_step)
+            _stream(
+                f"\n  ── Tick {ps.tick}  Party moves to {next_step}  "
+                f"(en route to {mission.room}; path: {' -> '.join(route)})"
+            )
             _render_party_map(world, ps.current_room)
+            continue
 
         # If a mission has no required actions, auto-complete it without spending a tick
         if not mission.required_actions:
