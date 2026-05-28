@@ -48,6 +48,17 @@ def _render(result: dict) -> None:
     characters = result.get("characters", [])
     _render_characters(characters)
 
+    party = result.get("party", [])
+    if party:
+        print("\n" + "=" * 94)
+        print(" PARTY SELECTIONS")
+        print("=" * 94 + "\n")
+        for member in party:
+            print(f"  {member.agent_id}")
+            print(f"    Chose    : {member.character.name} — {member.character.role}")
+            print(f"    Reasoning: {member.reasoning}")
+            print()
+
     world = result.get("world")
     if world and world.game_flow.gates:
         flow = world.game_flow

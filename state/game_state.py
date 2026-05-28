@@ -69,6 +69,14 @@ class Character(BaseModel):
     special_trait: str
 
 
+class PartyMember(BaseModel):
+    """A player agent's character selection with reasoning."""
+
+    agent_id: str         # e.g., "agent_1", "agent_2"
+    character: Character  # the character this agent chose
+    reasoning: str        # why this agent chose this character
+
+
 class Mission(BaseModel):
     """An interactive mission the player must complete to progress through a room."""
 
@@ -88,5 +96,5 @@ class GameState(BaseModel):
     world: GameWorld | None = None
     player: PlayerState | None = None
     characters: list[Character] = Field(default_factory=list)
-    selected_character: Character | None = None
+    party: list[PartyMember] = Field(default_factory=list)
     missions: list[Mission] = Field(default_factory=list)

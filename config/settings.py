@@ -26,10 +26,10 @@ def get_extractor_llm() -> ChatOllama:
 
 
 @lru_cache(maxsize=1)
-def get_llm() -> ChatOllama:
+def get_llm(model: str = Settings().game_master_model) -> ChatOllama:
     s = Settings()
     return ChatOllama(
-        model=s.game_master_model,
+        model=model,
         base_url=s.ollama_base_url,
         temperature=s.temperature,
         reasoning=False,
