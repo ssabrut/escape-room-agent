@@ -63,18 +63,18 @@ def _render(result: dict) -> None:
             print(f"    Unlocks  : {gate.unlocks}")
             print()
 
-    puzzles = result.get("puzzles", [])
-    if puzzles:
+    missions = result.get("missions", [])
+    if missions:
         print("\n" + "=" * 94)
-        print(" PUZZLES")
+        print(" MISSIONS")
         print("=" * 94 + "\n")
-        for puzzle in puzzles:
-            print(f"  [{puzzle.room}]  Gate {puzzle.gate_index}")
-            print(f"  Riddle  : {puzzle.riddle}")
-            print(f"  Answer  : {puzzle.answer}")
-            print(f"  Clue    : {puzzle.clue_on_solve}")
-            if puzzle.unlocks_item:
-                print(f"  Unlocks : {puzzle.unlocks_item}")
+        for mission in missions:
+            print(f"  [{mission.room}]  Gate {mission.gate_index}")
+            print(f"  Mission  : {mission.description}")
+            print(f"  Actions  : {', '.join(mission.required_actions)}")
+            if mission.reward_item:
+                print(f"  Reward   : {mission.reward_item}")
+            print(f"  Unlocks  : {mission.unlocks_exit_to}")
             print()
 
 

@@ -69,15 +69,15 @@ class Character(BaseModel):
     special_trait: str
 
 
-class Puzzle(BaseModel):
-    """A riddle that guards a gate in a specific room."""
+class Mission(BaseModel):
+    """An interactive mission the player must complete to progress through a room."""
 
     room: str
     gate_index: int
-    riddle: str
-    answer: str
-    clue_on_solve: str    # narrative hint pointing to the unlocked item
-    unlocks_item: str     # item name in that room that becomes accessible
+    description: str          # narrative task description shown to the player
+    required_actions: list[str]  # interaction keywords that count as completing the mission
+    reward_item: str          # existing room item awarded on completion
+    unlocks_exit_to: str      # room name that becomes accessible after completion
 
 
 class GameState(BaseModel):
@@ -89,4 +89,4 @@ class GameState(BaseModel):
     player: PlayerState | None = None
     characters: list[Character] = Field(default_factory=list)
     selected_character: Character | None = None
-    puzzles: list[Puzzle] = Field(default_factory=list)
+    missions: list[Mission] = Field(default_factory=list)
