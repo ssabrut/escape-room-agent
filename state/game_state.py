@@ -44,6 +44,7 @@ class RoomItem(BaseModel):
 class Room(BaseModel):
     name: str
     description: str
+    adjacency: dict[str, str] = Field(default_factory=dict)
     items: list[RoomItem] = Field(default_factory=list)
 
 

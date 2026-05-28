@@ -7,6 +7,12 @@ Include:
 * Main objective
 * Room layout (3–4 rooms)
     * Items in rooms (could be none, but max of 2 items per room)
+    * Adjacency: which cardinal direction (north, south, east, west) connects each room to its neighbors
+
+Adjacency rules:
+- Use only cardinal directions: "north", "south", "east", "west"
+- Adjacency must be consistent — if room A says east is room B, then room B must say west is room A
+- Omit a direction if there is no neighbor in that direction
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
@@ -21,6 +27,10 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
         {{
             "name": "room name goes here",
             "description": "room description goes here",
+            "adjacency": {{
+                "east": "name of room to the east",
+                "south": "name of room to the south"
+            }},
             "items": [
                 {{
                     "name": "item name goes here",

@@ -51,10 +51,13 @@ def _extract_room_layout(text: str) -> list[Room]:
             for i in raw_room.get("items", [])
             if isinstance(i, dict)
         ]
+        raw_adj = raw_room.get("adjacency", {})
+        adjacency = raw_adj if isinstance(raw_adj, dict) else {}
         rooms.append(
             Room(
                 name=raw_room.get("name", "Unnamed Room"),
                 description=raw_room.get("description", ""),
+                adjacency=adjacency,
                 items=room_items,
             )
         )
