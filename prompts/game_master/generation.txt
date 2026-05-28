@@ -11,8 +11,13 @@ Include:
 
 Adjacency rules:
 - Use only cardinal directions: "north", "south", "east", "west"
-- Adjacency must be consistent — if room A says east is room B, then room B must say west is room A
-- Omit a direction if there is no neighbor in that direction
+- Adjacency must be consistent — if room A says east is room B, then room B MUST say west is room A
+- Omit a direction entirely if there is no neighbor in that direction
+- Only reference room names that actually exist in your room_layout array
+
+Example of CORRECT adjacency for two rooms side by side:
+  Room A: {{"adjacency": {{"east": "Room B"}}}}
+  Room B: {{"adjacency": {{"west": "Room A"}}}}
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
