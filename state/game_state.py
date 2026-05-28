@@ -21,6 +21,22 @@ class Room(BaseModel):
     items: list[RoomItem] = Field(default_factory=list)
 
 
+class Gate(BaseModel):
+    """A single step in the game flow sequence."""
+
+    room: str
+    requires: str | None = None   # None means freely accessible
+    unlocks: str                  # what this gate's completion opens up
+
+
+class GameFlow(BaseModel):
+    """Ordered sequence of gates from start to win."""
+
+    starting_room: str = ""
+    win_condition: str = ""
+    gates: list[Gate] = Field(default_factory=list)
+
+
 class GameWorld(BaseModel):
     """The frozen dungeon blueprint produced by the game master."""
 
@@ -29,6 +45,7 @@ class GameWorld(BaseModel):
     atmosphere: str = ""
     objective: str = ""
     rooms: list[Room] = Field(default_factory=list)
+    game_flow: GameFlow = Field(default_factory=GameFlow)
 
 
 class PlayerState(BaseModel):
