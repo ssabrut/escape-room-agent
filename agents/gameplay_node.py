@@ -93,17 +93,43 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).strip()
 
 
-def _match_required_action(action: str, remaining: list[str]) -> str | None:
-    """Fuzzy keyword match: any required action whose words all appear in the agent's action."""
-    norm_action = _normalize(action)
-    action_words = set(norm_action.split())
-    for required in remaining:
-        req_words = set(_normalize(required).split())
-        if req_words and req_words.issubset(action_words):
-            return required
-        if _normalize(required) in norm_action:
-            return required
-    return None
+IDLE_ACTION = "wait"
+
+
+def _build_action_space(remaining: list[str]) -> list[str]:
+    """Deterministic discrete action set the agent must pick from this tick.
+
+    Stable order: remaining required actions first (in mission order), then idle.
+    Duplicates removed while preserving order.
+    """
+    seen: set[str] = set()
+    space: list[str] = []
+    for a in remaining:
+        if a not in seen:
+            seen.add(a)
+            space.append(a)
+    if IDLE_ACTION not in seen:
+        space.append(IDLE_ACTION)
+    return space
+
+
+def _resolve_choice(response: str, space: list[str]) -> str:
+    """Map an LLM response to an entry in the action space.
+
+    Accepts either an index (1-based) or a verbatim/normalized match. Falls back to
+    the idle action when nothing resolves — keeping selection fully deterministic.
+    """
+    text = response.strip()
+    idx_match = re.match(r"^\s*(\d+)\s*$", text)
+    if idx_match:
+        i = int(idx_match.group(1)) - 1
+        if 0 <= i < len(space):
+            return space[i]
+    norm = _normalize(text)
+    for option in space:
+        if _normalize(option) == norm:
+            return option
+    return IDLE_ACTION
 
 
 def _current_mission(missions: list[Mission], party_state: PartyState) -> Mission | None:
@@ -127,6 +153,7 @@ def _agent_act(
     world: GameWorld,
     ps: PartyState,
     mission: Mission,
+    action_space: list[str],
     teammate_last: TickAction | None,
 ) -> dict:
     room = next((r for r in world.rooms if r.name == ps.current_room), None)
@@ -136,6 +163,7 @@ def _agent_act(
     inventory_str = ", ".join(i.name for i in ps.inventory) if ps.inventory else "(empty)"
     required_str = ", ".join(mission.required_actions) if mission.required_actions else "(none)"
     completed_str = ", ".join(completed) if completed else "(none yet)"
+    action_space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
 
     prompt = ACTION_PROMPT.format(
         agent_id=agent_id,
@@ -150,6 +178,7 @@ def _agent_act(
         required_actions=required_str,
         completed_actions=completed_str,
         reward_item=mission.reward_item,
+        action_space=action_space_str,
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
     )
@@ -162,9 +191,11 @@ def _agent_act(
         ]
     )
     data = _parse_json(response.content) or {}
+    raw_choice = str(data.get("action", "")).strip()
+    resolved = _resolve_choice(raw_choice, action_space)
     return {
         "say": str(data.get("say", "")).strip(),
-        "action": str(data.get("action", "")).strip(),
+        "action": resolved,
     }
 
 
@@ -254,18 +285,23 @@ def gameplay_node(state: GameState) -> dict:
                 (teammate_last_per_agent[m.agent_id] for m in state.party if m.agent_id != member.agent_id),
                 None,
             )
-            decided = _agent_act(member.agent_id, member, world, ps, mission, teammate)
-
             remaining = [a for a in mission.required_actions
                          if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]
-            matched = _match_required_action(decided["action"], remaining)
+            action_space = _build_action_space(remaining)
+            decided = _agent_act(member.agent_id, member, world, ps, mission, action_space, teammate)
 
-            note = ""
+            chosen = decided["action"]
+            matched = chosen if chosen in remaining else None
+
             if matched:
                 completed_list = ps.completed_actions_by_gate.setdefault(mission.gate_index, [])
                 if matched not in completed_list:
                     completed_list.append(matched)
                     note = f"completed required action '{matched}'"
+                else:
+                    note = f"redundant: '{matched}' already done"
+            elif chosen == IDLE_ACTION:
+                note = "idle"
             else:
                 note = "no effect"
 
