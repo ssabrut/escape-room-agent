@@ -1,0 +1,25 @@
+Generate a roster of 3 playable characters for the following escape room scenario.
+
+Title: {title}
+Theme: {theme}
+Objective: {objective}
+Rooms: {room_names}
+
+Each character must:
+- Fit the theme and setting of the escape room
+- Have a distinct role that offers a different playstyle or perspective
+- Have a short but evocative backstory (1-2 sentences)
+- Have one special trait that is a flavourful one-liner (not a game mechanic, just flavour)
+
+Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
+
+{{
+    "characters": [
+        {{
+            "name": "character name goes here",
+            "role": "character role goes here",
+            "backstory": "1-2 sentence backstory goes here",
+            "special_trait": "one-liner flavour trait goes here"
+        }}
+    ]
+}}

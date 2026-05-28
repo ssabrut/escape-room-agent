@@ -16,6 +16,22 @@ from visualization import render_room_layout
 SMOKE_DIR = Path("smoke_runs")
 
 
+def _render_characters(characters: list) -> None:
+    if not characters:
+        print("  [No characters could be generated]\n")
+        return
+
+    print("\n" + "=" * 94)
+    print(" CHOOSE YOUR CHARACTER")
+    print("=" * 94 + "\n")
+
+    for i, char in enumerate(characters, 1):
+        print(f"  [{i}] {char.name}  —  {char.role}")
+        print(f"       {char.backstory}")
+        print(f"       ✦ {char.special_trait}")
+        print()
+
+
 def _render(result: dict) -> None:
     world = result.get("world")
     rooms = world.rooms if world else []
@@ -29,10 +45,8 @@ def _render(result: dict) -> None:
     else:
         print("  [No room layout could be parsed from the LLM response]\n")
 
-    messages = result.get("messages", [])
-    if messages:
-        print("\n[Game Master Narrative]:")
-        print(messages[-1].content)
+    characters = result.get("characters", [])
+    _render_characters(characters)
 
 
 def run() -> None:

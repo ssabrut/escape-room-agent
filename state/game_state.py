@@ -43,6 +43,15 @@ class PlayerState(BaseModel):
     game_over: bool = False
 
 
+class Character(BaseModel):
+    """A playable character generated for this escape room."""
+
+    name: str
+    role: str
+    backstory: str
+    special_trait: str
+
+
 class GameState(BaseModel):
     """Top-level LangGraph state."""
 
@@ -50,3 +59,5 @@ class GameState(BaseModel):
     theme: str = "mystery"
     world: GameWorld | None = None
     player: PlayerState | None = None
+    characters: list[Character] = Field(default_factory=list)
+    selected_character: Character | None = None
