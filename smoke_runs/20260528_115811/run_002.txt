@@ -1,0 +1,93 @@
+
+==============================================================================================
+ ESCAPE ROOM MAP
+==============================================================================================
+
+┌────────────────────────────┐
+│ CROW'S NEST                │
+├────────────────────────────┤
+│ Items:                     │
+│  (empty)                   │
+│                            │
+└────────────────────────────┘
+               │
+               │
+               │
+┌────────────────────────────┐
+│ MAIN DECK                  │
+├────────────────────────────┤
+│ Items:                     │
+│   [*] Rusted Anchor Chain  │
+│                            │
+└────────────────────────────┘
+               │
+               │
+               │
+┌────────────────────────────┐     ┌────────────────────────────┐
+│ GALLEY                     │─────│ CABIN                      │
+├────────────────────────────┤     ├────────────────────────────┤
+│ Items:                     │     │ Items:                     │
+│   [*] Half-Eaten Ration Pac│     │   [*] Captain's Key        │
+│                            │     │                            │
+└────────────────────────────┘     └────────────────────────────┘
+
+[Game Master Narrative]:
+{
+     "narrative": {
+         "title": "The Silent Cove",
+         "setup": "You wake up on the cold, damp deck of a derelict pirate ship, the *Gilded Rat*. The storm that sank your vessel has passed, leaving only silence and drifting fog. Your crewmates are missing, and the ship is being reclaimed by the sea.",
+         "atmosphere": "The air smells of rotting wood, brine, and old iron. Shadows stretch long across the deck despite the gray light. Every creak of the timbers sounds like a whisper from the dead."
+     },
+     "objective": "Find the Captain's Log hidden within the ship to reveal the location of the buried treasure chest that can save you.",
+     "room_layout": [
+         {
+             "name": "Main Deck",
+             "description": "The main open area of the ship. Ropes hang loosely, and the rigging is broken. The smell of decay is strongest here.",
+             "adjacency": {
+                 "north": "Crow's Nest",
+                 "south": "Galley"
+             },
+             "items": [
+                 {
+                     "name": "Rusted Anchor Chain",
+                     "description": "A heavy, corroded chain lying in a pile, useless for sailing but perhaps useful for climbing."
+                 }
+             ]
+         },
+         {
+             "name": "Galley",
+             "description": "The kitchen and mess hall. Tables are overturned, and the pots are empty. A low table sits in the center.",
+             "adjacency": {
+                 "north": "Main Deck",
+                 "east": "Cabin"
+             },
+             "items": [
+                 {
+                     "name": "Half-Eaten Ration Packet",
+                     "description": "A dried biscuit packet, mostly empty but sealed with wax."
+                 }
+             ]
+         },
+         {
+             "name": "Crow's Nest",
+             "description": "A high platform made of wooden slats, overlooking the misty ocean. The view is obscured by thick fog.",
+             "adjacency": {
+                 "south": "Main Deck"
+             },
+             "items": []
+         },
+         {
+             "name": "Cabin",
+             "description": "The Captain's quarters. It is dark and cramped, filled with charts, maps, and a heavy wooden desk.",
+             "adjacency": {
+                 "west": "Galley"
+             },
+             "items": [
+                 {
+                     "name": "Captain's Key",
+                     "description": "An ornate brass key hanging on the wall, marked with a skull and crossbones."
+                 }
+             ]
+         }
+     ]
+}

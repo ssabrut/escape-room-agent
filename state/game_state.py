@@ -1,71 +1,52 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
-class Puzzle(BaseModel):
-    id: str
-    title: str
-    description: str
-    solution: str
-    difficulty: str = "medium"
-    solved: bool = False
-
-
-class Clue(BaseModel):
-    id: str
-    description: str
-    puzzle_id: str
-
-
-class Role(BaseModel):
-    id: str
+class RoomItem(BaseModel):
     name: str
     description: str
-    starting_items: list[str] = Field(default_factory=list)
 
 
-class Item(BaseModel):
-    id: str
+class Room(BaseModel):
+    """Static blueprint of a room — never mutated after generation."""
+
     name: str
     description: str
-    location: str = ""
+    adjacency: dict[str, str] = Field(default_factory=dict)
+    items: list[RoomItem] = Field(default_factory=list)
 
 
-class HintRecord(BaseModel):
-    puzzle_id: str
-    hint_text: str
-    level: int  # 1=vague, 2=moderate, 3=direct
+class GameWorld(BaseModel):
+    """The frozen dungeon blueprint produced by the game master."""
+
+    title: str = ""
+    setup: str = ""
+    atmosphere: str = ""
+    objective: str = ""
+    rooms: list[Room] = Field(default_factory=list)
 
 
-class NarrativeChunk(BaseModel):
-    role: str  # "intro", "transition", "outro"
-    text: str
+class PlayerState(BaseModel):
+    """Mutable runtime state — updated as the player acts."""
+
+    current_room: str = ""
+    inventory: list[RoomItem] = Field(default_factory=list)
+    visited: set[str] = Field(default_factory=set)
+    # Items still present in each room, keyed by room name
+    items_remaining: dict[str, list[RoomItem]] = Field(default_factory=dict)
+    turn_count: int = 0
+    game_over: bool = False
 
 
 class GameState(BaseModel):
-    # LangGraph message history (append-only via reducer)
+    """Top-level LangGraph state."""
+
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
-
-    # Game metadata
     theme: str = "mystery"
-
-    # Active game content
-    current_puzzle: Puzzle | None = None
-    puzzles: list[Puzzle] = Field(default_factory=list)
-    clues: list[Clue] = Field(default_factory=list)
-    roles: list[Role] = Field(default_factory=list)
-    items: list[Item] = Field(default_factory=list)
-    hints_used: list[HintRecord] = Field(default_factory=list)
-    narrative_log: list[NarrativeChunk] = Field(default_factory=list)
-
-    # Routing / flow control
-    next_agent: str = "game_master"
-    game_over: bool = False
-
-    # Scratch space for inter-agent data
-    context: dict[str, Any] = Field(default_factory=dict)
+    world: GameWorld | None = None
+    player: PlayerState | None = None

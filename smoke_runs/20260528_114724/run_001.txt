@@ -1,0 +1,63 @@
+
+==============================================================================================
+ ESCAPE ROOM MAP
+==============================================================================================
+
+┌────────────────────────────┐     ┌────────────────────────────┐     ┌────────────────────────────┐
+│ CELL A                     │─────│ CORRIDOR                   │─────│ CAPTAIN'S QUARTERS         │
+├────────────────────────────┤     ├────────────────────────────┤     ├────────────────────────────┤
+│ Items:                     │     │ Items:                     │     │ Items:                     │
+│   [*] Rusty Key            │     │  (empty)                   │     │   [*] Captain's Log        │
+│                            │     │                            │     │   [*] Master Key           │
+└────────────────────────────┘     └────────────────────────────┘     └────────────────────────────┘
+
+[Game Master Narrative]:
+{
+     "narrative": {
+         "title": "The Sunken Galleon",
+         "setup": "You wake up on the rotting floor of the brig, bound in heavy irons. The air smells of brine and decay. A map hangs near the ceiling, and a rusted key lies beneath your cell.",
+         "atmosphere": "Dark, damp, and claustrophobic, with the creaking of wood and distant groans of the waves."
+     },
+     "objective": "Find the Captain's Log and the Master Key to unlock the main cargo hold door and escape the ship before it sinks completely.",
+     "room_layout": [
+         {
+             "name": "Cell A",
+             "description": "A cramped iron cell with a small barred window looking out into darkness. Your feet are shackled to the floor.",
+             "adjacency": {
+                 "east": "Corridor"
+             },
+             "items": [
+                 {
+                     "name": "Rusty Key",
+                     "description": "A jagged, corroded key that looks like it hasn't been used in centuries."
+                 }
+             ]
+         },
+         {
+             "name": "Corridor",
+             "description": "A narrow wooden passage connecting the brig to the forward deck. Chains hang from the walls, and a heavy door blocks your path west.",
+             "adjacency": {
+                 "west": "Cell A",
+                 "east": "Captain's Quarters"
+             },
+             "items": []
+         },
+         {
+             "name": "Captain's Quarters",
+             "description": "A spacious cabin with a large desk, a chest, and a locked door leading to the cargo hold. A map is pinned to the wall.",
+             "adjacency": {
+                 "west": "Corridor"
+             },
+             "items": [
+                 {
+                     "name": "Captain's Log",
+                     "description": "A leather-bound book detailing the ship's weaknesses and a note mentioning a secret compartment."
+                 },
+                 {
+                     "name": "Master Key",
+                     "description": "An ornate golden key found inside the log, designed to open any lock on this vessel."
+                 }
+             ]
+         }
+     ]
+}

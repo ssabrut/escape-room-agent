@@ -1,0 +1,69 @@
+
+==============================================================================================
+ ESCAPE ROOM MAP
+==============================================================================================
+
+┌────────────────────────────┐     ┌────────────────────────────┐
+│ THE DECK                   │─────│ CAPTAIN'S QUARTERS         │
+├────────────────────────────┤     ├────────────────────────────┤
+│ Items:                     │     │ Items:                     │
+│  (empty)                   │     │   [*] Cursed Compass       │
+│                            │     │                            │
+└────────────────────────────┘     └────────────────────────────┘
+               │
+               │
+               │
+┌────────────────────────────┐
+│ THE HOLD                   │
+├────────────────────────────┤
+│ Items:                     │
+│   [*] Rusty Iron Key       │
+│                            │
+└────────────────────────────┘
+
+[Game Master Narrative]:
+{
+  "narrative": {
+    "title": "The Cursed Galleon of Black Tide",
+    "setup": "You wake up shackled in the hold of a derelict pirate ship, surrounded by rotting wood and the scent of brine. The captain's log claims the ship is cursed and only those with true courage can escape.",
+    "atmosphere": "Dark, damp, and claustrophobic, with flickering lantern light casting long, dancing shadows across the hull."
+  },
+  "objective": "Navigate the ship to reach the Captain's Quarters and find the key to the brig to free yourself before the tide rises.",
+  "room_layout": [
+    {
+      "name": "The Hold",
+      "description": "A cramped storage area filled with crates of rotting wood and sacks of damp gold. The air is thick with humidity.",
+      "adjacency": {
+        "north": "The Deck"
+      },
+      "items": [
+        {
+          "name": "Rusty Iron Key",
+          "description": "A jagged, old key that looks like it has been used to lock many things."
+        }
+      ]
+    },
+    {
+      "name": "The Deck",
+      "description": "The open expanse of the ship's main deck. Wind howls through the rigging, and the planks are slick with rain.",
+      "adjacency": {
+        "south": "The Hold",
+        "east": "Captain's Quarters"
+      },
+      "items": []
+    },
+    {
+      "name": "Captain's Quarters",
+      "description": "The captain's private cabin, now dark and silent. Maps hang on the walls, and a heavy door stands at the far end.",
+      "adjacency": {
+        "west": "The Deck"
+      },
+      "items": [
+        {
+          "name": "Cursed Compass",
+          "description": "A compass that spins wildly, pointing nowhere in particular but making your head spin."
+        }
+      ]
+    }
+  ]
+}
