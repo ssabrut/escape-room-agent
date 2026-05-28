@@ -16,6 +16,26 @@ class Puzzle(BaseModel):
     solved: bool = False
 
 
+class Clue(BaseModel):
+    id: str
+    description: str
+    puzzle_id: str
+
+
+class Role(BaseModel):
+    id: str
+    name: str
+    description: str
+    starting_items: list[str] = Field(default_factory=list)
+
+
+class Item(BaseModel):
+    id: str
+    name: str
+    description: str
+    location: str = ""
+
+
 class HintRecord(BaseModel):
     puzzle_id: str
     hint_text: str
@@ -37,6 +57,9 @@ class GameState(BaseModel):
     # Active game content
     current_puzzle: Puzzle | None = None
     puzzles: list[Puzzle] = Field(default_factory=list)
+    clues: list[Clue] = Field(default_factory=list)
+    roles: list[Role] = Field(default_factory=list)
+    items: list[Item] = Field(default_factory=list)
     hints_used: list[HintRecord] = Field(default_factory=list)
     narrative_log: list[NarrativeChunk] = Field(default_factory=list)
 
