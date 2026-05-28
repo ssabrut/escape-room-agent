@@ -48,6 +48,17 @@ def _render(result: dict) -> None:
     characters = result.get("characters", [])
     _render_characters(characters)
 
+    party = result.get("party", [])
+    if party:
+        print("\n" + "=" * 94)
+        print(" PARTY SELECTIONS")
+        print("=" * 94 + "\n")
+        for member in party:
+            print(f"  {member.agent_id}")
+            print(f"    Chose    : {member.character.name} — {member.character.role}")
+            print(f"    Reasoning: {member.reasoning}")
+            print()
+
     world = result.get("world")
     if world and world.game_flow.gates:
         flow = world.game_flow
@@ -62,6 +73,19 @@ def _render(result: dict) -> None:
             print(f"    Requires : {req}")
             print(f"    Unlocks  : {gate.unlocks}")
             print()
+
+    party_state = result.get("party_state")
+    if party_state:
+        print("\n" + "=" * 94)
+        print(" FINAL RESULT")
+        print("=" * 94 + "\n")
+        outcome = "VICTORY" if party_state.victory else f"ENDED (final room: {party_state.current_room})"
+        inv = ", ".join(i.name for i in party_state.inventory) if party_state.inventory else "(empty)"
+        print(f"  Result    : {outcome}")
+        print(f"  Ticks used: {party_state.tick}")
+        print(f"  Inventory : {inv}")
+        print(f"  Visited   : {', '.join(party_state.visited)}")
+        print()
 
     missions = result.get("missions", [])
     if missions:

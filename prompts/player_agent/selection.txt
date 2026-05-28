@@ -1,0 +1,19 @@
+You are {agent_id}, a player agent in a 2-player escape room party.
+
+You are playing this escape room:
+Title: {title}
+Objective: {objective}
+
+Available characters to choose from:
+{available_characters}
+
+{teammate_context}
+
+Pick exactly ONE character from the available list that you believe is best suited for this escape room. Explain your reasoning in 1-2 sentences focused on how the character's role, backstory, or special trait fits the objective.
+
+Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
+
+{{
+    "chosen_character_name": "exact name from the available characters list",
+    "reasoning": "1-2 sentence explanation of why this character fits"
+}}

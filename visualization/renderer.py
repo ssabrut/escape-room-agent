@@ -57,13 +57,16 @@ def _place_rooms(rooms: list[Room]) -> dict[str, tuple[int, int]]:
     return {name: (c - min_col, r - min_row) for name, (c, r) in placed.items()}
 
 
-def _build_cell(room: Room) -> list[str]:
+def _build_cell(room: Room, party_marker: str = "") -> list[str]:
     """Build a fixed CELL_H-line representation of one room."""
     inner = CELL_W - 2
     h, v = "─", "│"
     tl, tr, bl, br, lm, rm = "┌", "┐", "└", "┘", "├", "┤"
 
-    name = room.name.upper()[: inner - 1]
+    name_text = room.name.upper()
+    if party_marker:
+        name_text = f"{name_text} {party_marker}"
+    name = name_text[: inner - 1]
     lines: list[str] = [
         tl + h * inner + tr,
         v + f" {name}".ljust(inner) + v,
@@ -113,7 +116,7 @@ def _draw_v_corridor(canvas: list[list[str]], x: int, y_start: int, y_end: int) 
             canvas[y][x] = "│"
 
 
-def render_room_layout(rooms: list[Room]) -> None:
+def render_room_layout(rooms: list[Room], party_room: str = "", party_label: str = "★") -> None:
     if not rooms:
         print("  (no rooms to display)")
         return
@@ -135,7 +138,8 @@ def render_room_layout(rooms: list[Room]) -> None:
             continue
         cell_x = col * (CELL_W + H_GAP)
         cell_y = row * (CELL_H + V_GAP)
-        _blit(canvas, _build_cell(room), cell_x, cell_y)
+        marker = party_label if name == party_room else ""
+        _blit(canvas, _build_cell(room, marker), cell_x, cell_y)
 
     # Draw corridors (only process each pair once via east/south)
     for name, (col, row) in grid.items():
