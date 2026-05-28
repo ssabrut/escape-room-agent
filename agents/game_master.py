@@ -3,26 +3,11 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
+from prompts import load_prompt
 from state import GameState
 
-SYSTEM_PROMPT = (
-    """You are the Game Master of a 2D text-based conversational Escape Room game."""
-)
-
-GENERATION_PROMPT = """Generate a complete escape room scenario for a 2D text-based conversational game.
-
-Theme: {theme}
-
-Include:
-* The narrative (intro + atmosphere)
-* Main objective
-* Room layout (3–4 rooms)
-* Roles / personas (3 total): name, description, starting items
-* Items (5 total): name, description, location
-* Puzzles (3 total): name, riddle, answer
-* Clues (3 total): description, which puzzle it helps
-* Hint system: explain how hints are awarded
-* Game flow: how the player moves from start to finish"""
+SYSTEM_PROMPT = load_prompt("game_master", "system")
+GENERATION_PROMPT = load_prompt("game_master", "generation")
 
 
 def game_master_node(state: GameState) -> dict:

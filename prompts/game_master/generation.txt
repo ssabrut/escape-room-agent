@@ -1,0 +1,32 @@
+Generate a complete escape room scenario for a 2D text-based conversational game.
+
+Theme: {theme}
+
+Include:
+* The narrative (intro + atmosphere)
+* Main objective
+* Room layout (3–4 rooms)
+    * Items in rooms (could be none, but max of 2 items per rooms)
+
+Provide the output in JSON format as below, without preamble or postamble
+
+```JSON
+{{
+    "narrative": {{
+        "title": "escape room title goes here",
+        "setup": "escape room setup goes here",
+        "atmosphere": "escape room atmosphere goes here"
+    }},
+    "objective": "objective goes here",
+    "room_layout": [
+        {{
+            "name:" "room name goes here",
+            "description: "room description goes here",
+            "items": [
+                "name": "item name goes here",
+                "description": "item description goes here"
+            ]
+        }}
+    ]
+}}
+```
