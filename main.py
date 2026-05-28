@@ -74,6 +74,38 @@ def _render(result: dict) -> None:
             print(f"    Unlocks  : {gate.unlocks}")
             print()
 
+    party_state = result.get("party_state")
+    print("\n" + "=" * 94)
+    print(" GAMEPLAY LOG")
+    print("=" * 94 + "\n")
+    if not party_state:
+        print("  [No party_state in result — gameplay_node did not run or returned empty]\n")
+    else:
+        log = getattr(party_state, "log", None) or []
+        if not log:
+            print(f"  [Gameplay produced 0 ticks]")
+            print(f"  current_room={getattr(party_state, 'current_room', '?')}  "
+                  f"game_over={getattr(party_state, 'game_over', '?')}  "
+                  f"victory={getattr(party_state, 'victory', '?')}  "
+                  f"tick={getattr(party_state, 'tick', '?')}\n")
+        else:
+            last_tick = None
+            for entry in log:
+                if entry.tick != last_tick:
+                    print(f"  --- Tick {entry.tick} ---")
+                    last_tick = entry.tick
+                marker = "✓" if entry.matched_required_action else "·"
+                print(f"  {marker} {entry.agent_id}  say: \"{entry.say}\"")
+                print(f"      action: {entry.action}  ({entry.note})")
+            print()
+            outcome = "VICTORY" if party_state.victory else f"ENDED (final room: {party_state.current_room})"
+            inv = ", ".join(i.name for i in party_state.inventory) if party_state.inventory else "(empty)"
+            print(f"  Result   : {outcome}")
+            print(f"  Ticks    : {party_state.tick}")
+            print(f"  Inventory: {inv}")
+            print(f"  Visited  : {', '.join(party_state.visited)}")
+            print()
+
     missions = result.get("missions", [])
     if missions:
         print("\n" + "=" * 94)

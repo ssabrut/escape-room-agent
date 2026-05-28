@@ -88,6 +88,31 @@ class Mission(BaseModel):
     unlocks_exit_to: str      # room name that becomes accessible after completion
 
 
+class TickAction(BaseModel):
+    """A single agent's action + spoken line on one tick of gameplay."""
+
+    tick: int
+    agent_id: str
+    say: str
+    action: str
+    matched_required_action: str | None = None  # which required_action this satisfied, if any
+    note: str = ""  # short outcome message (e.g., "completed", "no effect")
+
+
+class PartyState(BaseModel):
+    """Shared runtime state of the co-op party."""
+
+    current_room: str = ""
+    inventory: list[RoomItem] = Field(default_factory=list)
+    visited: set[str] = Field(default_factory=set)
+    completed_actions_by_gate: dict[int, list[str]] = Field(default_factory=dict)
+    completed_gates: list[int] = Field(default_factory=list)
+    tick: int = 0
+    game_over: bool = False
+    victory: bool = False
+    log: list[TickAction] = Field(default_factory=list)
+
+
 class GameState(BaseModel):
     """Top-level LangGraph state."""
 
@@ -98,3 +123,4 @@ class GameState(BaseModel):
     characters: list[Character] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
     missions: list[Mission] = Field(default_factory=list)
+    party_state: PartyState | None = None
