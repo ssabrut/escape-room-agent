@@ -8,6 +8,7 @@ Include:
 * Room layout (3–4 rooms)
     * Items in rooms (could be none, but max of 2 items per room)
     * Adjacency: which cardinal direction (north, south, east, west) connects each room to its neighbors
+* Game flow: an ordered list of gates from start to finish
 
 Adjacency rules:
 - Use only cardinal directions: "north", "south", "east", "west"
@@ -18,6 +19,13 @@ Adjacency rules:
 Example of CORRECT adjacency for two rooms side by side:
   Room A: {{"adjacency": {{"east": "Room B"}}}}
   Room B: {{"adjacency": {{"west": "Room A"}}}}
+
+Game flow rules:
+- starting_room must be the name of the first room in room_layout
+- gates are ordered steps the player must complete to win
+- Each gate has: a room name (where this step happens), a requires field (what must be done first, or null if it is the first gate), and an unlocks field (what completing this gate enables)
+- The final gate must have "unlocks": "VICTORY"
+- Only reference room names and item names that actually exist in your room_layout
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
@@ -43,5 +51,21 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
                 }}
             ]
         }}
-    ]
+    ],
+    "game_flow": {{
+        "starting_room": "name of the first room",
+        "win_condition": "one sentence describing how to win",
+        "gates": [
+            {{
+                "room": "room where this step happens",
+                "requires": null,
+                "unlocks": "what completing this step enables"
+            }},
+            {{
+                "room": "room where next step happens",
+                "requires": "what completing this step enables",
+                "unlocks": "VICTORY"
+            }}
+        ]
+    }}
 }}

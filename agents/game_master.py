@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameState, GameWorld, PlayerState, Room, RoomItem
+from state import Gate, GameFlow, GameState, GameWorld, PlayerState, Room, RoomItem
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
@@ -101,15 +101,55 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
     ]
 
 
+def _build_game_flow(data: dict, known_rooms: set[str]) -> GameFlow:
+    """Parse game_flow from raw data and repair invalid room references."""
+    raw = data.get("game_flow", {}) or {}
+
+    starting_room = raw.get("starting_room", "")
+    if starting_room not in known_rooms:
+        starting_room = next(iter(known_rooms), "")
+
+    gates: list[Gate] = []
+    for raw_gate in raw.get("gates", []):
+        if not isinstance(raw_gate, dict):
+            continue
+        room = raw_gate.get("room", "")
+        if room not in known_rooms:
+            continue  # drop gates referencing non-existent rooms
+        gates.append(
+            Gate(
+                room=room,
+                requires=raw_gate.get("requires") or None,
+                unlocks=raw_gate.get("unlocks", ""),
+            )
+        )
+
+    # Ensure the last gate always ends in VICTORY
+    if gates and gates[-1].unlocks != "VICTORY":
+        gates[-1] = Gate(
+            room=gates[-1].room,
+            requires=gates[-1].requires,
+            unlocks="VICTORY",
+        )
+
+    return GameFlow(
+        starting_room=starting_room,
+        win_condition=raw.get("win_condition", ""),
+        gates=gates,
+    )
+
+
 def _build_world(data: dict) -> GameWorld:
     narrative = data.get("narrative", {}) or {}
     rooms = _repair_adjacency(_build_rooms(data.get("room_layout", [])))
+    known_rooms = {r.name for r in rooms}
     return GameWorld(
         title=narrative.get("title", ""),
         setup=narrative.get("setup", ""),
         atmosphere=narrative.get("atmosphere", ""),
         objective=data.get("objective", ""),
         rooms=rooms,
+        game_flow=_build_game_flow(data, known_rooms),
     )
 
 

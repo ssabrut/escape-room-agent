@@ -48,6 +48,35 @@ def _render(result: dict) -> None:
     characters = result.get("characters", [])
     _render_characters(characters)
 
+    world = result.get("world")
+    if world and world.game_flow.gates:
+        flow = world.game_flow
+        print("\n" + "=" * 94)
+        print(" GAME FLOW")
+        print("=" * 94 + "\n")
+        print(f"  Start : {flow.starting_room}")
+        print(f"  Goal  : {flow.win_condition}\n")
+        for i, gate in enumerate(flow.gates, 1):
+            req = gate.requires or "—"
+            print(f"  Step {i}  [{gate.room}]")
+            print(f"    Requires : {req}")
+            print(f"    Unlocks  : {gate.unlocks}")
+            print()
+
+    puzzles = result.get("puzzles", [])
+    if puzzles:
+        print("\n" + "=" * 94)
+        print(" PUZZLES")
+        print("=" * 94 + "\n")
+        for puzzle in puzzles:
+            print(f"  [{puzzle.room}]  Gate {puzzle.gate_index}")
+            print(f"  Riddle  : {puzzle.riddle}")
+            print(f"  Answer  : {puzzle.answer}")
+            print(f"  Clue    : {puzzle.clue_on_solve}")
+            if puzzle.unlocks_item:
+                print(f"  Unlocks : {puzzle.unlocks_item}")
+            print()
+
 
 def run() -> None:
     result = graph.invoke(GameState(theme="pirate"))
