@@ -501,6 +501,13 @@ def _agent_act(
     win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
 
     room_goal = room.goal if room and room.goal else "(no specific goal — explore)"
+    if room and room.goal_completion is not None:
+        if _prerequisite_satisfied(room.goal_completion, ps):
+            room_goal_status = f"DONE ({_format_prereq(room.goal_completion)})"
+        else:
+            room_goal_status = f"IN PROGRESS — need: {_format_prereq(room.goal_completion)}"
+    else:
+        room_goal_status = "(no completion condition)"
     key_objs = (
         ", ".join(room.key_objects) if room and room.key_objects else "(none flagged)"
     )
@@ -530,6 +537,7 @@ def _agent_act(
         current_room=ps.current_room,
         room_description=room.description if room else "",
         room_goal=room_goal,
+        room_goal_status=room_goal_status,
         room_key_objects=key_objs,
         room_exit_status=room_exit_status,
         objective=world.objective,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -56,26 +57,25 @@ def _parse_json(text: str) -> dict | None:
 _VALID_PREREQ_TYPES = {"object_state", "known_info", "has_item", "power_active"}
 
 
+def _build_prerequisite(raw) -> Prerequisite | None:
+    if not isinstance(raw, dict):
+        return None
+    ptype = raw.get("type")
+    if ptype not in _VALID_PREREQ_TYPES:
+        return None
+    return Prerequisite(
+        type=ptype,
+        object_id=raw.get("object_id"),
+        state=raw.get("state"),
+        info=raw.get("info"),
+        id=raw.get("id"),
+    )
+
+
 def _build_prerequisites(raw_prereqs) -> list[Prerequisite]:
     if not isinstance(raw_prereqs, list):
         return []
-    out: list[Prerequisite] = []
-    for raw in raw_prereqs:
-        if not isinstance(raw, dict):
-            continue
-        ptype = raw.get("type")
-        if ptype not in _VALID_PREREQ_TYPES:
-            continue
-        out.append(
-            Prerequisite(
-                type=ptype,
-                object_id=raw.get("object_id"),
-                state=raw.get("state"),
-                info=raw.get("info"),
-                id=raw.get("id"),
-            )
-        )
-    return out
+    return [p for p in (_build_prerequisite(r) for r in raw_prereqs) if p is not None]
 
 
 def _build_rooms(raw_rooms: list) -> list[Room]:
@@ -107,6 +107,7 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
                 description=raw_room.get("description", ""),
                 adjacency=adjacency,
                 goal=raw_room.get("goal", ""),
+                goal_completion=_build_prerequisite(raw_room.get("goal_completion")),
                 prerequisites=_build_prerequisites(raw_room.get("prerequisites", [])),
                 key_objects=key_objects,
             )
@@ -138,6 +139,7 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
             description=r.description,
             adjacency=cleaned.get(r.id, {}),
             goal=r.goal,
+            goal_completion=r.goal_completion,
             prerequisites=r.prerequisites,
             key_objects=r.key_objects,
         )
@@ -191,16 +193,16 @@ def _build_win_condition(raw: dict, object_ids: set[str]) -> WinCondition:
 
 def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     """Drop key_object and prerequisite entries that reference unknown object ids."""
+    def _valid(p: Prerequisite) -> bool:
+        if p.type in {"object_state", "has_item"}:
+            return p.object_id in object_ids
+        return True
+
     for room in rooms:
         room.key_objects = [k for k in room.key_objects if k in object_ids]
-        kept: list[Prerequisite] = []
-        for p in room.prerequisites:
-            if p.type in {"object_state", "has_item"}:
-                if p.object_id in object_ids:
-                    kept.append(p)
-            else:
-                kept.append(p)
-        room.prerequisites = kept
+        room.prerequisites = [p for p in room.prerequisites if _valid(p)]
+        if room.goal_completion is not None and not _valid(room.goal_completion):
+            room.goal_completion = None
     return rooms
 
 
@@ -229,15 +231,25 @@ def game_master_node(state: GameState) -> dict:
     llm = get_llm("game_master")
     prompt = GENERATION_PROMPT.format(theme=state.theme)
 
+    storyline_start = time.perf_counter()
     response = llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]
     )
+    storyline_elapsed = time.perf_counter() - storyline_start
 
+    map_start = time.perf_counter()
     data = _parse_json(response.content) or {}
     world = _build_world(data)
+    map_elapsed = time.perf_counter() - map_start
+
+    print(
+        f"[game_master] storyline (LLM): {storyline_elapsed:.2f}s | "
+        f"map (parse+build): {map_elapsed:.2f}s",
+        flush=True,
+    )
 
     return {
         "messages": [AIMessage(content=response.content)],
