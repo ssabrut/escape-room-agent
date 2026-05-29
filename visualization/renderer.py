@@ -7,7 +7,7 @@ from collections import deque
 from state import Room, WorldObject
 
 CELL_W = 30
-CELL_H = 7
+CELL_MIN_H = 7
 H_GAP = 5
 V_GAP = 3
 
@@ -58,11 +58,12 @@ def _place_rooms(rooms: list[Room]) -> dict[str, tuple[int, int]]:
 def _build_cell(
     room: Room,
     objects_here: list[WorldObject],
+    cell_h: int,
     party_marker: str = "",
     interacted_ids: set[str] | None = None,
     object_states: dict[str, str] | None = None,
 ) -> list[str]:
-    """Build a fixed CELL_H-line representation of one room."""
+    """Build a `cell_h`-line representation of one room. Caller guarantees cell_h fits all objects."""
     inner = CELL_W - 2
     h, v = "─", "│"
     tl, tr, bl, br, lm, rm = "┌", "┐", "└", "┘", "├", "┤"
@@ -81,7 +82,7 @@ def _build_cell(
     ]
 
     obj_lines: list[str] = []
-    for obj in objects_here[:2]:
+    for obj in objects_here:
         mark = "[x]" if obj.id in interacted_ids else "[ ]"
         state = object_states.get(obj.id, obj.state)
         label = f"  {mark} {obj.id} ({state})"[: inner - 1]
@@ -90,13 +91,13 @@ def _build_cell(
     if not obj_lines:
         obj_lines.append(v + "  (empty)".ljust(inner) + v)
 
-    while len(obj_lines) < CELL_H - 5:
+    while len(obj_lines) < cell_h - 5:
         obj_lines.append(v + " " * inner + v)
 
     lines.extend(obj_lines)
     lines.append(bl + h * inner + br)
 
-    assert len(lines) == CELL_H, f"Cell height mismatch: {len(lines)} != {CELL_H}"
+    assert len(lines) == cell_h, f"Cell height mismatch: {len(lines)} != {cell_h}"
     return lines
 
 
@@ -147,8 +148,12 @@ def render_room_layout(
     max_col = max(c for c, _ in grid.values())
     max_row = max(r for _, r in grid.values())
 
+    # All cells share the same height — sized to fit the room with the most objects.
+    max_objs = max((len(objs) for objs in objects_by_room.values()), default=0)
+    cell_h = max(CELL_MIN_H, 5 + max(1, max_objs))
+
     canvas_w = (max_col + 1) * CELL_W + max_col * H_GAP
-    canvas_h = (max_row + 1) * CELL_H + max_row * V_GAP
+    canvas_h = (max_row + 1) * cell_h + max_row * V_GAP
     canvas = _make_canvas(canvas_w, canvas_h)
 
     for rid, (col, row) in grid.items():
@@ -156,13 +161,14 @@ def render_room_layout(
         if room is None:
             continue
         cell_x = col * (CELL_W + H_GAP)
-        cell_y = row * (CELL_H + V_GAP)
+        cell_y = row * (cell_h + V_GAP)
         marker = party_label if rid == party_room else ""
         _blit(
             canvas,
             _build_cell(
                 room,
                 objects_by_room.get(rid, []),
+                cell_h,
                 marker,
                 interacted_ids=interacted_ids,
                 object_states=object_states,
@@ -176,7 +182,7 @@ def render_room_layout(
         if room is None:
             continue
         cell_x = col * (CELL_W + H_GAP)
-        cell_y = row * (CELL_H + V_GAP)
+        cell_y = row * (cell_h + V_GAP)
 
         if "east" in room.adjacency and room.adjacency["east"] in grid:
             neighbor_col, _ = grid[room.adjacency["east"]]
@@ -190,8 +196,8 @@ def render_room_layout(
             _, neighbor_row = grid[room.adjacency["south"]]
             if neighbor_row == row + 1:
                 corridor_x = cell_x + CELL_W // 2
-                y_start = cell_y + CELL_H
-                y_end = cell_y + CELL_H + V_GAP
+                y_start = cell_y + cell_h
+                y_end = cell_y + cell_h + V_GAP
                 _draw_v_corridor(canvas, corridor_x, y_start, y_end)
 
     for row_chars in canvas:

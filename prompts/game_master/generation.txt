@@ -5,22 +5,29 @@ Theme: {theme}
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Exactly ONE room (single-room scenario). It has an id, description, an empty adjacency (no neighbors), a local goal, empty prerequisites, and the key objects in that room. The room's `goal_completion` MUST equal the win_condition.
+* Exactly TWO rooms. Room A is the starting room (empty prerequisites). Room B is gated behind Room A. Each room has an id, description, cardinal adjacency to the other, a local goal, prerequisites, and key objects. The win_condition MUST live in Room B and equal Room B's `goal_completion`.
 * Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
 
-Room goal & prerequisite rules (single-room mode):
-- The room has a one-sentence `goal` describing what the party must accomplish (e.g., "Unlock the ancient chest to escape", "Crack the safe and retrieve the key")
-- `goal_completion`: a structured condition equal to the `win_condition` — when the goal is done, the game is won. It must require non-trivial effort (a keypad, a tool, a fuse panel — not just walking in).
-- `prerequisites`: MUST be `[]` (no other rooms to gate).
-- `key_objects` is a list of object ids in this room that matter for the goal — used to focus the player's attention.
-- Prerequisite shape (for `goal_completion`):
-    - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}}
+Room goal & prerequisite rules (two-room mode):
+- Each room has a one-sentence `goal` describing what the party must accomplish there.
+- Each room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
+- Room A (start): `prerequisites: []`. Its `goal_completion` produces whatever Room B needs to enter (e.g., a door unlocked, a keycard taken, a clue learned).
+- Room B (final): `prerequisites` MUST contain exactly Room A's `goal_completion` (verbatim — same `type`, `object_id`, `state`/`info`/`id`). Its `goal_completion` MUST equal the `win_condition`.
+- `key_objects` is a list of object ids in this room that matter for its goal — used to focus the player's attention.
+- Prerequisite / goal_completion shapes:
+    - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
+    - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
+    - {{"type": "has_item", "object_id": "<existing_id>"}} — e.g., the party must carry a keycard
+    - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
+- CRITICAL LINKAGE RULE: Room B's prerequisite MUST equal Room A's `goal_completion`. The only way to enter Room B is to finish Room A's puzzle. No shortcuts.
 
 Adjacency rules:
-- Single-room mode: the lone room MUST have `adjacency: {{}}` (empty). No neighbors.
+- Use only cardinal directions: "north", "south", "east", "west"
+- Room A and Room B MUST be cardinal neighbors. If A says east is B, then B MUST say west is A.
+- No other adjacency entries — only the single edge between A and B.
 
 Solvability rule (CRITICAL):
 - Every code (`requires_code`) MUST be discoverable in the world. At least one object whose `contains_info` matches the code (or contains the code substring) must exist in a reachable location BEFORE the locked object. Same for liquids, powers, and tools — the means to satisfy a precondition must already be reachable when the precondition is needed.
