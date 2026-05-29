@@ -428,11 +428,13 @@ def gameplay_node(state: GameState) -> dict:
             if extra:
                 note = f"{note} (extra action)"
 
+            say = "" if chosen == IDLE_ACTION else decided["say"]
+
             tick_actions.append(
                 TickAction(
                     tick=ps.tick,
                     agent_id=member.agent_id,
-                    say=decided["say"],
+                    say=say,
                     action=decided["action"],
                     matched_required_action=matched,
                     note=note,
@@ -443,7 +445,8 @@ def gameplay_node(state: GameState) -> dict:
             prefix = "  ↻ " if extra else "     "
             label = f"{member.agent_id} ({member.character.name})"
             _stream(f"{prefix}{marker} {label}")
-            _stream(f"         say   : \"{decided['say']}\"")
+            if say:
+                _stream(f"         say   : \"{say}\"")
             _stream(f"         action: {decided['action']}  ({note})")
 
             return matched
