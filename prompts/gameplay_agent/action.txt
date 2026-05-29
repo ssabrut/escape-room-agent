@@ -14,7 +14,10 @@ Reward when mission completes: {reward_item} (used to unlock the next area)
 Your teammate's most recent line: {teammate_last_say}
 Your teammate's most recent action: {teammate_last_action}
 
-Pick ONE short action keyword (verb or verb+noun, e.g. "examine desk", "pull lever") to perform this tick. Strongly prefer required actions that are not yet completed. If everything is done, pick a sensible idle/observation action.
+This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
+
+Available actions:
+{action_space}
 
 Also say ONE short line (max 15 words) to coordinate with your teammate.
 
@@ -22,5 +25,5 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
 
 {{
     "say": "short line to teammate",
-    "action": "short action keyword"
+    "action": "exact string from the menu above"
 }}

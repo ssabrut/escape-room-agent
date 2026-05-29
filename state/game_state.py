@@ -25,8 +25,8 @@ class Gate(BaseModel):
     """A single step in the game flow sequence."""
 
     room: str
-    requires: str | None = None   # None means freely accessible
-    unlocks: str                  # what this gate's completion opens up
+    requires: str | None = None  # None means freely accessible
+    unlocks: str  # what this gate's completion opens up
 
 
 class GameFlow(BaseModel):
@@ -72,9 +72,9 @@ class Character(BaseModel):
 class PartyMember(BaseModel):
     """A player agent's character selection with reasoning."""
 
-    agent_id: str         # e.g., "agent_1", "agent_2"
+    agent_id: str  # e.g., "agent_1", "agent_2"
     character: Character  # the character this agent chose
-    reasoning: str        # why this agent chose this character
+    reasoning: str  # why this agent chose this character
 
 
 class Mission(BaseModel):
@@ -82,10 +82,12 @@ class Mission(BaseModel):
 
     room: str
     gate_index: int
-    description: str          # narrative task description shown to the player
-    required_actions: list[str]  # interaction keywords that count as completing the mission
-    reward_item: str          # existing room item awarded on completion
-    unlocks_exit_to: str      # room name that becomes accessible after completion
+    description: str  # narrative task description shown to the player
+    required_actions: list[
+        str
+    ]  # interaction keywords that count as completing the mission
+    reward_item: str  # existing room item awarded on completion
+    unlocks_exit_to: str  # room name that becomes accessible after completion
 
 
 class TickAction(BaseModel):
@@ -95,7 +97,9 @@ class TickAction(BaseModel):
     agent_id: str
     say: str
     action: str
-    matched_required_action: str | None = None  # which required_action this satisfied, if any
+    matched_required_action: str | None = (
+        None  # which required_action this satisfied, if any
+    )
     note: str = ""  # short outcome message (e.g., "completed", "no effect")
 
 

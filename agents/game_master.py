@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import Gate, GameFlow, GameState, GameWorld, PlayerState, Room, RoomItem
+from state import GameFlow, GameState, GameWorld, Gate, PlayerState, Room, RoomItem
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
@@ -54,7 +54,11 @@ def _build_rooms(raw_rooms: list[dict]) -> list[Room]:
             if isinstance(i, dict)
         ]
         raw_adj = raw_room.get("adjacency", {})
-        adjacency = raw_adj if isinstance(raw_adj, dict) else {}
+        adjacency = (
+            {k: v for k, v in raw_adj.items() if isinstance(v, str) and v}
+            if isinstance(raw_adj, dict)
+            else {}
+        )
         rooms.append(
             Room(
                 name=raw_room.get("name", "Unnamed Room"),
@@ -78,8 +82,7 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
     cleaned: dict[str, dict[str, str]] = {}
     for room in rooms:
         cleaned[room.name] = {
-            d: n for d, n in room.adjacency.items()
-            if n in known and d in OPPOSITES
+            d: n for d, n in room.adjacency.items() if n in known and d in OPPOSITES
         }
 
     for room_name, adj in list(cleaned.items()):

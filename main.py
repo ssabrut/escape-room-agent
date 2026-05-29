@@ -79,8 +79,16 @@ def _render(result: dict) -> None:
         print("\n" + "=" * 94)
         print(" FINAL RESULT")
         print("=" * 94 + "\n")
-        outcome = "VICTORY" if party_state.victory else f"ENDED (final room: {party_state.current_room})"
-        inv = ", ".join(i.name for i in party_state.inventory) if party_state.inventory else "(empty)"
+        outcome = (
+            "VICTORY"
+            if party_state.victory
+            else f"ENDED (final room: {party_state.current_room})"
+        )
+        inv = (
+            ", ".join(i.name for i in party_state.inventory)
+            if party_state.inventory
+            else "(empty)"
+        )
         print(f"  Result    : {outcome}")
         print(f"  Ticks used: {party_state.tick}")
         print(f"  Inventory : {inv}")

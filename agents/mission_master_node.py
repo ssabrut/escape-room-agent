@@ -38,7 +38,12 @@ def _parse_json(text: str) -> dict | None:
     return None
 
 
-def _build_missions(data: dict, known_rooms: set[str], items_by_room: dict[str, set[str]], known_room_list: list[str]) -> list[Mission]:
+def _build_missions(
+    data: dict,
+    known_rooms: set[str],
+    items_by_room: dict[str, set[str]],
+    known_room_list: list[str],
+) -> list[Mission]:
     missions: list[Mission] = []
     for raw in data.get("missions", []):
         if not isinstance(raw, dict):
@@ -79,7 +84,9 @@ def _build_missions(data: dict, known_rooms: set[str], items_by_room: dict[str, 
 def _format_rooms_and_items(world) -> str:
     lines = []
     for room in world.rooms:
-        item_names = ", ".join(i.name for i in room.items) if room.items else "(no items)"
+        item_names = (
+            ", ".join(i.name for i in room.items) if room.items else "(no items)"
+        )
         lines.append(f"  - {room.name}: {item_names}")
     return "\n".join(lines)
 
@@ -88,7 +95,9 @@ def _format_gates(world) -> str:
     lines = []
     for i, gate in enumerate(world.game_flow.gates):
         req = gate.requires or "none"
-        lines.append(f"  Gate {i}: room={gate.room}, requires={req}, unlocks={gate.unlocks}")
+        lines.append(
+            f"  Gate {i}: room={gate.room}, requires={req}, unlocks={gate.unlocks}"
+        )
     return "\n".join(lines) if lines else "  (no gates)"
 
 
