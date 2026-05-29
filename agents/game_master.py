@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameState, GameWorld, Room, WinCondition, WorldObject
+from state import GameState, GameWorld, Prerequisite, Room, WinCondition, WorldObject
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
@@ -53,6 +53,31 @@ def _parse_json(text: str) -> dict | None:
     return None
 
 
+_VALID_PREREQ_TYPES = {"object_state", "known_info", "has_item", "power_active"}
+
+
+def _build_prerequisites(raw_prereqs) -> list[Prerequisite]:
+    if not isinstance(raw_prereqs, list):
+        return []
+    out: list[Prerequisite] = []
+    for raw in raw_prereqs:
+        if not isinstance(raw, dict):
+            continue
+        ptype = raw.get("type")
+        if ptype not in _VALID_PREREQ_TYPES:
+            continue
+        out.append(
+            Prerequisite(
+                type=ptype,
+                object_id=raw.get("object_id"),
+                state=raw.get("state"),
+                info=raw.get("info"),
+                id=raw.get("id"),
+            )
+        )
+    return out
+
+
 def _build_rooms(raw_rooms: list) -> list[Room]:
     rooms: list[Room] = []
     for raw_room in raw_rooms:
@@ -70,11 +95,20 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
             if isinstance(raw_adj, dict)
             else {}
         )
+        key_objects_raw = raw_room.get("key_objects", [])
+        key_objects = (
+            [k for k in key_objects_raw if isinstance(k, str)]
+            if isinstance(key_objects_raw, list)
+            else []
+        )
         rooms.append(
             Room(
                 id=room_id,
                 description=raw_room.get("description", ""),
                 adjacency=adjacency,
+                goal=raw_room.get("goal", ""),
+                prerequisites=_build_prerequisites(raw_room.get("prerequisites", [])),
+                key_objects=key_objects,
             )
         )
     return rooms
@@ -99,7 +133,14 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
                 cleaned[neighbor_id] = neighbor_adj
 
     return [
-        Room(id=r.id, description=r.description, adjacency=cleaned.get(r.id, {}))
+        Room(
+            id=r.id,
+            description=r.description,
+            adjacency=cleaned.get(r.id, {}),
+            goal=r.goal,
+            prerequisites=r.prerequisites,
+            key_objects=r.key_objects,
+        )
         for r in rooms
     ]
 
@@ -148,11 +189,27 @@ def _build_win_condition(raw: dict, object_ids: set[str]) -> WinCondition:
     return WinCondition(object_id=object_id, state=raw.get("state", ""))
 
 
+def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
+    """Drop key_object and prerequisite entries that reference unknown object ids."""
+    for room in rooms:
+        room.key_objects = [k for k in room.key_objects if k in object_ids]
+        kept: list[Prerequisite] = []
+        for p in room.prerequisites:
+            if p.type in {"object_state", "has_item"}:
+                if p.object_id in object_ids:
+                    kept.append(p)
+            else:
+                kept.append(p)
+        room.prerequisites = kept
+    return rooms
+
+
 def _build_world(data: dict) -> GameWorld:
     rooms = _repair_adjacency(_build_rooms(data.get("rooms", [])))
     room_ids = {r.id for r in rooms}
     objects = _build_objects(data.get("objects", []), room_ids)
     object_ids = {o.id for o in objects}
+    rooms = _scrub_room_refs(rooms, object_ids)
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]

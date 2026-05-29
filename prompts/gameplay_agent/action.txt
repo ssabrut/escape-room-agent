@@ -4,6 +4,9 @@ Your ability: {character_ability}
 Tick: {tick}
 Current room: {current_room}
 Room description: {room_description}
+Room goal (focus your actions on this): {room_goal}
+Key objects in this room (prioritize these): {room_key_objects}
+To leave this room you still need: {room_exit_status}
 
 Overall objective: {objective}
 Victory condition: {win_condition}

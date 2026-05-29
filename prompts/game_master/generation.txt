@@ -5,11 +5,22 @@ Theme: {theme}
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Rooms (2-4 rooms), each with an id, description, and cardinal adjacency
-* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors)
+* Rooms (2-4 rooms), each with an id, description, cardinal adjacency, a local goal, entry prerequisites, and the key objects in that room
+* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
+
+Room goal & prerequisite rules:
+- Every room has a one-sentence `goal` describing what the party must accomplish there (e.g., "Restore power to the east wing", "Find the keycard hidden among the lab supplies")
+- The starting room MUST have `prerequisites: []`
+- Every other room MUST list at least one prerequisite that gates entry. Prerequisites are structured objects, one of:
+    - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
+    - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
+    - {{"type": "has_item", "object_id": "<existing_id>"}} — e.g., the party must carry a keycard
+    - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
+- Prerequisites MUST reference object ids, info tokens, or power tokens that actually exist or are produced by interactions in earlier rooms
+- `key_objects` is a list of object ids in this room that matter for the room's goal or for satisfying a downstream room's prerequisite — used to focus the player's attention
 
 Adjacency rules:
 - Use only cardinal directions: "north", "south", "east", "west"
@@ -51,7 +62,12 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
             "description": "room description",
             "adjacency": {{
                 "east": "other_room_id"
-            }}
+            }},
+            "goal": "one-sentence local goal for this room",
+            "prerequisites": [
+                {{"type": "object_state", "object_id": "door_xyz", "state": "unlocked"}}
+            ],
+            "key_objects": ["object_id_one", "object_id_two"]
         }}
     ],
     "objects": [

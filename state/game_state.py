@@ -7,12 +7,25 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
+class Prerequisite(BaseModel):
+    """Condition that must hold for the party to enter a room."""
+
+    type: str  # "object_state" | "known_info" | "has_item" | "power_active"
+    object_id: str | None = None
+    state: str | None = None
+    info: str | None = None
+    id: str | None = None
+
+
 class Room(BaseModel):
     """Static blueprint of a room — never mutated after generation."""
 
     id: str
     description: str
     adjacency: dict[str, str] = Field(default_factory=dict)
+    goal: str = ""
+    prerequisites: list[Prerequisite] = Field(default_factory=list)
+    key_objects: list[str] = Field(default_factory=list)
 
 
 class WorldObject(BaseModel):
