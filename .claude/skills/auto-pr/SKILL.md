@@ -1,87 +1,84 @@
 ---
 name: auto-pr
-description: Auto-generate a pull request title and description from the current branch's git changes. Use when opening a PR and needing a clear summary of what changed and why.
+description: Auto-generate a pull request title and description (summary, what changes, why it changed, benefits) based on git diff.
 disable-model-invocation: true
 allowed-tools: Bash(git *)
 model: claude-haiku-4-5-20251001
 ---
 
-# Auto-PR Title & Description Generator
+# Auto-PR Generator
 
-Generate a pull request title and description from the commits and diff on the current branch versus its base.
+Generate a pull request title and description from your current branch changes.
 
-## Branch metadata
+## Current changes
+
 ```!
-git rev-parse --abbrev-ref HEAD
+git diff main...HEAD
 ```
 
-## Base branch (origin/main if it exists, else main)
-```!
-git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main
-```
+## Recent commits
 
-## Commit log on this branch
 ```!
-git log --no-merges --pretty=format:"%h %s%n%b%n---" $(git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main)..HEAD
-```
-
-## Diff summary (files + line counts)
-```!
-git diff --stat $(git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main)..HEAD
-```
-
-## Full diff
-```!
-git diff $(git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main)..HEAD
+git log main...HEAD --oneline -10
 ```
 
 ## Your task
 
-Analyze the branch above and produce a PR title and description.
+Analyze the diff and commits above and generate a PR title and description that:
 
-### Title rules
+### Title (≤70 characters)
+1. **Clear and concise**: summarizes the main feature or fix
+2. **Action-oriented**: what does this PR accomplish?
+3. **No markdown**: plain text only
+4. **Examples**:
+   - `Add character ability system with active effects`
+   - `Fix null reference in game master gate parsing`
+   - `Improve player state initialization`
 
-1. **Starts with a type**: feat, fix, refactor, docs, test, chore, style, perf
-2. **≤ 70 characters**
-3. **Imperative mood**: "add X", not "added X"
-4. **No trailing punctuation, lowercase except proper nouns**
+### Description
 
-### Description rules
+Structure your response with these sections:
 
-The description has exactly two sections:
+**Summary**
+- One sentence describing what this PR does at a high level
 
-**## What changed**
-- 2–5 bullet points
-- Each bullet names a concrete change (a file, a system, a behavior) — not the commit message verbatim
-- Group related file changes into one bullet
+**What Changes**
+- Bullet list of the main changes made
+- Be specific about files or components modified
+- Focus on user-facing or architectural impact
 
-**## Why**
-- 1–3 short paragraphs (or bullets)
-- Explain the motivation: what problem this solves, what need it addresses, what the previous behavior was missing
-- Infer the "why" from the diff and commit messages — code that adds validation suggests fixing invalid inputs; renaming suggests clarity; deleting suggests cleanup
-- If the "why" is genuinely unclear from the diff, write `Why: (motivation not captured in commits — fill in before merging)` so the human knows to edit it
+**Why It Changed**
+- Explain the motivation or problem being solved
+- Reference any bugs, features, or improvements
+- Be clear about the "why", not just the "what"
 
-## Examples
-
-Good title:
-- `feat: add character ability system with five mechanical effects`
-- `fix: handle null unlocks in game master gate parsing`
-- `refactor: replace special_trait string with Ability model`
-
-Good description:
-```
-## What changed
-- Added `Ability` model and `ABILITY_EFFECTS` / `ABILITY_TRIGGERS` constants to `state/game_state.py`
-- Replaced `Character.special_trait: str` with `Character.ability: Ability`
-- Updated `character_master_node.py` to parse and validate ability fields against the closed effect set
-- Rewrote `prompts/character_master/generation.txt` to instruct the LLM to pick from 5 fixed effect slots
-- Updated display sites in `main.py`, `player_agent_node.py`, `gameplay_node.py` to render ability info
-
-## Why
-Previously `special_trait` was a free-text one-liner with no mechanical hook — it appeared in prompts and printouts but the tick loop never resolved it, so character choice had no gameplay impact. This change makes abilities a closed enum the gameplay loop can dispatch on, so a "rogue" picking `extra_action` actually behaves differently from a "scholar" picking `spot_clue`.
-```
+**Benefits**
+- List the positive outcomes
+- Improved performance, user experience, maintainability, etc.
+- Keep each benefit concise
 
 ## Output
 
-Reply with the title on the first line, a blank line, then the description in markdown.
-No leading prose, no code fences around the whole output, no trailing explanation.
+Format exactly as shown below, with no additional commentary:
+
+```
+Title: [your title here]
+
+Summary
+[one sentence summary]
+
+What Changes
+- [change 1]
+- [change 2]
+- [change 3]
+
+Why It Changed
+[explanation of motivation/problem]
+
+Benefits
+- [benefit 1]
+- [benefit 2]
+- [benefit 3]
+```
+
+Do not include any text outside this format.
