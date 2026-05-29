@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-29 14:57:54 WIB
+
+### What changed
+- agents/gameplay_node.py: Added `HISTORY_WINDOW` constant and `_format_agent_history()` helper that pulls each agent's last 6 actions + outcomes from `ps.log`; wired `agent_recent_history` into the action-selection prompt.
+- prompts/gameplay_agent/action.txt: Added `{agent_recent_history}` block plus an explicit nudge instructing the agent not to repeat no-op examines and to try a different object, apply a tool/code/liquid/power, or move via `go <room_id>`.
+
+### Why
+Smoke-test run `smoke_runs/20260529_135622/run_001.txt` showed both party members looping on `examine chains` / `examine rusty_spoon` / `examine window` in the brig for all 40 ticks, never moving to the mess_hall. Root cause: the action-selection prompt was effectively stateless — each agent only saw its teammate's last action, not its own history, so given identical world snapshots it produced identical answers. Surfacing the agent's own recent actions and their outcomes breaks the deterministic loop without any extra state field (it reads from the existing `ps.log`).
+
+---
+
 ## 2026-05-29 11:12:58 WIB
 
 ### What changed
