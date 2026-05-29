@@ -46,7 +46,11 @@ def _format_characters(characters: list[Character]) -> str:
     for i, c in enumerate(characters, 1):
         lines.append(f"  [{i}] {c.name} — {c.role}")
         lines.append(f"       Backstory: {c.backstory}")
-        lines.append(f"       Trait: {c.special_trait}")
+        ab = c.ability
+        uses = "passive" if ab.max_uses < 0 else f"{ab.max_uses} use(s)"
+        lines.append(
+            f"       Ability: {ab.name} [{ab.effect}, {uses}] — {ab.description}"
+        )
     return "\n".join(lines)
 
 

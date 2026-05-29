@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameFlow, GameState, GameWorld, Gate, PlayerState, Room, RoomItem
+from state import GameFlow, GameState, GameWorld, Gate, Room, RoomItem
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
@@ -156,17 +156,6 @@ def _build_world(data: dict) -> GameWorld:
     )
 
 
-def _initial_player_state(world: GameWorld) -> PlayerState:
-    if not world.rooms:
-        return PlayerState()
-    starting_room = world.rooms[0].name
-    return PlayerState(
-        current_room=starting_room,
-        visited={starting_room},
-        items_remaining={r.name: list(r.items) for r in world.rooms},
-    )
-
-
 def game_master_node(state: GameState) -> dict:
     llm = get_llm()
     prompt = GENERATION_PROMPT.format(theme=state.theme)
@@ -180,10 +169,8 @@ def game_master_node(state: GameState) -> dict:
 
     data = _parse_json(response.content) or {}
     world = _build_world(data)
-    player = _initial_player_state(world)
 
     return {
         "messages": [AIMessage(content=response.content)],
-        "world": world,
-        "player": player,
+        "world": world
     }

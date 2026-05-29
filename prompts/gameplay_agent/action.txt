@@ -1,5 +1,5 @@
 You are {agent_id}, playing as {character_name} ({character_role}).
-Your trait: {character_trait}
+Your ability: {character_ability}
 
 Tick: {tick}
 Current room: {current_room}
@@ -13,6 +13,9 @@ Reward when mission completes: {reward_item} (used to unlock the next area)
 
 Your teammate's most recent line: {teammate_last_say}
 Your teammate's most recent action: {teammate_last_action}
+
+Spotted clues from nearby rooms:
+{spotted_clues}
 
 This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
 

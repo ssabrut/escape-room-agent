@@ -19,6 +19,7 @@ from state import (
     RoomItem,
     TickAction,
 )
+from state.game_state import Ability
 from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
@@ -101,6 +102,74 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).strip()
 
 
+def _format_ability(ability: Ability) -> str:
+    uses = "passive" if ability.max_uses < 0 else f"{ability.uses_remaining} use(s) left"
+    return f"{ability.name} [{ability.effect}, {uses}] — {ability.description}"
+
+
+def _consume_use(ability: Ability) -> bool:
+    """Spend one use. Passives (max_uses < 0) always succeed; finite charges decrement."""
+    if ability.max_uses < 0:
+        return True
+    if ability.uses_remaining <= 0:
+        return False
+    ability.uses_remaining -= 1
+    return True
+
+
+def _apply_room_enter_abilities(
+    party: list[PartyMember],
+    world: GameWorld,
+    ps: PartyState,
+    mission: Mission | None,
+) -> None:
+    """Fire each character's on_room_enter ability once per (character, room)."""
+    room = ps.current_room
+    for member in party:
+        ability = member.character.ability
+        if ability.trigger != "on_room_enter":
+            continue
+        fired = ps.ability_rooms_triggered.setdefault(member.character.name, [])
+        if room in fired:
+            continue
+
+        if ability.effect == "reveal_hidden_action" and mission and mission.room == room:
+            remaining = [
+                a
+                for a in mission.required_actions
+                if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])
+            ]
+            if remaining and _consume_use(ability):
+                revealed = remaining[0]
+                ps.completed_actions_by_gate.setdefault(
+                    mission.gate_index, []
+                ).append(revealed)
+                fired.append(room)
+                _stream(
+                    f"     ✦ {member.character.name} used {ability.name}: "
+                    f"revealed and solved '{revealed}'"
+                )
+
+        elif ability.effect == "spot_clue":
+            current_room = next((r for r in world.rooms if r.name == room), None)
+            if not current_room:
+                continue
+            for neighbor_name in current_room.adjacency.values():
+                neighbor = next(
+                    (r for r in world.rooms if r.name == neighbor_name), None
+                )
+                if neighbor and neighbor.items and _consume_use(ability):
+                    item = neighbor.items[0]
+                    clue = f"({neighbor.name}) {item.name}: {item.description}"
+                    ps.spotted_clues.append(clue)
+                    fired.append(room)
+                    _stream(
+                        f"     ✦ {member.character.name} used {ability.name}: "
+                        f"spotted '{item.name}' in {neighbor.name}"
+                    )
+                    break
+
+
 IDLE_ACTION = "wait"
 
 
@@ -180,12 +249,17 @@ def _agent_act(
     )
     completed_str = ", ".join(completed) if completed else "(none yet)"
     action_space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
+    spotted_clues_str = (
+        "\n".join(f"  - {c}" for c in ps.spotted_clues[-3:])
+        if ps.spotted_clues
+        else "(none)"
+    )
 
     prompt = ACTION_PROMPT.format(
         agent_id=agent_id,
         character_name=member.character.name,
         character_role=member.character.role,
-        character_trait=member.character.special_trait,
+        character_ability=_format_ability(member.character.ability),
         tick=ps.tick + 1,
         current_room=ps.current_room,
         room_description=room_description,
@@ -197,6 +271,7 @@ def _agent_act(
         action_space=action_space_str,
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
+        spotted_clues=spotted_clues_str,
     )
 
     llm = get_llm()
@@ -241,6 +316,7 @@ def gameplay_node(state: GameState) -> dict:
     _stream(" LIVE GAMEPLAY")
     _stream("=" * 94)
     _render_party_map(world, ps.current_room)
+    _apply_room_enter_abilities(state.party, world, ps, _current_mission(state.missions, ps))
 
     while not ps.game_over and ps.tick < MAX_TICKS:
         mission = _current_mission(state.missions, ps)
@@ -276,6 +352,7 @@ def gameplay_node(state: GameState) -> dict:
                 f"(en route to {mission.room}; path: {' -> '.join(route)})"
             )
             _render_party_map(world, ps.current_room)
+            _apply_room_enter_abilities(state.party, world, ps, mission)
             continue
 
         # If a mission has no required actions, auto-complete it without spending a tick
@@ -296,6 +373,9 @@ def gameplay_node(state: GameState) -> dict:
                 f"  >>> Auto-completed gate {mission.gate_index}; moved to {next_room}"
             )
             _render_party_map(world, ps.current_room)
+            _apply_room_enter_abilities(
+                state.party, world, ps, _current_mission(state.missions, ps)
+            )
             continue
 
         ps.tick += 1
@@ -315,15 +395,10 @@ def gameplay_node(state: GameState) -> dict:
                 break
 
         tick_actions: list[TickAction] = []
-        for member in state.party:
-            teammate = next(
-                (
-                    teammate_last_per_agent[m.agent_id]
-                    for m in state.party
-                    if m.agent_id != member.agent_id
-                ),
-                None,
-            )
+
+        def _resolve_one(
+            member: PartyMember, teammate: TickAction | None, extra: bool = False
+        ) -> str | None:
             remaining = [
                 a
                 for a in mission.required_actions
@@ -350,6 +425,8 @@ def gameplay_node(state: GameState) -> dict:
                 note = "idle"
             else:
                 note = "no effect"
+            if extra:
+                note = f"{note} (extra action)"
 
             tick_actions.append(
                 TickAction(
@@ -363,10 +440,42 @@ def gameplay_node(state: GameState) -> dict:
             )
 
             marker = "✓" if matched else "·"
+            prefix = "  ↻ " if extra else "     "
             label = f"{member.agent_id} ({member.character.name})"
-            _stream(f"     {marker} {label}")
+            _stream(f"{prefix}{marker} {label}")
             _stream(f"         say   : \"{decided['say']}\"")
             _stream(f"         action: {decided['action']}  ({note})")
+
+            return matched
+
+        for member in state.party:
+            teammate = next(
+                (
+                    teammate_last_per_agent[m.agent_id]
+                    for m in state.party
+                    if m.agent_id != member.agent_id
+                ),
+                None,
+            )
+            _resolve_one(member, teammate)
+
+            ability = member.character.ability
+            if (
+                ability.effect == "extra_action"
+                and ability.trigger == "on_action"
+                and ability.uses_remaining > 0
+            ):
+                still_remaining = [
+                    a
+                    for a in mission.required_actions
+                    if a
+                    not in ps.completed_actions_by_gate.get(mission.gate_index, [])
+                ]
+                if still_remaining and _consume_use(ability):
+                    _stream(
+                        f"     ✦ {member.character.name} used {ability.name}: extra action"
+                    )
+                    _resolve_one(member, teammate, extra=True)
 
         ps.log.extend(tick_actions)
 
@@ -411,6 +520,9 @@ def gameplay_node(state: GameState) -> dict:
                     )
                 )
                 _render_party_map(world, ps.current_room)
+                _apply_room_enter_abilities(
+                    state.party, world, ps, _current_mission(state.missions, ps)
+                )
 
     if not ps.game_over:
         ps.game_over = True

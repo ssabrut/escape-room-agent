@@ -47,6 +47,28 @@ class GameWorld(BaseModel):
     rooms: list[Room] = Field(default_factory=list)
     game_flow: GameFlow = Field(default_factory=GameFlow)
 
+ABILITY_EFFECTS = {
+    "extra_action",
+    "auto_succeed_persuasion",
+    "reveal_hidden_action",
+    "negate_hazard",
+    "spot_clue",
+}
+
+ABILITY_TRIGGERS = {"on_action", "passive", "on_room_enter"}
+
+
+class Ability(BaseModel):
+    """A mechanical ability tied to a character — resolved by the gameplay loop."""
+
+    name: str
+    description: str
+    trigger: str
+    effect: str
+    target: str | None = None
+    max_uses: int = 1
+    uses_remaining: int = 1
+
 
 class Character(BaseModel):
     """A playable character generated for this escape room."""
@@ -54,7 +76,7 @@ class Character(BaseModel):
     name: str
     role: str
     backstory: str
-    special_trait: str
+    ability: Ability
 
 
 class PartyMember(BaseModel):
@@ -103,6 +125,8 @@ class PartyState(BaseModel):
     game_over: bool = False
     victory: bool = False
     log: list[TickAction] = Field(default_factory=list)
+    ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
+    spotted_clues: list[str] = Field(default_factory=list)
 
 
 class GameState(BaseModel):

@@ -9,7 +9,27 @@ Each character must:
 - Fit the theme and setting of the escape room
 - Have a distinct role that offers a different playstyle or perspective
 - Have a short but evocative backstory (1-2 sentences)
-- Have one special trait that is a flavourful one-liner (not a game mechanic, just flavour)
+- Have one Ability picked from the fixed effect list below
+
+Abilities are mechanical, not flavour. Each ability has these fields:
+- name: short evocative name (e.g. "Sleight of Hand", "Iron Will")
+- description: 1 sentence narrative description for the player
+- trigger: one of "on_action" | "passive" | "on_room_enter"
+- effect: one of the 5 effects below (verbatim string)
+- target: optional string scoping the effect (action prefix, NPC disposition, hazard keyword); use null if not applicable
+- max_uses: integer. Use 1 or 2 for active effects, -1 for passives (unlimited)
+
+The 5 effect slots (pick exactly one per character):
+1. "extra_action" — once per game, this character acts TWICE in one tick. Trigger: "on_action". target: null.
+2. "auto_succeed_persuasion" — next persuade attempt against an NPC succeeds regardless of password. Trigger: "on_action". target: optional NPC disposition like "hostile" or null.
+3. "reveal_hidden_action" — on entering a new room, one un-attempted required action is revealed to the party. Trigger: "on_room_enter". target: null.
+4. "negate_hazard" — entering a hazardous room costs 0 HP if this character is present. Trigger: "passive". target: hazard keyword (e.g. "fire", "trap") or null for any.
+5. "spot_clue" — on entering a new room, reveals one item description from an ADJACENT room. Trigger: "on_room_enter". target: null.
+
+Rules:
+- Each of the 3 characters MUST pick a DIFFERENT effect.
+- The ability must fit the character's role (a scholar gets "spot_clue", a brawler gets "negate_hazard", a charmer gets "auto_succeed_persuasion", a rogue gets "extra_action", a scout gets "reveal_hidden_action").
+- Passives ("negate_hazard", "spot_clue") use max_uses = -1. Active effects use max_uses = 1 or 2.
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
@@ -19,7 +39,14 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
             "name": "character name goes here",
             "role": "character role goes here",
             "backstory": "1-2 sentence backstory goes here",
-            "special_trait": "one-liner flavour trait goes here"
+            "ability": {{
+                "name": "ability name goes here",
+                "description": "1 sentence narrative description",
+                "trigger": "on_action",
+                "effect": "extra_action",
+                "target": null,
+                "max_uses": 1
+            }}
         }}
     ]
 }}
