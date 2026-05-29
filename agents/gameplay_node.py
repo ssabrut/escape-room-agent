@@ -76,8 +76,81 @@ class WorldGraph:
 
 # ---------- helpers ----------
 
+PANEL_WIDTH = 94
+
+
 def _stream(line: str = "") -> None:
     print(line, flush=True)
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Naive wrap on spaces, preserving short lines verbatim."""
+    if not text:
+        return [""]
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for w in words:
+        if not current:
+            current = w
+        elif len(current) + 1 + len(w) <= width:
+            current = f"{current} {w}"
+        else:
+            lines.append(current)
+            current = w
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _banner(title: str, char: str = "=") -> None:
+    line = char * PANEL_WIDTH
+    pad = max(0, PANEL_WIDTH - len(title) - 4)
+    _stream("\n" + line)
+    _stream(f"{char}{char} {title}{' ' * pad}{char}{char}")
+    _stream(line)
+
+
+def _panel(label: str, body_lines: list[str]) -> None:
+    """Render a labeled box panel containing one or more body lines."""
+    inner = PANEL_WIDTH - 2
+    top = f"+- {label} " + "-" * max(0, inner - len(label) - 3) + "+"
+    bottom = "+" + "-" * inner + "+"
+    _stream(top)
+    for line in body_lines:
+        for wrapped in _wrap(line, inner - 2):
+            _stream(f"| {wrapped.ljust(inner - 2)} |")
+    _stream(bottom)
+
+
+def _kv_row(label: str, value: str) -> str:
+    return f"  {label:<13}: {value}"
+
+
+def _rule(label: str = "") -> None:
+    if not label:
+        _stream("-" * PANEL_WIDTH)
+        return
+    pad = PANEL_WIDTH - len(label) - 4
+    _stream("-- " + label + " " + "-" * max(0, pad))
+
+
+# Outcome status codes used to badge each action.
+STATUS_OK = "OK"        # state changed (unlocked, took item, moved, info learned)
+STATUS_INFO = "..."     # action ran but nothing changed (examine without new info, idle)
+STATUS_FAIL = "XX"      # action invalid / missing precondition
+
+_OK_KEYWORDS = ("unlocked", "took", "moved", "learned", "flipped", "inserted", "entered", "used")
+_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse")
+
+
+def _classify_outcome(note: str) -> str:
+    n = note.lower()
+    if any(k in n for k in _FAIL_KEYWORDS):
+        return STATUS_FAIL
+    if any(k in n for k in _OK_KEYWORDS):
+        return STATUS_OK
+    return STATUS_INFO
 
 
 def _parse_json(text: str) -> dict | None:
@@ -366,6 +439,18 @@ def _format_objects(visible: list[WorldObject], ps: PartyState) -> str:
     return "\n".join(lines)
 
 
+HISTORY_WINDOW = 6
+
+
+def _format_agent_history(ps: PartyState, agent_id: str, limit: int = HISTORY_WINDOW) -> str:
+    entries = [e for e in ps.log if e.agent_id == agent_id][-limit:]
+    if not entries:
+        return "  (none yet)"
+    return "\n".join(
+        f"  tick {e.tick} [{e.action}] -> {e.note or '(no change)'}" for e in entries
+    )
+
+
 def _agent_act(
     agent_id: str,
     member: PartyMember,
@@ -399,6 +484,7 @@ def _agent_act(
         action_space=space_str,
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
+        agent_recent_history=_format_agent_history(ps, agent_id),
     )
 
     llm = get_llm("player")
@@ -442,10 +528,123 @@ def _check_victory(world: GameWorld, ps: PartyState) -> bool:
 
 def _render_party_map(world: GameWorld, ps: PartyState) -> None:
     _stream()
-    _stream("  ┌── party location ──┐")
+    _rule("PARTY LOCATION")
     render_room_layout(
-        world.rooms, world.objects, party_room=ps.current_room, party_label="★ PARTY"
+        world.rooms, world.objects, party_room=ps.current_room, party_label="* PARTY"
     )
+    _stream()
+
+
+def _render_intro(world: GameWorld, party: list[PartyMember]) -> None:
+    _banner("LIVE GAMEPLAY")
+
+    if world.scenario:
+        _panel("SCENARIO", [world.scenario])
+        _stream()
+    if world.objective:
+        win = world.win_condition
+        win_line = (
+            f"WIN WHEN: {win.object_id} -> {win.state}"
+            if win.object_id
+            else "WIN WHEN: (unknown)"
+        )
+        _panel("OBJECTIVE", [world.objective, win_line])
+        _stream()
+
+    roster_lines = []
+    for m in party:
+        ab = m.character.ability
+        uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s)"
+        roster_lines.append(
+            f"{m.agent_id} -- {m.character.name} ({m.character.role})"
+        )
+        roster_lines.append(
+            f"  Ability: {ab.name} [{ab.effect}, {uses}] -- {ab.description}"
+        )
+    if roster_lines:
+        _panel("PARTY", roster_lines)
+        _stream()
+
+
+def _render_tick_header(world: GameWorld, ps: PartyState, visible: list[WorldObject]) -> None:
+    _stream()
+    _rule(f"TICK {ps.tick} / {MAX_TICKS}")
+
+    room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    loc_body = [ps.current_room]
+    if room and room.description:
+        loc_body.append(room.description)
+    _panel("LOCATION", loc_body)
+
+    win = world.win_condition
+    target = (
+        f"{win.object_id} must reach state '{win.state}'"
+        if win.object_id
+        else "(no win condition resolved)"
+    )
+    cur_state = ps.object_states.get(win.object_id, "?") if win.object_id else "?"
+    _panel("TARGET", [target, f"current state of {win.object_id}: {cur_state}"])
+
+    obj_lines: list[str] = []
+    for o in visible:
+        st = ps.object_states.get(o.id, o.state)
+        tags = []
+        if o.takeable:
+            tags.append("takeable")
+        if o.requires_code:
+            tags.append(f"code({o.code_digits or '?'})")
+        if o.requires_tool:
+            tags.append(f"tool={o.requires_tool}")
+        if o.requires_liquid:
+            tags.append(f"liquid={o.requires_liquid}")
+        if o.requires_power:
+            tags.append(f"power={o.requires_power}")
+        if o.fuses is not None:
+            tags.append("panel")
+        tag_str = f"  <{', '.join(tags)}>" if tags else ""
+        obj_lines.append(f"- {o.id} [{st}]{tag_str}")
+        obj_lines.append(f"    {o.description}")
+    if not obj_lines:
+        obj_lines = ["(no visible objects)"]
+    _panel("VISIBLE OBJECTS", obj_lines)
+
+    _stream(_kv_row("Inventory", ", ".join(ps.inventory) if ps.inventory else "(empty)"))
+    _stream(_kv_row("Known clues", ", ".join(ps.known_info) if ps.known_info else "(none)"))
+    powered = ", ".join(sorted(ps.power_active)) if ps.power_active else "(none)"
+    _stream(_kv_row("Power lines", powered))
+    _stream(_kv_row("Visited rooms", ", ".join(sorted(ps.visited))))
+
+
+def _render_agent_action(
+    member: PartyMember, decided: dict, note: str
+) -> None:
+    ab = member.character.ability
+    uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s) left"
+    status = _classify_outcome(note)
+    body = [
+        f"Ability: {ab.name} [{ab.effect}, {uses}]",
+        f"SAY: \"{decided['say']}\"" if decided["say"] else "SAY: (silent)",
+        f"DO : {decided['action']}",
+        f"{status} : {note}",
+    ]
+    _panel(f"{member.agent_id} -- {member.character.name} ({member.character.role})", body)
+
+
+def _render_final(ps: PartyState, world: GameWorld) -> None:
+    _banner("FINAL RESULT")
+    outcome = "VICTORY" if ps.victory else f"ENDED (final room: {ps.current_room})"
+    inv = ", ".join(ps.inventory) if ps.inventory else "(empty)"
+    known = ", ".join(ps.known_info) if ps.known_info else "(none)"
+    win_obj_state = ps.object_states.get(world.win_condition.object_id, "?") if world.win_condition.object_id else "?"
+    body = [
+        f"Outcome      : {outcome}",
+        f"Ticks used   : {ps.tick} / {MAX_TICKS}",
+        f"Inventory    : {inv}",
+        f"Known clues  : {known}",
+        f"Visited      : {', '.join(sorted(ps.visited))}",
+        f"Win object   : {world.win_condition.object_id} (state: {win_obj_state}, target: {world.win_condition.state})",
+    ]
+    _panel("SUMMARY", body)
     _stream()
 
 
@@ -459,16 +658,15 @@ def gameplay_node(state: GameState) -> dict:
     ps = state.party_state or _build_initial_party_state(world)
     new_messages: list[AIMessage] = []
 
-    _stream("\n" + "=" * 94)
-    _stream(" LIVE GAMEPLAY")
-    _stream("=" * 94)
+    _render_intro(world, state.party)
     _render_party_map(world, ps)
 
     while not ps.game_over and ps.tick < MAX_TICKS:
         if _check_victory(world, ps):
             ps.game_over = True
             ps.victory = True
-            _stream(f"  >>> VICTORY at tick {ps.tick}")
+            _banner("VICTORY", char="*")
+            _stream(f"  Party achieved the win condition at tick {ps.tick}.")
             new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
             break
 
@@ -476,12 +674,7 @@ def gameplay_node(state: GameState) -> dict:
         visible = _objects_in_room(world, ps)
         action_space = _build_action_space(world, ps, visible)
 
-        _stream(
-            f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  "
-            f"target: {world.win_condition.object_id} → {world.win_condition.state}"
-        )
-        _stream(f"     visible objects: {[o.id for o in visible]}")
-        _stream(f"     inventory: {ps.inventory or '(empty)'}  known: {ps.known_info or '(none)'}")
+        _render_tick_header(world, ps, visible)
 
         teammate_last_per_agent = {m.agent_id: None for m in state.party}
         for entry in reversed(ps.log):
@@ -489,6 +682,11 @@ def gameplay_node(state: GameState) -> dict:
                 teammate_last_per_agent[entry.agent_id] = entry
             if all(v is not None for v in teammate_last_per_agent.values()):
                 break
+
+        prev_room = ps.current_room
+        prev_inv = list(ps.inventory)
+        prev_known = list(ps.known_info)
+        prev_power = set(ps.power_active)
 
         tick_actions: list[TickAction] = []
         for member in state.party:
@@ -514,24 +712,41 @@ def gameplay_node(state: GameState) -> dict:
                     note=note,
                 )
             )
-            label = f"{member.agent_id} ({member.character.name})"
-            _stream(f"     · {label}")
-            _stream(f"         say   : \"{decided['say']}\"")
-            _stream(f"         action: {decided['action']}  ({note})")
+            _render_agent_action(member, decided, note)
 
             if _check_victory(world, ps):
                 break
 
-            # Recompute action space mid-tick so the second agent sees updates from the first.
             visible = _objects_in_room(world, ps)
             action_space = _build_action_space(world, ps, visible)
+
+        # Highlight state changes that happened this tick.
+        callouts: list[str] = []
+        if ps.current_room != prev_room:
+            callouts.append(f">> Party moved: {prev_room} -> {ps.current_room}")
+        gained = [i for i in ps.inventory if i not in prev_inv]
+        for g in gained:
+            callouts.append(f">> Picked up: {g}")
+        learned = [k for k in ps.known_info if k not in prev_known]
+        for l in learned:
+            callouts.append(f">> Learned clue: {l}")
+        new_power = ps.power_active - prev_power
+        for p in sorted(new_power):
+            callouts.append(f">> Power online: {p}")
+        if callouts:
+            _stream()
+            for c in callouts:
+                _stream(f"  {c}")
 
         ps.log.extend(tick_actions)
 
     if not ps.game_over:
         ps.game_over = True
-        _stream(f"  >>> Stopped: hit MAX_TICKS={MAX_TICKS} without victory")
+        _banner("TIME UP", char="*")
+        _stream(f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition.")
         new_messages.append(AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}"))
+
+    _render_final(ps, world)
 
     return {
         "messages": new_messages,

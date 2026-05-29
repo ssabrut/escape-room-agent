@@ -17,6 +17,11 @@ Known clues / discovered info: {known_info}
 Your teammate's most recent line: {teammate_last_say}
 Your teammate's most recent action: {teammate_last_action}
 
+Your own recent actions (most recent last) and their outcomes:
+{agent_recent_history}
+
+If an action above produced no new information ("examined X" with no clue learned), repeating it will produce the same nothing. Try a different object, apply a tool/code/liquid/power if you can, or move to an adjacent room via "go <room_id>".
+
 This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
 
 Available actions:
