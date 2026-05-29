@@ -123,10 +123,6 @@ def _panel(label: str, body_lines: list[str]) -> None:
     _stream(bottom)
 
 
-def _kv_row(label: str, value: str) -> str:
-    return f"  {label:<13}: {value}"
-
-
 def _rule(label: str = "") -> None:
     if not label:
         _stream("-" * PANEL_WIDTH)
@@ -538,81 +534,80 @@ def _render_party_map(world: GameWorld, ps: PartyState) -> None:
 def _render_intro(world: GameWorld, party: list[PartyMember]) -> None:
     _banner("LIVE GAMEPLAY")
 
-    if world.scenario:
-        _panel("SCENARIO", [world.scenario])
-        _stream()
-    if world.objective:
-        win = world.win_condition
-        win_line = (
-            f"WIN WHEN: {win.object_id} -> {win.state}"
-            if win.object_id
-            else "WIN WHEN: (unknown)"
-        )
-        _panel("OBJECTIVE", [world.objective, win_line])
-        _stream()
-
-    roster_lines = []
-    for m in party:
-        ab = m.character.ability
-        uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s)"
-        roster_lines.append(
-            f"{m.agent_id} -- {m.character.name} ({m.character.role})"
-        )
-        roster_lines.append(
-            f"  Ability: {ab.name} [{ab.effect}, {uses}] -- {ab.description}"
-        )
-    if roster_lines:
-        _panel("PARTY", roster_lines)
+    win = world.win_condition
+    if win.object_id:
+        _panel("OBJECTIVE", [f"WIN WHEN: {win.object_id} -> {win.state}"])
         _stream()
 
 
-def _render_tick_header(world: GameWorld, ps: PartyState, visible: list[WorldObject]) -> None:
+def _interacted_object_ids(ps: PartyState) -> set[str]:
+    return {entry.target_object for entry in ps.log if entry.target_object}
+
+
+def _compute_map_flow(world: GameWorld, ps: PartyState) -> list[str]:
+    """BFS path from the party's current room to the room containing the win object."""
+    win = world.win_condition
+    if not win.object_id:
+        return []
+    win_obj = next((o for o in world.objects if o.id == win.object_id), None)
+    if win_obj is None:
+        return []
+    target_room = win_obj.location
+    if target_room not in {r.id for r in world.rooms}:
+        return []
+    graph = WorldGraph(world)
+    return graph.path(ps.current_room, target_room)
+
+
+def _render_tick_header(
+    world: GameWorld,
+    ps: PartyState,
+    party: list[PartyMember],
+) -> None:
     _stream()
     _rule(f"TICK {ps.tick} / {MAX_TICKS}")
 
-    room = next((r for r in world.rooms if r.id == ps.current_room), None)
-    loc_body = [ps.current_room]
-    if room and room.description:
-        loc_body.append(room.description)
-    _panel("LOCATION", loc_body)
+    interacted = _interacted_object_ids(ps)
 
-    win = world.win_condition
-    target = (
-        f"{win.object_id} must reach state '{win.state}'"
-        if win.object_id
-        else "(no win condition resolved)"
+    flow = _compute_map_flow(world, ps)
+    flow_str = " -> ".join(flow) if flow else "(no route)"
+    _panel("MAP FLOW", [f"start -> end: {flow_str}"])
+
+    _stream()
+    _rule("MAP LAYOUT")
+    render_room_layout(
+        world.rooms,
+        world.objects,
+        party_room=ps.current_room,
+        party_label="* PARTY",
+        interacted_ids=interacted,
+        object_states=ps.object_states,
     )
-    cur_state = ps.object_states.get(win.object_id, "?") if win.object_id else "?"
-    _panel("TARGET", [target, f"current state of {win.object_id}: {cur_state}"])
+    _stream()
 
-    obj_lines: list[str] = []
-    for o in visible:
-        st = ps.object_states.get(o.id, o.state)
-        tags = []
-        if o.takeable:
-            tags.append("takeable")
-        if o.requires_code:
-            tags.append(f"code({o.code_digits or '?'})")
-        if o.requires_tool:
-            tags.append(f"tool={o.requires_tool}")
-        if o.requires_liquid:
-            tags.append(f"liquid={o.requires_liquid}")
-        if o.requires_power:
-            tags.append(f"power={o.requires_power}")
-        if o.fuses is not None:
-            tags.append("panel")
-        tag_str = f"  <{', '.join(tags)}>" if tags else ""
-        obj_lines.append(f"- {o.id} [{st}]{tag_str}")
-        obj_lines.append(f"    {o.description}")
-    if not obj_lines:
-        obj_lines = ["(no visible objects)"]
-    _panel("VISIBLE OBJECTS", obj_lines)
+    map_lines: list[str] = ["### Map"]
+    for room in world.rooms:
+        marker = " (party here)" if room.id == ps.current_room else ""
+        map_lines.append(f"* {room.id}{marker}")
+        room_objects = [o for o in world.objects if o.location == room.id]
+        if room_objects:
+            map_lines.append("    * objects:")
+            for o in room_objects:
+                tick_mark = "[x]" if o.id in interacted else "[ ]"
+                st = ps.object_states.get(o.id, o.state)
+                map_lines.append(f"        * {tick_mark} {o.id} [{st}]")
+        else:
+            map_lines.append("    * objects: (none)")
+    _panel("MAP", map_lines)
 
-    _stream(_kv_row("Inventory", ", ".join(ps.inventory) if ps.inventory else "(empty)"))
-    _stream(_kv_row("Known clues", ", ".join(ps.known_info) if ps.known_info else "(none)"))
-    powered = ", ".join(sorted(ps.power_active)) if ps.power_active else "(none)"
-    _stream(_kv_row("Power lines", powered))
-    _stream(_kv_row("Visited rooms", ", ".join(sorted(ps.visited))))
+    state_lines: list[str] = ["### Current State", "* agent locations:"]
+    for member in party:
+        state_lines.append(
+            f"    * {member.agent_id} ({member.character.name}) -> {ps.current_room}"
+        )
+    inv = ", ".join(ps.inventory) if ps.inventory else "(empty)"
+    state_lines.append(f"* shared inventory: {inv}")
+    _panel("CURRENT STATE", state_lines)
 
 
 def _render_agent_action(
@@ -623,7 +618,6 @@ def _render_agent_action(
     status = _classify_outcome(note)
     body = [
         f"Ability: {ab.name} [{ab.effect}, {uses}]",
-        f"SAY: \"{decided['say']}\"" if decided["say"] else "SAY: (silent)",
         f"DO : {decided['action']}",
         f"{status} : {note}",
     ]
@@ -674,7 +668,7 @@ def gameplay_node(state: GameState) -> dict:
         visible = _objects_in_room(world, ps)
         action_space = _build_action_space(world, ps, visible)
 
-        _render_tick_header(world, ps, visible)
+        _render_tick_header(world, ps, state.party)
 
         teammate_last_per_agent = {m.agent_id: None for m in state.party}
         for entry in reversed(ps.log):

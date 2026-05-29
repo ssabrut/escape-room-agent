@@ -56,12 +56,18 @@ def _place_rooms(rooms: list[Room]) -> dict[str, tuple[int, int]]:
 
 
 def _build_cell(
-    room: Room, objects_here: list[WorldObject], party_marker: str = ""
+    room: Room,
+    objects_here: list[WorldObject],
+    party_marker: str = "",
+    interacted_ids: set[str] | None = None,
+    object_states: dict[str, str] | None = None,
 ) -> list[str]:
     """Build a fixed CELL_H-line representation of one room."""
     inner = CELL_W - 2
     h, v = "─", "│"
     tl, tr, bl, br, lm, rm = "┌", "┐", "└", "┘", "├", "┤"
+    interacted_ids = interacted_ids or set()
+    object_states = object_states or {}
 
     name_text = room.id.upper()
     if party_marker:
@@ -76,7 +82,9 @@ def _build_cell(
 
     obj_lines: list[str] = []
     for obj in objects_here[:2]:
-        label = f"  [*] {obj.id}"[: inner - 1]
+        mark = "[x]" if obj.id in interacted_ids else "[ ]"
+        state = object_states.get(obj.id, obj.state)
+        label = f"  {mark} {obj.id} ({state})"[: inner - 1]
         obj_lines.append(v + f" {label}".ljust(inner) + v)
 
     if not obj_lines:
@@ -120,6 +128,8 @@ def render_room_layout(
     objects: list[WorldObject] | None = None,
     party_room: str = "",
     party_label: str = "★",
+    interacted_ids: set[str] | None = None,
+    object_states: dict[str, str] | None = None,
 ) -> None:
     if not rooms:
         print("  (no rooms to display)")
@@ -150,7 +160,13 @@ def render_room_layout(
         marker = party_label if rid == party_room else ""
         _blit(
             canvas,
-            _build_cell(room, objects_by_room.get(rid, []), marker),
+            _build_cell(
+                room,
+                objects_by_room.get(rid, []),
+                marker,
+                interacted_ids=interacted_ids,
+                object_states=object_states,
+            ),
             cell_x,
             cell_y,
         )
