@@ -169,7 +169,7 @@ def _build_world(data: dict) -> GameWorld:
 
 
 def game_master_node(state: GameState) -> dict:
-    llm = get_llm()
+    llm = get_llm("game_master")
     prompt = GENERATION_PROMPT.format(theme=state.theme)
 
     response = llm.invoke(

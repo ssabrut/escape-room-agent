@@ -401,7 +401,7 @@ def _agent_act(
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
     )
 
-    llm = get_llm()
+    llm = get_llm("player")
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )

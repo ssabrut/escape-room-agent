@@ -74,7 +74,7 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
     if not available:
         return None
 
-    llm = get_llm()
+    llm = get_llm("player")
     prompt = SELECTION_PROMPT.format(
         agent_id=agent_id,
         scenario=world.scenario if world else "",

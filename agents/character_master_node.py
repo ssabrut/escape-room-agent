@@ -88,7 +88,7 @@ def _build_characters(data: dict) -> list[Character]:
 
 
 def character_master_node(state: GameState) -> dict:
-    llm = get_llm()
+    llm = get_llm("game_master")
     world = state.world
 
     room_names = ", ".join(r.id for r in world.rooms) if world else ""
