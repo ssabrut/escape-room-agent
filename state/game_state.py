@@ -48,18 +48,6 @@ class GameWorld(BaseModel):
     game_flow: GameFlow = Field(default_factory=GameFlow)
 
 
-class PlayerState(BaseModel):
-    """Mutable runtime state — updated as the player acts."""
-
-    current_room: str = ""
-    inventory: list[RoomItem] = Field(default_factory=list)
-    visited: set[str] = Field(default_factory=set)
-    # Items still present in each room, keyed by room name
-    items_remaining: dict[str, list[RoomItem]] = Field(default_factory=dict)
-    turn_count: int = 0
-    game_over: bool = False
-
-
 class Character(BaseModel):
     """A playable character generated for this escape room."""
 
@@ -123,7 +111,6 @@ class GameState(BaseModel):
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
     theme: str = "mystery"
     world: GameWorld | None = None
-    player: PlayerState | None = None
     characters: list[Character] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
     missions: list[Mission] = Field(default_factory=list)
