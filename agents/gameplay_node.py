@@ -1,4 +1,10 @@
-"""Gameplay node — runs the shared-state co-op loop where both party agents act each tick."""
+"""Gameplay node — co-op loop driven by the object-graph world model.
+
+Each tick every party member picks one action from a discrete, mechanically
+generated action space. The engine resolves the action against the target
+object's preconditions and mutates runtime state in party_state. Victory fires
+when the win_condition object reaches its target state.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +19,10 @@ from prompts import load_prompt
 from state import (
     GameState,
     GameWorld,
-    Mission,
     PartyMember,
     PartyState,
-    RoomItem,
     TickAction,
+    WorldObject,
 )
 from state.game_state import Ability
 from visualization import render_room_layout
@@ -25,21 +30,21 @@ from visualization import render_room_layout
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
 
-MAX_TICKS = 30
+MAX_TICKS = 40
+IDLE_ACTION = "wait"
 
+HIDDEN_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
+UNLOCKED_STATES = {"unlocked", "open", "visible"}
+
+
+# ---------- world graph ----------
 
 class WorldGraph:
-    """Strict directed adjacency graph built from world.rooms.
-
-    Edges are taken literally from each room's adjacency dict — if A lists B
-    as a neighbor but B doesn't list A, you cannot walk back from B to A.
-    """
-
     def __init__(self, world: GameWorld) -> None:
         self._adj: dict[str, list[str]] = {}
-        names = {r.name for r in world.rooms}
+        ids = {r.id for r in world.rooms}
         for room in world.rooms:
-            self._adj[room.name] = [n for n in room.adjacency.values() if n in names]
+            self._adj[room.id] = [n for n in room.adjacency.values() if n in ids]
 
     def neighbors(self, room: str) -> list[str]:
         return list(self._adj.get(room, []))
@@ -69,16 +74,10 @@ class WorldGraph:
         return out
 
 
+# ---------- helpers ----------
+
 def _stream(line: str = "") -> None:
-    """Print immediately so live gameplay shows up in real time."""
     print(line, flush=True)
-
-
-def _render_party_map(world: GameWorld, current_room: str) -> None:
-    _stream()
-    _stream("  ┌── party location ──┐")
-    render_room_layout(world.rooms, party_room=current_room, party_label="★ PARTY")
-    _stream()
 
 
 def _parse_json(text: str) -> dict | None:
@@ -99,7 +98,7 @@ def _parse_json(text: str) -> dict | None:
 
 
 def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).strip()
+    return re.sub(r"[^a-z0-9_ ]+", " ", text.lower()).strip()
 
 
 def _format_ability(ability: Ability) -> str:
@@ -108,7 +107,6 @@ def _format_ability(ability: Ability) -> str:
 
 
 def _consume_use(ability: Ability) -> bool:
-    """Spend one use. Passives (max_uses < 0) always succeed; finite charges decrement."""
     if ability.max_uses < 0:
         return True
     if ability.uses_remaining <= 0:
@@ -117,85 +115,234 @@ def _consume_use(ability: Ability) -> bool:
     return True
 
 
-def _apply_room_enter_abilities(
-    party: list[PartyMember],
-    world: GameWorld,
-    ps: PartyState,
-    mission: Mission | None,
-) -> None:
-    """Fire each character's on_room_enter ability once per (character, room)."""
-    room = ps.current_room
-    for member in party:
-        ability = member.character.ability
-        if ability.trigger != "on_room_enter":
-            continue
-        fired = ps.ability_rooms_triggered.setdefault(member.character.name, [])
-        if room in fired:
-            continue
+# ---------- object visibility ----------
 
-        if ability.effect == "reveal_hidden_action" and mission and mission.room == room:
-            remaining = [
-                a
-                for a in mission.required_actions
-                if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])
-            ]
-            if remaining and _consume_use(ability):
-                revealed = remaining[0]
-                ps.completed_actions_by_gate.setdefault(
-                    mission.gate_index, []
-                ).append(revealed)
-                fired.append(room)
-                _stream(
-                    f"     ✦ {member.character.name} used {ability.name}: "
-                    f"revealed and solved '{revealed}'"
-                )
+def _object_visible(obj: WorldObject, ps: PartyState, parent_lookup: dict[str, WorldObject]) -> bool:
+    """An object is visible if it (or its container chain) resolves up to the current room."""
+    state = ps.object_states.get(obj.id, obj.state)
+    if state == "hidden":
+        return False
 
-        elif ability.effect == "spot_clue":
-            current_room = next((r for r in world.rooms if r.name == room), None)
-            if not current_room:
-                continue
-            for neighbor_name in current_room.adjacency.values():
-                neighbor = next(
-                    (r for r in world.rooms if r.name == neighbor_name), None
-                )
-                if neighbor and neighbor.items and _consume_use(ability):
-                    item = neighbor.items[0]
-                    clue = f"({neighbor.name}) {item.name}: {item.description}"
-                    ps.spotted_clues.append(clue)
-                    fired.append(room)
-                    _stream(
-                        f"     ✦ {member.character.name} used {ability.name}: "
-                        f"spotted '{item.name}' in {neighbor.name}"
-                    )
-                    break
+    cursor = obj
+    while True:
+        if cursor.location == ps.current_room:
+            return True
+        parent = parent_lookup.get(cursor.location)
+        if parent is None:
+            return False
+        parent_state = ps.object_states.get(parent.id, parent.state)
+        if parent_state in HIDDEN_STATES:
+            return False
+        cursor = parent
 
 
-IDLE_ACTION = "wait"
+def _objects_in_room(
+    world: GameWorld, ps: PartyState
+) -> list[WorldObject]:
+    parent_lookup = {o.id: o for o in world.objects}
+    return [o for o in world.objects if _object_visible(o, ps, parent_lookup)]
 
 
-def _build_action_space(remaining: list[str]) -> list[str]:
-    """Deterministic discrete action set the agent must pick from this tick.
+# ---------- action space ----------
 
-    Stable order: remaining required actions first (in mission order), then idle.
-    Duplicates removed while preserving order.
-    """
+def _verbs_for(obj: WorldObject, ps: PartyState) -> list[str]:
+    state = ps.object_states.get(obj.id, obj.state)
+    verbs: list[str] = [f"examine {obj.id}"]
+    if obj.takeable and state in UNLOCKED_STATES and obj.id not in ps.inventory:
+        verbs.append(f"take {obj.id}")
+    if obj.requires_code and state in HIDDEN_STATES:
+        verbs.append(f"enter_code {obj.id}")
+    if obj.requires_tool and state in HIDDEN_STATES:
+        verbs.append(f"use_tool {obj.id}")
+    if obj.requires_liquid and state in HIDDEN_STATES:
+        verbs.append(f"insert_liquid {obj.id}")
+    if obj.fuses is not None:
+        for label in obj.fuses:
+            verbs.append(f"flip_fuse {obj.id} {label}")
+    if obj.requires_power and state in HIDDEN_STATES:
+        verbs.append(f"open {obj.id}")
+    return verbs
+
+
+def _build_action_space(
+    world: GameWorld, ps: PartyState, visible: list[WorldObject]
+) -> list[str]:
     seen: set[str] = set()
     space: list[str] = []
-    for a in remaining:
-        if a not in seen:
-            seen.add(a)
-            space.append(a)
+    for obj in visible:
+        for v in _verbs_for(obj, ps):
+            if v not in seen:
+                seen.add(v)
+                space.append(v)
+    current_room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    if current_room:
+        for direction, neighbor in current_room.adjacency.items():
+            move = f"go {neighbor}"
+            if move not in seen:
+                seen.add(move)
+                space.append(move)
     if IDLE_ACTION not in seen:
         space.append(IDLE_ACTION)
     return space
 
 
-def _resolve_choice(response: str, space: list[str]) -> str:
-    """Map an LLM response to an entry in the action space.
+# ---------- action resolution ----------
 
-    Accepts either an index (1-based) or a verbatim/normalized match. Falls back to
-    the idle action when nothing resolves — keeping selection fully deterministic.
-    """
+def _resolve_examine(obj: WorldObject, ps: PartyState) -> str:
+    if obj.contains_info and obj.contains_info not in ps.known_info:
+        ps.known_info.append(obj.contains_info)
+        return f"examined {obj.id}; learned {obj.contains_info}"
+    return f"examined {obj.id}"
+
+
+def _resolve_take(obj: WorldObject, ps: PartyState) -> str:
+    if not obj.takeable:
+        return f"cannot take {obj.id}"
+    state = ps.object_states.get(obj.id, obj.state)
+    if state in HIDDEN_STATES:
+        return f"{obj.id} not accessible"
+    if obj.id in ps.inventory:
+        return f"{obj.id} already carried"
+    ps.inventory.append(obj.id)
+    return f"took {obj.id}"
+
+
+def _resolve_enter_code(obj: WorldObject, ps: PartyState) -> str:
+    if not obj.requires_code:
+        return f"{obj.id} has no keypad"
+    state = ps.object_states.get(obj.id, obj.state)
+    if state not in HIDDEN_STATES:
+        return f"{obj.id} already open"
+    if obj.requires_code in ps.known_info or obj.requires_code in (
+        info.split("_")[-1] for info in ps.known_info
+    ):
+        ps.object_states[obj.id] = "unlocked"
+        return f"entered code {obj.requires_code} → {obj.id} unlocked"
+    return f"code unknown — examine clues first"
+
+
+def _resolve_use_tool(obj: WorldObject, ps: PartyState) -> str:
+    if not obj.requires_tool:
+        return f"{obj.id} needs no tool"
+    state = ps.object_states.get(obj.id, obj.state)
+    if state not in HIDDEN_STATES:
+        return f"{obj.id} already open"
+    if obj.requires_tool not in ps.inventory:
+        return f"missing tool {obj.requires_tool}"
+    ps.object_states[obj.id] = "unlocked"
+    return f"used {obj.requires_tool} on {obj.id} → unlocked"
+
+
+def _liquid_token_matches(required: str, text: str) -> bool:
+    """Match e.g. 'pH_7' against 'pH 7' or 'ph7' inside a description/id."""
+    norm_req = re.sub(r"[^a-z0-9]+", "", required.lower())
+    norm_text = re.sub(r"[^a-z0-9]+", "", text.lower())
+    return norm_req in norm_text
+
+
+def _resolve_insert_liquid(
+    obj: WorldObject, ps: PartyState, by_id: dict[str, WorldObject]
+) -> str:
+    if not obj.requires_liquid:
+        return f"{obj.id} has no liquid slot"
+    state = ps.object_states.get(obj.id, obj.state)
+    if state not in HIDDEN_STATES:
+        return f"{obj.id} already open"
+    required = obj.requires_liquid
+    for held_id in ps.inventory:
+        held = by_id.get(held_id)
+        haystack = " ".join(
+            [held_id]
+            + ([held.description] if held else [])
+        )
+        if _liquid_token_matches(required, haystack):
+            ps.object_states[obj.id] = "unlocked"
+            return f"inserted matching liquid ({required}) into {obj.id} → unlocked"
+    return f"no matching liquid for {required}"
+
+
+def _resolve_flip_fuse(obj: WorldObject, label: str, ps: PartyState) -> str:
+    state = ps.object_states.get(obj.id, obj.state)
+    if state in HIDDEN_STATES:
+        return f"{obj.id} still locked"
+    if obj.fuses is None or label not in obj.fuses:
+        return f"no fuse {label} on {obj.id}"
+    current = ps.fuse_states.setdefault(obj.id, dict(obj.fuses))
+    new_state = "OFF" if current.get(label, "OFF") == "ON" else "ON"
+    current[label] = new_state
+    power_token = f"sekring_{label}_{new_state}"
+    if new_state == "ON":
+        ps.power_active.add(power_token)
+        opposite = f"sekring_{label}_OFF"
+        ps.power_active.discard(opposite)
+    else:
+        ps.power_active.discard(power_token)
+    return f"flipped fuse {label} on {obj.id} → {new_state}"
+
+
+def _resolve_open(obj: WorldObject, ps: PartyState) -> str:
+    if not obj.requires_power:
+        return f"{obj.id} needs no power"
+    state = ps.object_states.get(obj.id, obj.state)
+    if state not in HIDDEN_STATES:
+        return f"{obj.id} already open"
+    if obj.requires_power in ps.power_active:
+        ps.object_states[obj.id] = "unlocked"
+        return f"power {obj.requires_power} satisfied → {obj.id} unlocked"
+    return f"missing power {obj.requires_power}"
+
+
+def _resolve_action(
+    action: str, world: GameWorld, ps: PartyState
+) -> tuple[str, str | None]:
+    """Return (outcome note, target_object_id or None)."""
+    parts = action.split()
+    if not parts:
+        return ("idle", None)
+    verb = parts[0]
+
+    by_id = {o.id: o for o in world.objects}
+
+    if verb == IDLE_ACTION:
+        return ("idle", None)
+    if verb == "go" and len(parts) >= 2:
+        dest = parts[1]
+        if dest in {r.id for r in world.rooms}:
+            current = next((r for r in world.rooms if r.id == ps.current_room), None)
+            if current and dest in current.adjacency.values():
+                ps.current_room = dest
+                ps.visited.add(dest)
+                return (f"moved to {dest}", None)
+            return (f"no direct route to {dest}", None)
+        return (f"unknown room {dest}", None)
+
+    if len(parts) < 2:
+        return ("no target", None)
+    target_id = parts[1]
+    obj = by_id.get(target_id)
+    if obj is None:
+        return (f"unknown object {target_id}", None)
+
+    if verb == "examine":
+        return (_resolve_examine(obj, ps), obj.id)
+    if verb == "take":
+        return (_resolve_take(obj, ps), obj.id)
+    if verb == "enter_code":
+        return (_resolve_enter_code(obj, ps), obj.id)
+    if verb == "use_tool":
+        return (_resolve_use_tool(obj, ps), obj.id)
+    if verb == "insert_liquid":
+        return (_resolve_insert_liquid(obj, ps, by_id), obj.id)
+    if verb == "flip_fuse" and len(parts) >= 3:
+        return (_resolve_flip_fuse(obj, parts[2], ps), obj.id)
+    if verb == "open":
+        return (_resolve_open(obj, ps), obj.id)
+    return (f"unknown verb {verb}", obj.id)
+
+
+# ---------- llm action selection ----------
+
+def _resolve_choice(response: str, space: list[str]) -> str:
     text = response.strip()
     idx_match = re.match(r"^\s*(\d+)\s*$", text)
     if idx_match:
@@ -209,23 +356,14 @@ def _resolve_choice(response: str, space: list[str]) -> str:
     return IDLE_ACTION
 
 
-def _current_mission(
-    missions: list[Mission], party_state: PartyState
-) -> Mission | None:
-    for m in sorted(missions, key=lambda x: x.gate_index):
-        if m.gate_index not in party_state.completed_gates:
-            return m
-    return None
-
-
-def _build_initial_party_state(world: GameWorld) -> PartyState:
-    starting_room = world.game_flow.starting_room or (
-        world.rooms[0].name if world.rooms else ""
-    )
-    return PartyState(
-        current_room=starting_room,
-        visited={starting_room} if starting_room else set(),
-    )
+def _format_objects(visible: list[WorldObject], ps: PartyState) -> str:
+    if not visible:
+        return "  (none visible)"
+    lines = []
+    for o in visible:
+        state = ps.object_states.get(o.id, o.state)
+        lines.append(f"  - {o.id} [{state}]: {o.description}")
+    return "\n".join(lines)
 
 
 def _agent_act(
@@ -233,27 +371,17 @@ def _agent_act(
     member: PartyMember,
     world: GameWorld,
     ps: PartyState,
-    mission: Mission,
     action_space: list[str],
+    visible: list[WorldObject],
     teammate_last: TickAction | None,
 ) -> dict:
-    room = next((r for r in world.rooms if r.name == ps.current_room), None)
-    room_description = room.description if room else ""
+    room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
+    known_str = ", ".join(ps.known_info) if ps.known_info else "(none)"
+    space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
 
-    completed = ps.completed_actions_by_gate.get(mission.gate_index, [])
-    inventory_str = (
-        ", ".join(i.name for i in ps.inventory) if ps.inventory else "(empty)"
-    )
-    required_str = (
-        ", ".join(mission.required_actions) if mission.required_actions else "(none)"
-    )
-    completed_str = ", ".join(completed) if completed else "(none yet)"
-    action_space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
-    spotted_clues_str = (
-        "\n".join(f"  - {c}" for c in ps.spotted_clues[-3:])
-        if ps.spotted_clues
-        else "(none)"
-    )
+    win = world.win_condition
+    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
 
     prompt = ACTION_PROMPT.format(
         agent_id=agent_id,
@@ -262,130 +390,98 @@ def _agent_act(
         character_ability=_format_ability(member.character.ability),
         tick=ps.tick + 1,
         current_room=ps.current_room,
-        room_description=room_description,
+        room_description=room.description if room else "",
+        objective=world.objective,
+        win_condition=win_str,
+        objects_in_room=_format_objects(visible, ps),
         inventory=inventory_str,
-        mission_description=mission.description,
-        required_actions=required_str,
-        completed_actions=completed_str,
-        reward_item=mission.reward_item,
-        action_space=action_space_str,
+        known_info=known_str,
+        action_space=space_str,
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
-        spotted_clues=spotted_clues_str,
     )
 
     llm = get_llm()
     response = llm.invoke(
-        [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
     data = _parse_json(response.content) or {}
     raw_choice = str(data.get("action", "")).strip()
-    resolved = _resolve_choice(raw_choice, action_space)
     return {
         "say": str(data.get("say", "")).strip(),
-        "action": resolved,
+        "action": _resolve_choice(raw_choice, action_space),
     }
 
 
-def _next_room_for_completed_mission(world: GameWorld, mission: Mission) -> str | None:
-    if mission.unlocks_exit_to == "VICTORY":
-        return None
-    if any(r.name == mission.unlocks_exit_to for r in world.rooms):
-        return mission.unlocks_exit_to
-    return None
+# ---------- initial state ----------
 
+def _build_initial_party_state(world: GameWorld) -> PartyState:
+    starting_room = world.rooms[0].id if world.rooms else ""
+    object_states = {o.id: o.state for o in world.objects}
+    fuse_states = {o.id: dict(o.fuses) for o in world.objects if o.fuses is not None}
+    power_active: set[str] = set()
+    for panel_id, fuses in fuse_states.items():
+        for label, state in fuses.items():
+            if state == "ON":
+                power_active.add(f"sekring_{label}_ON")
+    return PartyState(
+        current_room=starting_room,
+        visited={starting_room} if starting_room else set(),
+        object_states=object_states,
+        fuse_states=fuse_states,
+        power_active=power_active,
+    )
+
+
+def _check_victory(world: GameWorld, ps: PartyState) -> bool:
+    win = world.win_condition
+    if not win.object_id:
+        return False
+    return ps.object_states.get(win.object_id) == win.state
+
+
+def _render_party_map(world: GameWorld, ps: PartyState) -> None:
+    _stream()
+    _stream("  ┌── party location ──┐")
+    render_room_layout(
+        world.rooms, world.objects, party_room=ps.current_room, party_label="★ PARTY"
+    )
+    _stream()
+
+
+# ---------- main node ----------
 
 def gameplay_node(state: GameState) -> dict:
     world = state.world
-    if not world or not state.party or not state.missions:
-        # Fan-in barrier: this node has two incoming edges (player_agent_2 and
-        # mission_master). LangGraph schedules it once per completed predecessor,
-        # so the first firing may see only one branch's writes. Return an empty
-        # delta so we don't poison party_state — the second firing will have
-        # everything and run for real.
+    if not world or not state.party:
         return {}
 
     ps = state.party_state or _build_initial_party_state(world)
-    graph = WorldGraph(world)
     new_messages: list[AIMessage] = []
 
     _stream("\n" + "=" * 94)
     _stream(" LIVE GAMEPLAY")
     _stream("=" * 94)
-    _render_party_map(world, ps.current_room)
-    _apply_room_enter_abilities(state.party, world, ps, _current_mission(state.missions, ps))
+    _render_party_map(world, ps)
 
     while not ps.game_over and ps.tick < MAX_TICKS:
-        mission = _current_mission(state.missions, ps)
-        if mission is None:
+        if _check_victory(world, ps):
             ps.game_over = True
             ps.victory = True
-            _stream(f"  >>> VICTORY — all missions complete at tick {ps.tick}")
-            new_messages.append(
-                AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
-            )
+            _stream(f"  >>> VICTORY at tick {ps.tick}")
+            new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
             break
 
-        # Walk one step along the shortest path to the mission's room
-        if mission.room != ps.current_room:
-            route = graph.path(ps.current_room, mission.room)
-            if len(route) < 2:
-                ps.game_over = True
-                _stream(
-                    f"  >>> No route from {ps.current_room} to {mission.room} — aborting"
-                )
-                new_messages.append(
-                    AIMessage(
-                        content=f"[gameplay] No route to {mission.room} from {ps.current_room}"
-                    )
-                )
-                break
-            next_step = route[1]
-            ps.tick += 1
-            ps.current_room = next_step
-            ps.visited.add(next_step)
-            _stream(
-                f"\n  ── Tick {ps.tick}  Party moves to {next_step}  "
-                f"(en route to {mission.room}; path: {' -> '.join(route)})"
-            )
-            _render_party_map(world, ps.current_room)
-            _apply_room_enter_abilities(state.party, world, ps, mission)
-            continue
-
-        # If a mission has no required actions, auto-complete it without spending a tick
-        if not mission.required_actions:
-            ps.completed_gates.append(mission.gate_index)
-            next_room = _next_room_for_completed_mission(world, mission)
-            if next_room is None:
-                ps.game_over = True
-                ps.victory = True
-                _stream(f"  >>> VICTORY (auto, no actions) at tick {ps.tick}")
-                new_messages.append(
-                    AIMessage(content=f"[gameplay] VICTORY (auto) at tick {ps.tick}")
-                )
-                break
-            ps.current_room = next_room
-            ps.visited.add(next_room)
-            _stream(
-                f"  >>> Auto-completed gate {mission.gate_index}; moved to {next_room}"
-            )
-            _render_party_map(world, ps.current_room)
-            _apply_room_enter_abilities(
-                state.party, world, ps, _current_mission(state.missions, ps)
-            )
-            continue
-
         ps.tick += 1
+        visible = _objects_in_room(world, ps)
+        action_space = _build_action_space(world, ps, visible)
+
         _stream(
-            f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  mission: {mission.description[:70]}"
+            f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  "
+            f"target: {world.win_condition.object_id} → {world.win_condition.state}"
         )
-        _stream(
-            f"     remaining required actions: "
-            f"{[a for a in mission.required_actions if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]}"
-        )
+        _stream(f"     visible objects: {[o.id for o in visible]}")
+        _stream(f"     inventory: {ps.inventory or '(empty)'}  known: {ps.known_info or '(none)'}")
 
         teammate_last_per_agent = {m.agent_id: None for m in state.party}
         for entry in reversed(ps.log):
@@ -395,59 +491,6 @@ def gameplay_node(state: GameState) -> dict:
                 break
 
         tick_actions: list[TickAction] = []
-
-        def _resolve_one(
-            member: PartyMember, teammate: TickAction | None, extra: bool = False
-        ) -> str | None:
-            remaining = [
-                a
-                for a in mission.required_actions
-                if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])
-            ]
-            action_space = _build_action_space(remaining)
-            decided = _agent_act(
-                member.agent_id, member, world, ps, mission, action_space, teammate
-            )
-
-            chosen = decided["action"]
-            matched = chosen if chosen in remaining else None
-
-            if matched:
-                completed_list = ps.completed_actions_by_gate.setdefault(
-                    mission.gate_index, []
-                )
-                if matched not in completed_list:
-                    completed_list.append(matched)
-                    note = f"completed required action '{matched}'"
-                else:
-                    note = f"redundant: '{matched}' already done"
-            elif chosen == IDLE_ACTION:
-                note = "idle"
-            else:
-                note = "no effect"
-            if extra:
-                note = f"{note} (extra action)"
-
-            tick_actions.append(
-                TickAction(
-                    tick=ps.tick,
-                    agent_id=member.agent_id,
-                    say=decided["say"],
-                    action=decided["action"],
-                    matched_required_action=matched,
-                    note=note,
-                )
-            )
-
-            marker = "✓" if matched else "·"
-            prefix = "  ↻ " if extra else "     "
-            label = f"{member.agent_id} ({member.character.name})"
-            _stream(f"{prefix}{marker} {label}")
-            _stream(f"         say   : \"{decided['say']}\"")
-            _stream(f"         action: {decided['action']}  ({note})")
-
-            return matched
-
         for member in state.party:
             teammate = next(
                 (
@@ -457,79 +500,38 @@ def gameplay_node(state: GameState) -> dict:
                 ),
                 None,
             )
-            _resolve_one(member, teammate)
+            decided = _agent_act(
+                member.agent_id, member, world, ps, action_space, visible, teammate
+            )
+            note, target = _resolve_action(decided["action"], world, ps)
+            tick_actions.append(
+                TickAction(
+                    tick=ps.tick,
+                    agent_id=member.agent_id,
+                    say=decided["say"],
+                    action=decided["action"],
+                    target_object=target,
+                    note=note,
+                )
+            )
+            label = f"{member.agent_id} ({member.character.name})"
+            _stream(f"     · {label}")
+            _stream(f"         say   : \"{decided['say']}\"")
+            _stream(f"         action: {decided['action']}  ({note})")
 
-            ability = member.character.ability
-            if (
-                ability.effect == "extra_action"
-                and ability.trigger == "on_action"
-                and ability.uses_remaining > 0
-            ):
-                still_remaining = [
-                    a
-                    for a in mission.required_actions
-                    if a
-                    not in ps.completed_actions_by_gate.get(mission.gate_index, [])
-                ]
-                if still_remaining and _consume_use(ability):
-                    _stream(
-                        f"     ✦ {member.character.name} used {ability.name}: extra action"
-                    )
-                    _resolve_one(member, teammate, extra=True)
+            if _check_victory(world, ps):
+                break
+
+            # Recompute action space mid-tick so the second agent sees updates from the first.
+            visible = _objects_in_room(world, ps)
+            action_space = _build_action_space(world, ps, visible)
 
         ps.log.extend(tick_actions)
-
-        # Check mission completion after both agents acted
-        done = ps.completed_actions_by_gate.get(mission.gate_index, [])
-        if mission.required_actions and set(done) >= set(mission.required_actions):
-            ps.completed_gates.append(mission.gate_index)
-            _stream(f"  >>> Mission complete: gate {mission.gate_index}")
-
-            if mission.reward_item:
-                room = next((r for r in world.rooms if r.name == mission.room), None)
-                reward = next(
-                    (
-                        i
-                        for i in (room.items if room else [])
-                        if i.name == mission.reward_item
-                    ),
-                    None,
-                )
-                if reward and not any(i.name == reward.name for i in ps.inventory):
-                    ps.inventory.append(reward)
-                    _stream(f"  >>> Party picked up: {reward.name}")
-                    new_messages.append(
-                        AIMessage(content=f"[gameplay] Party picked up {reward.name}")
-                    )
-
-            next_room = _next_room_for_completed_mission(world, mission)
-            if next_room is None:
-                ps.game_over = True
-                ps.victory = True
-                _stream(f"  >>> VICTORY at tick {ps.tick}")
-                new_messages.append(
-                    AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
-                )
-            else:
-                ps.current_room = next_room
-                ps.visited.add(next_room)
-                _stream(f"  >>> Party moved to {next_room}")
-                new_messages.append(
-                    AIMessage(
-                        content=f"[gameplay] Party moved to {next_room} at tick {ps.tick}"
-                    )
-                )
-                _render_party_map(world, ps.current_room)
-                _apply_room_enter_abilities(
-                    state.party, world, ps, _current_mission(state.missions, ps)
-                )
 
     if not ps.game_over:
         ps.game_over = True
         _stream(f"  >>> Stopped: hit MAX_TICKS={MAX_TICKS} without victory")
-        new_messages.append(
-            AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}")
-        )
+        new_messages.append(AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}"))
 
     return {
         "messages": new_messages,

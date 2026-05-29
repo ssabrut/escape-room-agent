@@ -2,6 +2,29 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-29 11:12:58 WIB
+
+### What changed
+- agents/mission_master_node.py: Deleted — mission generation no longer fits the object-graph world model.
+- prompts/mission_master/: Deleted directory (system.txt + generation.txt).
+- state/game_state.py: Removed `Mission` and `RoomItem`; reshaped `PartyState` to track `inventory: list[str]` (object ids), `object_states`, `known_info`, `fuse_states`, `power_active`; swapped `TickAction.matched_required_action` → `target_object`; dropped `missions` field from `GameState`.
+- state/__init__.py: Removed `Mission`/`RoomItem` exports.
+- graph.py: Removed `mission_master` node and its two edges; `gameplay` now fans in only from `player_agent_2`.
+- agents/character_master_node.py: Switched prompt vars from `title`/`room.name` to `scenario`/`room.id`.
+- prompts/character_master/generation.txt: Replaced `Title:` placeholder with `Scenario:`.
+- agents/player_agent_node.py: Switched prompt var from `title` to `scenario`.
+- prompts/player_agent/selection.txt: Replaced `Title:` placeholder with `Scenario:`.
+- agents/gameplay_node.py: Full rewrite — new mechanical engine resolving verbs `examine / take / enter_code / use_tool / insert_liquid / flip_fuse <label> / open / go <room> / wait` against object preconditions; object visibility honors container chains; `_build_initial_party_state` seeds `object_states`/`fuse_states`/`power_active` from world; victory fires when `object_states[win.object_id] == win.state`; added `_liquid_token_matches` for tolerant pH/liquid matching against held bottle descriptions.
+- prompts/gameplay_agent/system.txt: Rewritten around the object-graph model and discrete action menu.
+- prompts/gameplay_agent/action.txt: Rewritten to surface `objective`, `win_condition`, `objects_in_room` (with state), `inventory`, `known_info`, and the new action grammar.
+- visualization/renderer.py: Keyed by `Room.id`; accepts `objects: list[WorldObject]` and renders objects grouped by `location` instead of inline `room.items`; updated `_place_rooms` and `_build_cell` accordingly.
+- main.py: Removed `mission_master` from `NODE_NAMES`; added `all` as a valid `--log` choice that expands to every node; rewrote `_render` to print `scenario`, `objective`, `win_condition`, `solution_path`, inventory of object ids, and `known_info`; removed mission and game_flow rendering blocks.
+
+### Why
+With the GM now emitting an object-graph world (codes, tools, liquids, power, win_condition), the old gate/mission pipeline was dead weight — the user opted to drop missions entirely and drive victory off `win_condition` directly. Gameplay was rewritten as a small deterministic engine over object preconditions so the loop can mechanically reach victory (verified end-to-end against `logs/game_setting.json`: 9-step solve produces VICTORY). Downstream prompts and the renderer were updated to match the new `Room.id` / `WorldObject` shapes. The `--log all` shortcut was added so the user can capture every node's output in one flag.
+
+---
+
 ## 2026-05-29 11:00:31 WIB
 
 ### What changed

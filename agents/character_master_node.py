@@ -91,10 +91,10 @@ def character_master_node(state: GameState) -> dict:
     llm = get_llm()
     world = state.world
 
-    room_names = ", ".join(r.name for r in world.rooms) if world else ""
+    room_names = ", ".join(r.id for r in world.rooms) if world else ""
 
     prompt = GENERATION_PROMPT.format(
-        title=world.title if world else "",
+        scenario=world.scenario if world else "",
         theme=state.theme,
         objective=world.objective if world else "",
         room_names=room_names,

@@ -4,25 +4,36 @@ Your ability: {character_ability}
 Tick: {tick}
 Current room: {current_room}
 Room description: {room_description}
-Shared inventory: {inventory}
 
-Current mission: {mission_description}
-Required actions to complete the mission: {required_actions}
-Actions already completed by the party: {completed_actions}
-Reward when mission completes: {reward_item} (used to unlock the next area)
+Overall objective: {objective}
+Victory condition: {win_condition}
+
+Objects visible in this room (with current state):
+{objects_in_room}
+
+Shared inventory: {inventory}
+Known clues / discovered info: {known_info}
 
 Your teammate's most recent line: {teammate_last_say}
 Your teammate's most recent action: {teammate_last_action}
-
-Spotted clues from nearby rooms:
-{spotted_clues}
 
 This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
 
 Available actions:
 {action_space}
 
-Also say ONE short line (max 15 words) to coordinate with your teammate.
+Action grammar:
+- "examine <object_id>" — read description and discover any hidden info
+- "take <object_id>" — pick up a portable object
+- "enter_code <object_id>" — try to enter a code into a keypad (requires known code in clues)
+- "use_tool <object_id>" — apply a required tool from inventory to unlock
+- "insert_liquid <object_id>" — insert a held liquid into a chemical slot
+- "flip_fuse <object_id> <label>" — toggle a fuse on a panel
+- "open <object_id>" — open a powered door once its power line is on
+- "go <room_id>" — walk to an adjacent room
+- "wait" — do nothing
+
+Coordinate with your teammate. Say ONE short line (max 15 words) explaining your move.
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 

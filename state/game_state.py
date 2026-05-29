@@ -7,11 +7,6 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
-class RoomItem(BaseModel):
-    name: str
-    description: str
-
-
 class Room(BaseModel):
     """Static blueprint of a room — never mutated after generation."""
 
@@ -98,19 +93,6 @@ class PartyMember(BaseModel):
     reasoning: str  # why this agent chose this character
 
 
-class Mission(BaseModel):
-    """An interactive mission the player must complete to progress through a room."""
-
-    room: str
-    gate_index: int
-    description: str  # narrative task description shown to the player
-    required_actions: list[
-        str
-    ]  # interaction keywords that count as completing the mission
-    reward_item: str  # existing room item awarded on completion
-    unlocks_exit_to: str  # room name that becomes accessible after completion
-
-
 class TickAction(BaseModel):
     """A single agent's action + spoken line on one tick of gameplay."""
 
@@ -118,20 +100,22 @@ class TickAction(BaseModel):
     agent_id: str
     say: str
     action: str
-    matched_required_action: str | None = (
-        None  # which required_action this satisfied, if any
-    )
-    note: str = ""  # short outcome message (e.g., "completed", "no effect")
+    target_object: str | None = None  # object id this action operated on, if any
+    note: str = ""  # short outcome message (e.g., "unlocked", "no effect")
 
 
 class PartyState(BaseModel):
     """Shared runtime state of the co-op party."""
 
     current_room: str = ""
-    inventory: list[RoomItem] = Field(default_factory=list)
+    inventory: list[str] = Field(default_factory=list)  # object ids the party carries
     visited: set[str] = Field(default_factory=set)
-    completed_actions_by_gate: dict[int, list[str]] = Field(default_factory=dict)
-    completed_gates: list[int] = Field(default_factory=list)
+    object_states: dict[str, str] = Field(default_factory=dict)  # object_id -> current state
+    known_info: list[str] = Field(default_factory=list)  # contains_info tokens discovered
+    fuse_states: dict[str, dict[str, str]] = Field(
+        default_factory=dict
+    )  # panel_id -> {fuse_label: "ON"|"OFF"}
+    power_active: set[str] = Field(default_factory=set)  # power identifiers currently on
     tick: int = 0
     game_over: bool = False
     victory: bool = False
@@ -148,5 +132,4 @@ class GameState(BaseModel):
     world: GameWorld | None = None
     characters: list[Character] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
-    missions: list[Mission] = Field(default_factory=list)
     party_state: PartyState | None = None

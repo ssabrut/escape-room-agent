@@ -1,6 +1,6 @@
 Generate a roster of 3 playable characters for the following escape room scenario.
 
-Title: {title}
+Scenario: {scenario}
 Theme: {theme}
 Objective: {objective}
 Rooms: {room_names}

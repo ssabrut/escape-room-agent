@@ -24,7 +24,6 @@ NODE_NAMES = (
     "character_master",
     "player_agent_1",
     "player_agent_2",
-    "mission_master",
     "gameplay",
 )
 
@@ -78,15 +77,30 @@ def _render_characters(characters: list) -> None:
 def _render(result: dict) -> None:
     world = result.get("world")
     rooms = world.rooms if world else []
+    objects = world.objects if world else []
 
     print("\n" + "=" * 94)
     print(" ESCAPE ROOM MAP")
     print("=" * 94 + "\n")
 
     if rooms:
-        render_room_layout(rooms)
+        render_room_layout(rooms, objects)
     else:
         print("  [No room layout could be parsed from the LLM response]\n")
+
+    if world:
+        print("\n" + "=" * 94)
+        print(" SCENARIO")
+        print("=" * 94 + "\n")
+        print(f"  {world.scenario}\n")
+        print(f"  Objective: {world.objective}")
+        win = world.win_condition
+        print(f"  Win when : {win.object_id} → {win.state}\n")
+        if world.solution_path:
+            print("  Solution path:")
+            for step in world.solution_path:
+                print(f"    {step}")
+            print()
 
     characters = result.get("characters", [])
     _render_characters(characters)
@@ -102,21 +116,6 @@ def _render(result: dict) -> None:
             print(f"    Reasoning: {member.reasoning}")
             print()
 
-    world = result.get("world")
-    if world and world.game_flow.gates:
-        flow = world.game_flow
-        print("\n" + "=" * 94)
-        print(" GAME FLOW")
-        print("=" * 94 + "\n")
-        print(f"  Start : {flow.starting_room}")
-        print(f"  Goal  : {flow.win_condition}\n")
-        for i, gate in enumerate(flow.gates, 1):
-            req = gate.requires or "—"
-            print(f"  Step {i}  [{gate.room}]")
-            print(f"    Requires : {req}")
-            print(f"    Unlocks  : {gate.unlocks}")
-            print()
-
     party_state = result.get("party_state")
     if party_state:
         print("\n" + "=" * 94)
@@ -127,30 +126,14 @@ def _render(result: dict) -> None:
             if party_state.victory
             else f"ENDED (final room: {party_state.current_room})"
         )
-        inv = (
-            ", ".join(i.name for i in party_state.inventory)
-            if party_state.inventory
-            else "(empty)"
-        )
+        inv = ", ".join(party_state.inventory) if party_state.inventory else "(empty)"
+        known = ", ".join(party_state.known_info) if party_state.known_info else "(none)"
         print(f"  Result    : {outcome}")
         print(f"  Ticks used: {party_state.tick}")
         print(f"  Inventory : {inv}")
+        print(f"  Known     : {known}")
         print(f"  Visited   : {', '.join(party_state.visited)}")
         print()
-
-    missions = result.get("missions", [])
-    if missions:
-        print("\n" + "=" * 94)
-        print(" MISSIONS")
-        print("=" * 94 + "\n")
-        for mission in missions:
-            print(f"  [{mission.room}]  Gate {mission.gate_index}")
-            print(f"  Mission  : {mission.description}")
-            print(f"  Actions  : {', '.join(mission.required_actions)}")
-            if mission.reward_item:
-                print(f"  Reward   : {mission.reward_item}")
-            print(f"  Unlocks  : {mission.unlocks_exit_to}")
-            print()
 
 
 def _merge_update(result: dict, update: dict) -> None:
@@ -233,17 +216,22 @@ if __name__ == "__main__":
         "--log",
         metavar="NODE",
         action="append",
-        choices=NODE_NAMES,
+        choices=(*NODE_NAMES, "all"),
         help=(
             "Log a node's parsed output (logs/<node>.json) and raw LLM response "
-            "(logs/<node>.raw.txt). Repeatable. Choices: " + ", ".join(NODE_NAMES)
+            "(logs/<node>.raw.txt). Repeatable. Use 'all' to log every node. "
+            "Choices: " + ", ".join((*NODE_NAMES, "all"))
         ),
     )
     args = parser.parse_args()
+
+    log_nodes = args.log
+    if log_nodes and "all" in log_nodes:
+        log_nodes = list(NODE_NAMES)
 
     if args.smoke is not None:
         if args.smoke < 1:
             parser.error("--smoke requires a positive integer")
         smoke(args.smoke)
     else:
-        run(log_nodes=args.log)
+        run(log_nodes=log_nodes)

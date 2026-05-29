@@ -1,7 +1,7 @@
 You are {agent_id}, a player agent in a 2-player escape room party.
 
 You are playing this escape room:
-Title: {title}
+Scenario: {scenario}
 Objective: {objective}
 
 Available characters to choose from:
