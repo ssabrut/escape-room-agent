@@ -226,7 +226,12 @@ def _next_room_for_completed_mission(world: GameWorld, mission: Mission) -> str 
 def gameplay_node(state: GameState) -> dict:
     world = state.world
     if not world or not state.party or not state.missions:
-        return {"party_state": state.party_state or PartyState(game_over=True)}
+        # Fan-in barrier: this node has two incoming edges (player_agent_2 and
+        # mission_master). LangGraph schedules it once per completed predecessor,
+        # so the first firing may see only one branch's writes. Return an empty
+        # delta so we don't poison party_state — the second firing will have
+        # everything and run for real.
+        return {}
 
     ps = state.party_state or _build_initial_party_state(world)
     graph = WorldGraph(world)

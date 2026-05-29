@@ -54,7 +54,11 @@ def _build_rooms(raw_rooms: list[dict]) -> list[Room]:
             if isinstance(i, dict)
         ]
         raw_adj = raw_room.get("adjacency", {})
-        adjacency = raw_adj if isinstance(raw_adj, dict) else {}
+        adjacency = (
+            {k: v for k, v in raw_adj.items() if isinstance(v, str) and v}
+            if isinstance(raw_adj, dict)
+            else {}
+        )
         rooms.append(
             Room(
                 name=raw_room.get("name", "Unnamed Room"),
