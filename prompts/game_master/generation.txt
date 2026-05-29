@@ -3,69 +3,89 @@ Generate a complete escape room scenario for a 2D text-based conversational game
 Theme: {theme}
 
 Include:
-* The narrative (intro + atmosphere)
+* The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Room layout (3–4 rooms)
-    * Items in rooms (could be none, but max of 2 items per room)
-    * Adjacency: which cardinal direction (north, south, east, west) connects each room to its neighbors
-* Game flow: an ordered list of gates from start to finish
+* Rooms (2-4 rooms), each with an id, description, and cardinal adjacency
+* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors)
+* Rules the game enforces
+* Win condition (a target object_id reaching a target state)
+* Solution path (numbered steps from start to win)
 
 Adjacency rules:
 - Use only cardinal directions: "north", "south", "east", "west"
 - Adjacency must be consistent — if room A says east is room B, then room B MUST say west is room A
 - Omit a direction entirely if there is no neighbor in that direction
-- Only reference room names that actually exist in your room_layout array
+- Only reference room ids that actually exist in your rooms array
 
-Example of CORRECT adjacency for two rooms side by side:
-  Room A: {{"adjacency": {{"east": "Room B"}}}}
-  Room B: {{"adjacency": {{"west": "Room A"}}}}
+Object rules:
+- Every object has a unique snake_case id
+- location must be either an existing room id OR another existing object id (for nesting, e.g. a key inside a safe)
+- state examples: "visible", "fixed", "hidden", "locked", "locked_bolt", "locked_room", "unlocked"
+- interactable: true if the player can act on it; takeable: true only for portable items
+- Optional precondition fields (include only when relevant):
+    - requires_code (string) and code_digits (int) — for keypads/safes
+    - requires_tool (object id) — must reference an existing object
+    - requires_liquid (string identifier, e.g. "pH_7") — for chemical slots
+    - requires_power (string identifier, e.g. "sekring_C_ON") — for powered doors/sensors
+    - fuses (object mapping fuse label to "ON"/"OFF") — for electrical panels
+    - contains_info (string identifier) — for objects whose inspection reveals a fact
+    - slot_description (string) — extra detail for insertion slots
+    - note (string) — meta hint about access constraints
 
-Game flow rules:
-- starting_room must be the name of the first room in room_layout
-- gates are ordered steps the player must complete to win
-- Each gate has: a room name (where this step happens), a requires field (what must be done first, or null if it is the first gate), and an unlocks field (what completing this gate enables)
-- The final gate must have "unlocks": "VICTORY"
-- Only reference room names and item names that actually exist in your room_layout
+Win condition rules:
+- object_id must reference an existing object
+- state is the target state that object must reach to win
+
+Solution path rules:
+- Ordered numbered steps from initial state to win
+- Only reference room ids and object ids that exist in your output
 
 Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
 
 {{
-    "narrative": {{
-        "title": "escape room title goes here",
-        "setup": "escape room setup goes here",
-        "atmosphere": "escape room atmosphere goes here"
-    }},
-    "objective": "objective goes here",
-    "room_layout": [
+    "scenario": "one paragraph setting + atmosphere",
+    "objective": "one sentence objective",
+    "rooms": [
         {{
-            "name": "room name goes here",
-            "description": "room description goes here",
+            "id": "room_id_here",
+            "description": "room description",
             "adjacency": {{
-                "east": "name of room to the east",
-                "south": "name of room to the south"
-            }},
-            "items": [
-                {{
-                    "name": "item name goes here",
-                    "description": "item description goes here"
-                }}
-            ]
+                "east": "other_room_id"
+            }}
         }}
     ],
-    "game_flow": {{
-        "starting_room": "name of the first room",
-        "win_condition": "one sentence describing how to win",
-        "gates": [
-            {{
-                "room": "room where this step happens",
-                "requires": null,
-                "unlocks": "what completing this step enables"
-            }},
-            {{
-                "room": "room where next step happens",
-                "requires": "what completing this step enables",
-                "unlocks": "VICTORY"
-            }}
-        ]
-    }}
+    "objects": [
+        {{
+            "id": "object_id_here",
+            "location": "room_id_or_object_id",
+            "description": "object description",
+            "state": "visible",
+            "interactable": true,
+            "takeable": false
+        }},
+        {{
+            "id": "locked_container_example",
+            "location": "room_id_here",
+            "description": "a wall safe with a 3-digit keypad",
+            "state": "locked",
+            "interactable": true,
+            "requires_code": "327",
+            "code_digits": 3
+        }}
+    ],
+    "rules": [
+        "Agent only reveals information already discovered in the game state.",
+        "Codes and numbers must come from the game state, never invented.",
+        "If information is not yet found, agent must say 'not yet known' instead of guessing.",
+        "Actions are only valid if the object is visible and within reach."
+    ],
+    "win_condition": {{
+        "object_id": "target_object_id",
+        "state": "unlocked"
+    }},
+    "solution_path": [
+        "1. First step referencing real object ids",
+        "2. Second step",
+        "3. Final step that satisfies the win_condition"
+    ]
 }}

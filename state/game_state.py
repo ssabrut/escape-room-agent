@@ -15,37 +15,48 @@ class RoomItem(BaseModel):
 class Room(BaseModel):
     """Static blueprint of a room — never mutated after generation."""
 
-    name: str
+    id: str
     description: str
     adjacency: dict[str, str] = Field(default_factory=dict)
-    items: list[RoomItem] = Field(default_factory=list)
 
 
-class Gate(BaseModel):
-    """A single step in the game flow sequence."""
+class WorldObject(BaseModel):
+    """An object placed in the world — fixed scenery, item, container, panel, door, etc."""
 
-    room: str
-    requires: str | None = None  # None means freely accessible
-    unlocks: str  # what this gate's completion opens up
+    id: str
+    location: str  # room id or another object id (for nesting)
+    description: str
+    state: str = "visible"
+    interactable: bool = False
+    takeable: bool = False
+    requires_code: str | None = None
+    code_digits: int | None = None
+    requires_tool: str | None = None
+    requires_liquid: str | None = None
+    requires_power: str | None = None
+    fuses: dict[str, str] | None = None
+    contains_info: str | None = None
+    slot_description: str | None = None
+    note: str | None = None
 
 
-class GameFlow(BaseModel):
-    """Ordered sequence of gates from start to win."""
+class WinCondition(BaseModel):
+    """The target object state that ends the game in victory."""
 
-    starting_room: str = ""
-    win_condition: str = ""
-    gates: list[Gate] = Field(default_factory=list)
+    object_id: str = ""
+    state: str = ""
 
 
 class GameWorld(BaseModel):
     """The frozen dungeon blueprint produced by the game master."""
 
-    title: str = ""
-    setup: str = ""
-    atmosphere: str = ""
+    scenario: str = ""
     objective: str = ""
     rooms: list[Room] = Field(default_factory=list)
-    game_flow: GameFlow = Field(default_factory=GameFlow)
+    objects: list[WorldObject] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+    win_condition: WinCondition = Field(default_factory=WinCondition)
+    solution_path: list[str] = Field(default_factory=list)
 
 ABILITY_EFFECTS = {
     "extra_action",

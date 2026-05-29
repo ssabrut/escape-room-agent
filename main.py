@@ -4,16 +4,57 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+from langchain_core.messages import BaseMessage
+from pydantic import BaseModel
 
 from graph import graph
 from state import GameState
 from visualization import render_room_layout
 
 SMOKE_DIR = Path("smoke_runs")
+LOG_DIR = Path("logs")
+NODE_NAMES = (
+    "game_master",
+    "character_master",
+    "player_agent_1",
+    "player_agent_2",
+    "mission_master",
+    "gameplay",
+)
+
+
+def _jsonable(value):
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, BaseMessage):
+        return {"type": value.type, "content": value.content}
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _write_node_log(node: str, update: dict) -> Path:
+    node_dir = LOG_DIR / node
+    node_dir.mkdir(parents=True, exist_ok=True)
+    messages = update.get("messages") or []
+    raw = "\n\n---\n\n".join(
+        m.content for m in messages if isinstance(m, BaseMessage) and m.content
+    )
+    (node_dir / "raw.txt").write_text(raw, encoding="utf-8")
+
+    parsed = {k: _jsonable(v) for k, v in update.items() if k != "messages"}
+    (node_dir / "output.json").write_text(
+        json.dumps(parsed, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return node_dir
 
 
 def _render_characters(characters: list) -> None:
@@ -112,8 +153,29 @@ def _render(result: dict) -> None:
             print()
 
 
-def run() -> None:
-    result = graph.invoke(GameState(theme="pirate"))
+def _merge_update(result: dict, update: dict) -> None:
+    for key, value in update.items():
+        if key == "messages":
+            result.setdefault("messages", []).extend(value or [])
+        else:
+            result[key] = value
+
+
+def run(log_nodes: list[str] | None = None) -> None:
+    log_nodes = log_nodes or []
+    if not log_nodes:
+        result = graph.invoke(GameState(theme="pirate"))
+        _render(result)
+        return
+
+    log_set = set(log_nodes)
+    result: dict = {}
+    for step in graph.stream(GameState(theme="pirate"), stream_mode="updates"):
+        for node, update in step.items():
+            _merge_update(result, update)
+            if node in log_set:
+                node_dir = _write_node_log(node, update)
+                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
     _render(result)
 
 
@@ -167,6 +229,16 @@ if __name__ == "__main__":
         type=int,
         help="Run the generator N times and save each output to smoke_runs/<timestamp>/",
     )
+    parser.add_argument(
+        "--log",
+        metavar="NODE",
+        action="append",
+        choices=NODE_NAMES,
+        help=(
+            "Log a node's parsed output (logs/<node>.json) and raw LLM response "
+            "(logs/<node>.raw.txt). Repeatable. Choices: " + ", ".join(NODE_NAMES)
+        ),
+    )
     args = parser.parse_args()
 
     if args.smoke is not None:
@@ -174,4 +246,4 @@ if __name__ == "__main__":
             parser.error("--smoke requires a positive integer")
         smoke(args.smoke)
     else:
-        run()
+        run(log_nodes=args.log)

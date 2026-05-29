@@ -9,13 +9,24 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameFlow, GameState, GameWorld, Gate, Room, RoomItem
+from state import GameState, GameWorld, Room, WinCondition, WorldObject
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
-MAX_ITEMS = 2
+
+_OPTIONAL_OBJECT_FIELDS = (
+    "requires_code",
+    "code_digits",
+    "requires_tool",
+    "requires_liquid",
+    "requires_power",
+    "fuses",
+    "contains_info",
+    "slot_description",
+    "note",
+)
 
 
 def _parse_json(text: str) -> dict | None:
@@ -42,17 +53,17 @@ def _parse_json(text: str) -> dict | None:
     return None
 
 
-def _build_rooms(raw_rooms: list[dict]) -> list[Room]:
+def _build_rooms(raw_rooms: list) -> list[Room]:
     rooms: list[Room] = []
     for raw_room in raw_rooms:
-        room_items = [
-            RoomItem(
-                name=i.get("name", "Unknown"),
-                description=i.get("description", ""),
-            )
-            for i in raw_room.get("items", [])
-            if isinstance(i, dict)
-        ]
+        if isinstance(raw_room, str):
+            rooms.append(Room(id=raw_room, description="", adjacency={}))
+            continue
+        if not isinstance(raw_room, dict):
+            continue
+        room_id = raw_room.get("id") or raw_room.get("name")
+        if not room_id:
+            continue
         raw_adj = raw_room.get("adjacency", {})
         adjacency = (
             {k: v for k, v in raw_adj.items() if isinstance(v, str) and v}
@@ -61,98 +72,99 @@ def _build_rooms(raw_rooms: list[dict]) -> list[Room]:
         )
         rooms.append(
             Room(
-                name=raw_room.get("name", "Unnamed Room"),
+                id=room_id,
                 description=raw_room.get("description", ""),
                 adjacency=adjacency,
-                items=room_items,
             )
         )
     return rooms
 
 
 def _repair_adjacency(rooms: list[Room]) -> list[Room]:
-    """
-    Three-pass repair on the LLM-generated room list:
-      1. Strip adjacency references to rooms that don't exist.
-      2. Mirror missing reverse edges (A→east→B but B missing west→A).
-      3. Enforce MAX_ITEMS per room.
-    """
-    known = {r.name for r in rooms}
+    """Drop adjacency entries pointing at unknown rooms and mirror missing reverse edges."""
+    known = {r.id for r in rooms}
 
     cleaned: dict[str, dict[str, str]] = {}
     for room in rooms:
-        cleaned[room.name] = {
+        cleaned[room.id] = {
             d: n for d, n in room.adjacency.items() if n in known and d in OPPOSITES
         }
 
-    for room_name, adj in list(cleaned.items()):
-        for direction, neighbor_name in adj.items():
+    for room_id, adj in list(cleaned.items()):
+        for direction, neighbor_id in adj.items():
             reverse = OPPOSITES[direction]
-            neighbor_adj = cleaned.get(neighbor_name, {})
+            neighbor_adj = cleaned.get(neighbor_id, {})
             if reverse not in neighbor_adj:
-                neighbor_adj[reverse] = room_name
-                cleaned[neighbor_name] = neighbor_adj
+                neighbor_adj[reverse] = room_id
+                cleaned[neighbor_id] = neighbor_adj
 
     return [
-        Room(
-            name=r.name,
-            description=r.description,
-            adjacency=cleaned.get(r.name, {}),
-            items=r.items[:MAX_ITEMS],
-        )
+        Room(id=r.id, description=r.description, adjacency=cleaned.get(r.id, {}))
         for r in rooms
     ]
 
 
-def _build_game_flow(data: dict, known_rooms: set[str]) -> GameFlow:
-    """Parse game_flow from raw data and repair invalid room references."""
-    raw = data.get("game_flow", {}) or {}
+def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObject]:
+    """Build objects, validating that locations and tool references resolve."""
+    candidates: list[dict] = [o for o in raw_objects if isinstance(o, dict) and o.get("id")]
+    known_object_ids = {o["id"] for o in candidates}
+    valid_locations = room_ids | known_object_ids
 
-    starting_room = raw.get("starting_room", "")
-    if starting_room not in known_rooms:
-        starting_room = next(iter(known_rooms), "")
+    objects: list[WorldObject] = []
+    for raw in candidates:
+        location = raw.get("location", "")
+        if location not in valid_locations:
+            continue  # drop objects placed nowhere real
 
-    gates: list[Gate] = []
-    for raw_gate in raw.get("gates", []):
-        if not isinstance(raw_gate, dict):
-            continue
-        room = raw_gate.get("room", "")
-        if room not in known_rooms:
-            continue  # drop gates referencing non-existent rooms
-        gates.append(
-            Gate(
-                room=room,
-                requires=raw_gate.get("requires") or None,
-                unlocks=raw_gate.get("unlocks") or "",
-            )
-        )
+        requires_tool = raw.get("requires_tool") or None
+        if requires_tool and requires_tool not in known_object_ids:
+            requires_tool = None  # null out dangling tool references
 
-    # Ensure the last gate always ends in VICTORY
-    if gates and gates[-1].unlocks != "VICTORY":
-        gates[-1] = Gate(
-            room=gates[-1].room,
-            requires=gates[-1].requires,
-            unlocks="VICTORY",
-        )
+        kwargs = {
+            "id": raw["id"],
+            "location": location,
+            "description": raw.get("description", ""),
+            "state": raw.get("state", "visible"),
+            "interactable": bool(raw.get("interactable", False)),
+            "takeable": bool(raw.get("takeable", False)),
+            "requires_tool": requires_tool,
+        }
+        for field in _OPTIONAL_OBJECT_FIELDS:
+            if field == "requires_tool":
+                continue
+            if field in raw and raw[field] not in (None, ""):
+                kwargs[field] = raw[field]
 
-    return GameFlow(
-        starting_room=starting_room,
-        win_condition=raw.get("win_condition", ""),
-        gates=gates,
-    )
+        objects.append(WorldObject(**kwargs))
+    return objects
+
+
+def _build_win_condition(raw: dict, object_ids: set[str]) -> WinCondition:
+    if not isinstance(raw, dict):
+        return WinCondition()
+    object_id = raw.get("object_id", "")
+    if object_id not in object_ids:
+        object_id = next(iter(object_ids), "")
+    return WinCondition(object_id=object_id, state=raw.get("state", ""))
 
 
 def _build_world(data: dict) -> GameWorld:
-    narrative = data.get("narrative", {}) or {}
-    rooms = _repair_adjacency(_build_rooms(data.get("room_layout", [])))
-    known_rooms = {r.name for r in rooms}
+    rooms = _repair_adjacency(_build_rooms(data.get("rooms", [])))
+    room_ids = {r.id for r in rooms}
+    objects = _build_objects(data.get("objects", []), room_ids)
+    object_ids = {o.id for o in objects}
+
+    rules = [r for r in data.get("rules", []) if isinstance(r, str)]
+    solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
+
     return GameWorld(
-        title=narrative.get("title", ""),
-        setup=narrative.get("setup", ""),
-        atmosphere=narrative.get("atmosphere", ""),
+        scenario=data.get("scenario", ""),
         objective=data.get("objective", ""),
         rooms=rooms,
-        game_flow=_build_game_flow(data, known_rooms),
+        objects=objects,
+        rules=rules,
+        win_condition=_build_win_condition(data.get("win_condition", {}), object_ids),
+        solution_path=solution_path,
     )
 
 
@@ -172,5 +184,5 @@ def game_master_node(state: GameState) -> dict:
 
     return {
         "messages": [AIMessage(content=response.content)],
-        "world": world
+        "world": world,
     }
