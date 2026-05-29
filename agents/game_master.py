@@ -123,7 +123,7 @@ def _build_game_flow(data: dict, known_rooms: set[str]) -> GameFlow:
             Gate(
                 room=room,
                 requires=raw_gate.get("requires") or None,
-                unlocks=raw_gate.get("unlocks", ""),
+                unlocks=raw_gate.get("unlocks") or "",
             )
         )
 
