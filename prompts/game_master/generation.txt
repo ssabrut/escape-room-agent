@@ -30,6 +30,10 @@ Adjacency rules:
 - Omit a direction entirely if there is no neighbor in that direction
 - Only reference room ids that actually exist in your rooms array
 
+Solvability rule (CRITICAL):
+- Every code (`requires_code`) MUST be discoverable in the world. At least one object whose `contains_info` matches the code (or contains the code substring) must exist in a reachable location BEFORE the locked object. Same for liquids, powers, and tools — the means to satisfy a precondition must already be reachable when the precondition is needed.
+- Do NOT invent codes or clues that only appear in the `solution_path`. The runtime ignores the solution path; players can only act on what is in `objects[]` and what `contains_info` reveals.
+
 Object rules:
 - Every object has a unique snake_case id
 - location must be either an existing room id OR another existing object id (for nesting, e.g. a key inside a safe)

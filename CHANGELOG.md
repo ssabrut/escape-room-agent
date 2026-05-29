@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-29 15:35:45 WIB
+
+### What changed
+- agents/gameplay_node.py: `_resolve_examine` now distinguishes repeat/no-op examines — it returns explicit dead-end notes (`examined X again — nothing new (dead end)`, `examined X — no hidden info`, `examined X; already knew <info>`) instead of a bare `examined X`; added `"dead end"` and `"nothing new"` to `_FAIL_KEYWORDS` so these outcomes badge as failures.
+- prompts/gameplay_agent/action.txt: Strengthened the no-repeat guidance — agents are now explicitly forbidden from repeating any action whose outcome contained `no hidden info`, `nothing new`, `dead end`, `already`, or `code unknown`, and told to MOVE rooms once every object in the current room is exhausted.
+- prompts/game_master/generation.txt: Added a CRITICAL "Solvability rule" requiring every code/liquid/power/tool precondition to be discoverable in a reachable location before the locked object, and forbidding codes/clues that only appear in the `solution_path` (which the runtime ignores).
+
+### Why
+Follow-up to the agent-history fix: even with history surfaced, examines returned the same generic `examined X` note whether or not new info was learned, so the agent couldn't tell a productive examine from a dead end. Making the outcome text explicit (and badging dead ends as failures) gives the loop-breaking prompt concrete signals to act on. The GM solvability rule prevents the generator from authoring unsolvable worlds where a required code exists only in the ignored solution path.
+
+---
+
 ## 2026-05-29 14:57:54 WIB
 
 ### What changed

@@ -139,7 +139,7 @@ STATUS_INFO = "..."     # action ran but nothing changed (examine without new in
 STATUS_FAIL = "XX"      # action invalid / missing precondition
 
 _OK_KEYWORDS = ("unlocked", "took", "moved", "learned", "flipped", "inserted", "entered", "used")
-_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse")
+_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse", "dead end", "nothing new")
 
 
 def _classify_outcome(note: str) -> str:
@@ -263,7 +263,15 @@ def _resolve_examine(obj: WorldObject, ps: PartyState) -> str:
     if obj.contains_info and obj.contains_info not in ps.known_info:
         ps.known_info.append(obj.contains_info)
         return f"examined {obj.id}; learned {obj.contains_info}"
-    return f"examined {obj.id}"
+    already = any(
+        e.action == f"examine {obj.id}" and e.note.startswith("examined")
+        for e in ps.log
+    )
+    if already:
+        return f"examined {obj.id} again — nothing new (dead end)"
+    if obj.contains_info:
+        return f"examined {obj.id}; already knew {obj.contains_info}"
+    return f"examined {obj.id} — no hidden info"
 
 
 def _resolve_take(obj: WorldObject, ps: PartyState) -> str:

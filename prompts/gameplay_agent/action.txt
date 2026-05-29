@@ -24,7 +24,7 @@ Your teammate's most recent action: {teammate_last_action}
 Your own recent actions (most recent last) and their outcomes:
 {agent_recent_history}
 
-If an action above produced no new information ("examined X" with no clue learned), repeating it will produce the same nothing. Try a different object, apply a tool/code/liquid/power if you can, or move to an adjacent room via "go <room_id>".
+If an action above produced no new information ("examined X — no hidden info", "examined X again — nothing new", "code unknown"), repeating it WILL fail again. Do NOT repeat any action whose outcome contained "no hidden info", "nothing new", "dead end", "already", or "code unknown". Try a different object, apply a tool/code/liquid/power, or move to an adjacent room via "go <room_id>". If every object in this room has been examined with no new info, MOVE to a different room.
 
 This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
 
