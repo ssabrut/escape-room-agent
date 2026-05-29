@@ -206,8 +206,16 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     return rooms
 
 
+SINGLE_ROOM_MODE = True
+
+
 def _build_world(data: dict) -> GameWorld:
     rooms = _repair_adjacency(_build_rooms(data.get("rooms", [])))
+    if SINGLE_ROOM_MODE and rooms:
+        kept = rooms[0]
+        kept.adjacency = {}
+        kept.prerequisites = []
+        rooms = [kept]
     room_ids = {r.id for r in rooms}
     objects = _build_objects(data.get("objects", []), room_ids)
     object_ids = {o.id for o in objects}

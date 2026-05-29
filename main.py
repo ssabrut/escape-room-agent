@@ -40,8 +40,8 @@ def _jsonable(value):
     return value
 
 
-def _write_node_log(node: str, update: dict) -> Path:
-    node_dir = LOG_DIR / node
+def _write_node_log(node: str, update: dict, root: Path = LOG_DIR) -> Path:
+    node_dir = root / node
     node_dir.mkdir(parents=True, exist_ok=True)
     messages = update.get("messages") or []
     raw = "\n\n---\n\n".join(
@@ -162,32 +162,44 @@ def run(log_nodes: list[str] | None = None) -> None:
     _render(result)
 
 
-def _run_once_captured() -> str:
-    """Run the graph once with stdout captured, returning the buffered output."""
+def _run_once_captured(log_nodes: list[str] | None, log_root: Path | None) -> str:
+    """Run the graph once with stdout captured. If log_nodes is set, write per-node logs under log_root."""
+    log_set = set(log_nodes or [])
     buf = io.StringIO()
     orig_stdout = sys.stdout
     sys.stdout = buf
     try:
-        result = graph.invoke(GameState(theme="pirate"))
+        if not log_set:
+            result = graph.invoke(GameState(theme="pirate"))
+        else:
+            result = {}
+            for step in graph.stream(GameState(theme="pirate"), stream_mode="updates"):
+                for node, update in step.items():
+                    _merge_update(result, update)
+                    if node in log_set and log_root is not None:
+                        _write_node_log(node, update, root=log_root)
         _render(result)
     finally:
         sys.stdout = orig_stdout
     return buf.getvalue()
 
 
-def smoke(n: int) -> None:
+def smoke(n: int, log_nodes: list[str] | None = None) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = SMOKE_DIR / timestamp
     run_dir.mkdir()
 
     print(f"Smoke test: {n} run(s) → {run_dir}/")
+    if log_nodes:
+        print(f"  [log] per-run node logs under {run_dir}/run_<NNN>_logs/")
 
     errors = 0
     for i in range(1, n + 1):
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
-            output = _run_once_captured()
+            log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
+            output = _run_once_captured(log_nodes, log_root)
             out_file = run_dir / f"run_{i:03d}.txt"
             out_file.write_text(output, encoding="utf-8")
             rooms_count = output.count("┌" + "─")
@@ -232,6 +244,6 @@ if __name__ == "__main__":
     if args.smoke is not None:
         if args.smoke < 1:
             parser.error("--smoke requires a positive integer")
-        smoke(args.smoke)
+        smoke(args.smoke, log_nodes=log_nodes)
     else:
         run(log_nodes=log_nodes)

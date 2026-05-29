@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-29 16:02:05 WIB
+
+### What changed
+- agents/game_master.py: Added `SINGLE_ROOM_MODE = True` flag and a `_build_world` guard that keeps only the first room, clears its adjacency, and empties its prerequisites — forcing single-room generation regardless of what the LLM returns.
+- main.py: `_write_node_log` now accepts a `root: Path` argument; `_run_once_captured` takes `log_nodes` and `log_root`, streaming through the graph when logs are requested so node logs are written per-run; `smoke` accepts `log_nodes` and stores per-run logs under `smoke_runs/<ts>/run_<NNN>_logs/` so smoke runs and node logs no longer clobber each other.
+- prompts/game_master/generation.txt: Rewrote the rooms section for single-room mode — exactly one room with empty adjacency, empty prerequisites, and a `goal_completion` equal to the `win_condition`. Collapsed the adjacency and goal/prerequisite blocks to the single-room invariants.
+
+### Why
+Multi-room generation was overwhelming the player agent and the smoke logger overwrote `logs/<node>/raw.txt` every run, making post-hoc debugging impossible. Constraining to one room lets us validate the full loop (generation → selection → gameplay → victory) end-to-end before scaling complexity, and per-run log directories under each smoke timestamp let us inspect every run's raw LLM output without losing data.
+
+---
+
 ## 2026-05-29 15:35:45 WIB
 
 ### What changed
