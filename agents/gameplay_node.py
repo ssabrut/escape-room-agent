@@ -10,7 +10,15 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameState, GameWorld, Mission, PartyMember, PartyState, RoomItem, TickAction
+from state import (
+    GameState,
+    GameWorld,
+    Mission,
+    PartyMember,
+    PartyState,
+    RoomItem,
+    TickAction,
+)
 from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
@@ -132,7 +140,9 @@ def _resolve_choice(response: str, space: list[str]) -> str:
     return IDLE_ACTION
 
 
-def _current_mission(missions: list[Mission], party_state: PartyState) -> Mission | None:
+def _current_mission(
+    missions: list[Mission], party_state: PartyState
+) -> Mission | None:
     for m in sorted(missions, key=lambda x: x.gate_index):
         if m.gate_index not in party_state.completed_gates:
             return m
@@ -140,7 +150,9 @@ def _current_mission(missions: list[Mission], party_state: PartyState) -> Missio
 
 
 def _build_initial_party_state(world: GameWorld) -> PartyState:
-    starting_room = world.game_flow.starting_room or (world.rooms[0].name if world.rooms else "")
+    starting_room = world.game_flow.starting_room or (
+        world.rooms[0].name if world.rooms else ""
+    )
     return PartyState(
         current_room=starting_room,
         visited={starting_room} if starting_room else set(),
@@ -160,8 +172,12 @@ def _agent_act(
     room_description = room.description if room else ""
 
     completed = ps.completed_actions_by_gate.get(mission.gate_index, [])
-    inventory_str = ", ".join(i.name for i in ps.inventory) if ps.inventory else "(empty)"
-    required_str = ", ".join(mission.required_actions) if mission.required_actions else "(none)"
+    inventory_str = (
+        ", ".join(i.name for i in ps.inventory) if ps.inventory else "(empty)"
+    )
+    required_str = (
+        ", ".join(mission.required_actions) if mission.required_actions else "(none)"
+    )
     completed_str = ", ".join(completed) if completed else "(none yet)"
     action_space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
 
@@ -227,7 +243,9 @@ def gameplay_node(state: GameState) -> dict:
             ps.game_over = True
             ps.victory = True
             _stream(f"  >>> VICTORY — all missions complete at tick {ps.tick}")
-            new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
+            new_messages.append(
+                AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
+            )
             break
 
         # Walk one step along the shortest path to the mission's room
@@ -235,9 +253,13 @@ def gameplay_node(state: GameState) -> dict:
             route = graph.path(ps.current_room, mission.room)
             if len(route) < 2:
                 ps.game_over = True
-                _stream(f"  >>> No route from {ps.current_room} to {mission.room} — aborting")
+                _stream(
+                    f"  >>> No route from {ps.current_room} to {mission.room} — aborting"
+                )
                 new_messages.append(
-                    AIMessage(content=f"[gameplay] No route to {mission.room} from {ps.current_room}")
+                    AIMessage(
+                        content=f"[gameplay] No route to {mission.room} from {ps.current_room}"
+                    )
                 )
                 break
             next_step = route[1]
@@ -259,18 +281,26 @@ def gameplay_node(state: GameState) -> dict:
                 ps.game_over = True
                 ps.victory = True
                 _stream(f"  >>> VICTORY (auto, no actions) at tick {ps.tick}")
-                new_messages.append(AIMessage(content=f"[gameplay] VICTORY (auto) at tick {ps.tick}"))
+                new_messages.append(
+                    AIMessage(content=f"[gameplay] VICTORY (auto) at tick {ps.tick}")
+                )
                 break
             ps.current_room = next_room
             ps.visited.add(next_room)
-            _stream(f"  >>> Auto-completed gate {mission.gate_index}; moved to {next_room}")
+            _stream(
+                f"  >>> Auto-completed gate {mission.gate_index}; moved to {next_room}"
+            )
             _render_party_map(world, ps.current_room)
             continue
 
         ps.tick += 1
-        _stream(f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  mission: {mission.description[:70]}")
-        _stream(f"     remaining required actions: "
-                f"{[a for a in mission.required_actions if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]}")
+        _stream(
+            f"\n  ── Tick {ps.tick}  [room: {ps.current_room}]  mission: {mission.description[:70]}"
+        )
+        _stream(
+            f"     remaining required actions: "
+            f"{[a for a in mission.required_actions if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]}"
+        )
 
         teammate_last_per_agent = {m.agent_id: None for m in state.party}
         for entry in reversed(ps.log):
@@ -282,19 +312,30 @@ def gameplay_node(state: GameState) -> dict:
         tick_actions: list[TickAction] = []
         for member in state.party:
             teammate = next(
-                (teammate_last_per_agent[m.agent_id] for m in state.party if m.agent_id != member.agent_id),
+                (
+                    teammate_last_per_agent[m.agent_id]
+                    for m in state.party
+                    if m.agent_id != member.agent_id
+                ),
                 None,
             )
-            remaining = [a for a in mission.required_actions
-                         if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])]
+            remaining = [
+                a
+                for a in mission.required_actions
+                if a not in ps.completed_actions_by_gate.get(mission.gate_index, [])
+            ]
             action_space = _build_action_space(remaining)
-            decided = _agent_act(member.agent_id, member, world, ps, mission, action_space, teammate)
+            decided = _agent_act(
+                member.agent_id, member, world, ps, mission, action_space, teammate
+            )
 
             chosen = decided["action"]
             matched = chosen if chosen in remaining else None
 
             if matched:
-                completed_list = ps.completed_actions_by_gate.setdefault(mission.gate_index, [])
+                completed_list = ps.completed_actions_by_gate.setdefault(
+                    mission.gate_index, []
+                )
                 if matched not in completed_list:
                     completed_list.append(matched)
                     note = f"completed required action '{matched}'"
@@ -332,29 +373,46 @@ def gameplay_node(state: GameState) -> dict:
 
             if mission.reward_item:
                 room = next((r for r in world.rooms if r.name == mission.room), None)
-                reward = next((i for i in (room.items if room else []) if i.name == mission.reward_item), None)
+                reward = next(
+                    (
+                        i
+                        for i in (room.items if room else [])
+                        if i.name == mission.reward_item
+                    ),
+                    None,
+                )
                 if reward and not any(i.name == reward.name for i in ps.inventory):
                     ps.inventory.append(reward)
                     _stream(f"  >>> Party picked up: {reward.name}")
-                    new_messages.append(AIMessage(content=f"[gameplay] Party picked up {reward.name}"))
+                    new_messages.append(
+                        AIMessage(content=f"[gameplay] Party picked up {reward.name}")
+                    )
 
             next_room = _next_room_for_completed_mission(world, mission)
             if next_room is None:
                 ps.game_over = True
                 ps.victory = True
                 _stream(f"  >>> VICTORY at tick {ps.tick}")
-                new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
+                new_messages.append(
+                    AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
+                )
             else:
                 ps.current_room = next_room
                 ps.visited.add(next_room)
                 _stream(f"  >>> Party moved to {next_room}")
-                new_messages.append(AIMessage(content=f"[gameplay] Party moved to {next_room} at tick {ps.tick}"))
+                new_messages.append(
+                    AIMessage(
+                        content=f"[gameplay] Party moved to {next_room} at tick {ps.tick}"
+                    )
+                )
                 _render_party_map(world, ps.current_room)
 
     if not ps.game_over:
         ps.game_over = True
         _stream(f"  >>> Stopped: hit MAX_TICKS={MAX_TICKS} without victory")
-        new_messages.append(AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}"))
+        new_messages.append(
+            AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}")
+        )
 
     return {
         "messages": new_messages,

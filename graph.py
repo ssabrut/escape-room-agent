@@ -18,13 +18,23 @@ def build_graph() -> StateGraph:
     builder.add_node("player_agent_2", player_agent_2_node)
     builder.add_node("mission_master", mission_master_node)
     builder.add_node("gameplay", gameplay_node)
+    
     builder.set_entry_point("game_master")
+
+    # fan out from game_master
     builder.add_edge("game_master", "character_master")
+    builder.add_edge("game_master", "mission_master")
+
+    # character selection chain depends on character_master
     builder.add_edge("character_master", "player_agent_1")
     builder.add_edge("player_agent_1", "player_agent_2")
-    builder.add_edge("player_agent_2", "mission_master")
+
+    # gameplay needs everything — both branches must land here
+    builder.add_edge("player_agent_2", "gameplay")
     builder.add_edge("mission_master", "gameplay")
+
     builder.add_edge("gameplay", END)
+
     return builder.compile()
 
 

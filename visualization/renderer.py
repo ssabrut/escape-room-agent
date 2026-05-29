@@ -6,10 +6,10 @@ from collections import deque
 
 from state import Room
 
-CELL_W = 30   # total cell width including border chars
-CELL_H = 7    # fixed cell height: top + name + divider + items(3) + bottom
-H_GAP = 5    # horizontal gap between cells (corridor space)
-V_GAP = 3    # vertical gap between cells (corridor space)
+CELL_W = 30  # total cell width including border chars
+CELL_H = 7  # fixed cell height: top + name + divider + items(3) + bottom
+H_GAP = 5  # horizontal gap between cells (corridor space)
+V_GAP = 3  # vertical gap between cells (corridor space)
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
 DELTA = {"east": (1, 0), "west": (-1, 0), "south": (0, 1), "north": (0, -1)}
@@ -116,7 +116,9 @@ def _draw_v_corridor(canvas: list[list[str]], x: int, y_start: int, y_end: int) 
             canvas[y][x] = "│"
 
 
-def render_room_layout(rooms: list[Room], party_room: str = "", party_label: str = "★") -> None:
+def render_room_layout(
+    rooms: list[Room], party_room: str = "", party_label: str = "★"
+) -> None:
     if not rooms:
         print("  (no rooms to display)")
         return

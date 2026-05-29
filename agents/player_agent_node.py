@@ -55,7 +55,9 @@ def _format_teammate_context(party: list[PartyMember]) -> str:
         return "You are picking first. No teammate has chosen yet."
     lines = ["Your teammate has already chosen:"]
     for member in party:
-        lines.append(f"  - {member.agent_id}: {member.character.name} ({member.character.role})")
+        lines.append(
+            f"  - {member.agent_id}: {member.character.name} ({member.character.role})"
+        )
     lines.append("Pick a character whose strengths complement your teammate's choice.")
     return "\n".join(lines)
 
@@ -111,7 +113,11 @@ def _make_player_node(agent_id: str):
 
         new_party = state.party + [member]
         return {
-            "messages": [AIMessage(content=f"[{agent_id}] chose {member.character.name}: {member.reasoning}")],
+            "messages": [
+                AIMessage(
+                    content=f"[{agent_id}] chose {member.character.name}: {member.reasoning}"
+                )
+            ],
             "party": new_party,
         }
 
