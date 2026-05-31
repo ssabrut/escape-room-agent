@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-31 08:55:02 WIB
+
+### What changed
+- Room entry gating removed — players can freely move between adjacent rooms without prerequisites. Prerequisite list field replaced with plain-text `next_step` hint per room (guides player toward that room's goal without blocking entry).
+- Goal completion now tracked independently from room entry. Each room's `goal_completion` marks when that room's objective is satisfied, used only for victory/progress (not for gate logic).
+- Automatic clue patching added — world generator now detects unsolvable worlds where a required code/info token has no source object, and auto-assigns it to a plausible carrier (prioritizing clue-like objects, takeable items, or interactable containers in the solution path).
+- Room `next_step` field added to gameplay prompt, displayed as "Next step (what to do)" to guide agent strategy without hard-blocking exits.
+
+### Why
+Simplifying room progression: prerequisites were causing dead ends (unwinnable worlds where Room B required conditions only satisfiable in Room A, but Room A's `goal_completion` couldn't be reached without Room B's tools). Moving prerequisites out of entry logic and into goal-completion tracking decouples room unlock from puzzle difficulty. The `next_step` hint provides softer guidance via the agent's reasoning rather than hard failure messages. Auto-patching closes solvability gaps by ensuring every required code/info has a discoverable source before the solver needs it.
+
+---
+
 ## 2026-05-29 16:02:05 WIB
 
 ### What changed

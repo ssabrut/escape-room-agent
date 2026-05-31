@@ -72,12 +72,6 @@ def _build_prerequisite(raw) -> Prerequisite | None:
     )
 
 
-def _build_prerequisites(raw_prereqs) -> list[Prerequisite]:
-    if not isinstance(raw_prereqs, list):
-        return []
-    return [p for p in (_build_prerequisite(r) for r in raw_prereqs) if p is not None]
-
-
 def _build_rooms(raw_rooms: list) -> list[Room]:
     rooms: list[Room] = []
     for raw_room in raw_rooms:
@@ -108,7 +102,7 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
                 adjacency=adjacency,
                 goal=raw_room.get("goal", ""),
                 goal_completion=_build_prerequisite(raw_room.get("goal_completion")),
-                prerequisites=_build_prerequisites(raw_room.get("prerequisites", [])),
+                next_step=raw_room.get("next_step", ""),
                 key_objects=key_objects,
             )
         )
@@ -140,7 +134,7 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
             adjacency=cleaned.get(r.id, {}),
             goal=r.goal,
             goal_completion=r.goal_completion,
-            prerequisites=r.prerequisites,
+            next_step=r.next_step,
             key_objects=r.key_objects,
         )
         for r in rooms
@@ -192,7 +186,7 @@ def _build_win_condition(raw: dict, object_ids: set[str]) -> WinCondition:
 
 
 def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
-    """Drop key_object and prerequisite entries that reference unknown object ids."""
+    """Drop key_object and goal_completion entries that reference unknown object ids."""
     def _valid(p: Prerequisite) -> bool:
         if p.type in {"object_state", "has_item"}:
             return p.object_id in object_ids
@@ -200,13 +194,91 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
 
     for room in rooms:
         room.key_objects = [k for k in room.key_objects if k in object_ids]
-        room.prerequisites = [p for p in room.prerequisites if _valid(p)]
         if room.goal_completion is not None and not _valid(room.goal_completion):
             room.goal_completion = None
     return rooms
 
 
 MAX_ROOMS = 2
+
+_CLUE_HINTS = ("note", "letter", "paper", "scroll", "document", "diary", "journal", "tome", "book", "tablet")
+
+
+def _required_info_tokens(rooms: list[Room], objects: list[WorldObject]) -> list[tuple[str, str]]:
+    """Collect (info_token, source_room) pairs that the world must produce.
+
+    Source room is where the info needs to be available (i.e., a room the party
+    can reach before needing the token). For now we use the first room as the
+    source since maps are at most 2 rooms.
+    """
+    out: list[tuple[str, str]] = []
+    start_room = rooms[0].id if rooms else ""
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        if token and token not in seen:
+            seen.add(token)
+            out.append((token, start_room))
+
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is not None and gc.type == "known_info" and gc.info:
+            _add(gc.info)
+
+    for obj in objects:
+        if obj.requires_code:
+            _add(obj.requires_code)
+    return out
+
+
+def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+    """Attach missing `contains_info` to a plausible carrier object so the world is solvable."""
+    patched: list[str] = []
+    produced = {o.contains_info for o in objects if o.contains_info}
+
+    def _score(obj: WorldObject, source_room: str) -> int:
+        if obj.location != source_room:
+            return -1
+        if obj.contains_info:
+            return -1  # already carries info; don't overwrite
+        if obj.state in HIDDEN_STATES_ROOM:
+            return -1
+        haystack = f"{obj.id} {obj.description}".lower()
+        score = 0
+        if any(h in haystack for h in _CLUE_HINTS):
+            score += 10
+        if obj.takeable:
+            score += 3
+        if obj.interactable:
+            score += 2
+        return score
+
+    for token, source_room in _required_info_tokens(rooms, objects):
+        if any(token in (info or "") or (info or "") in token for info in produced):
+            continue
+        if any(_token_matches_code(token, info) for info in produced):
+            continue
+        candidates = sorted(
+            objects, key=lambda o: _score(o, source_room), reverse=True
+        )
+        winner = next((o for o in candidates if _score(o, source_room) >= 0), None)
+        if winner is None:
+            continue
+        winner.contains_info = token
+        winner.interactable = True
+        produced.add(token)
+        patched.append(f"{token} -> {winner.id}")
+    return patched
+
+
+HIDDEN_STATES_ROOM = {"locked", "locked_bolt", "locked_room", "hidden"}
+
+
+def _token_matches_code(code: str, info: str | None) -> bool:
+    if not info:
+        return False
+    import re as _re
+    return bool(_re.sub(r"[^0-9]", "", info) == _re.sub(r"[^0-9]", "", code) and code)
 
 
 def _build_world(data: dict) -> GameWorld:
@@ -221,6 +293,10 @@ def _build_world(data: dict) -> GameWorld:
     objects = _build_objects(data.get("objects", []), room_ids)
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
+
+    patched = _patch_missing_info(rooms, objects)
+    if patched:
+        print(f"[game_master] auto-patched missing clues: {', '.join(patched)}", flush=True)
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]

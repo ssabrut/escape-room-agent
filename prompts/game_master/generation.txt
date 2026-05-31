@@ -5,33 +5,39 @@ Theme: {theme}
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Exactly TWO rooms. Room A is the starting room (empty prerequisites). Room B is gated behind Room A. Each room has an id, description, cardinal adjacency to the other, a local goal, prerequisites, and key objects. The win_condition MUST live in Room B and equal Room B's `goal_completion`.
+* Exactly TWO rooms. Room A is the starting room. Room B is the final room. Each room has an id, description, cardinal adjacency to the other, a local goal, a next_step hint, key objects, and a goal_completion condition. The win_condition MUST live in Room B and equal Room B's `goal_completion`.
 * Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
 
-Room goal & prerequisite rules (two-room mode):
+Room goal & goal_completion rules (two-room mode):
 - Each room has a one-sentence `goal` describing what the party must accomplish there.
 - Each room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
-- Room A (start): `prerequisites: []`. Its `goal_completion` produces whatever Room B needs to enter (e.g., a door unlocked, a keycard taken, a clue learned).
-- Room B (final): `prerequisites` MUST contain exactly Room A's `goal_completion` (verbatim — same `type`, `object_id`, `state`/`info`/`id`). Its `goal_completion` MUST equal the `win_condition`.
+- Each room has a `next_step`: a plain-English human-readable hint for the player (e.g., "Find the keycard hidden in the library", "Crack the safe using the code from the clue"). For Room A, this guides toward Room A's `goal_completion`. For Room B, this guides toward the final puzzle.
+- Room A (start): Its `goal_completion` produces whatever gives Room B's puzzle a solution (e.g., a door unlocked, a keycard taken, a clue learned).
+- Room B (final): Its `goal_completion` MUST equal the `win_condition`.
 - `key_objects` is a list of object ids in this room that matter for its goal — used to focus the player's attention.
-- Prerequisite / goal_completion shapes:
+- Goal_completion shapes:
     - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
     - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
     - {{"type": "has_item", "object_id": "<existing_id>"}} — e.g., the party must carry a keycard
     - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
-- CRITICAL LINKAGE RULE: Room B's prerequisite MUST equal Room A's `goal_completion`. The only way to enter Room B is to finish Room A's puzzle. No shortcuts.
 
 Adjacency rules:
 - Use only cardinal directions: "north", "south", "east", "west"
 - Room A and Room B MUST be cardinal neighbors. If A says east is B, then B MUST say west is A.
 - No other adjacency entries — only the single edge between A and B.
 
-Solvability rule (CRITICAL):
-- Every code (`requires_code`) MUST be discoverable in the world. At least one object whose `contains_info` matches the code (or contains the code substring) must exist in a reachable location BEFORE the locked object. Same for liquids, powers, and tools — the means to satisfy a precondition must already be reachable when the precondition is needed.
-- Do NOT invent codes or clues that only appear in the `solution_path`. The runtime ignores the solution path; players can only act on what is in `objects[]` and what `contains_info` reveals.
+Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
+- Every code (`requires_code`) MUST be produced by some object's `contains_info` field. The token string in `contains_info` must contain the code substring (e.g., `contains_info: "safe_code_742"` produces the code `742`).
+- Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
+- Every `requires_tool` MUST reference an object that is `takeable: true` and reachable before the locked object.
+- WRONG (unsolvable — the code 742 only appears in the prose description, not in contains_info):
+    {{"id": "hidden_note", "location": "room_hold", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
+- RIGHT (solvable — examining the note produces the info token, which satisfies a known_info prerequisite or unlocks a requires_code: "742"):
+    {{"id": "hidden_note", "location": "room_hold", "description": "A folded note", "takeable": true, "interactable": true, "contains_info": "safe_code_742"}}
+- Self-check before responding: for every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it. If you can't, you have an unsolvable world; fix it.
 
 Object rules:
 - Every object has a unique snake_case id
@@ -70,9 +76,7 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
             }},
             "goal": "one-sentence local goal for this room",
             "goal_completion": {{"type": "object_state", "object_id": "chest_in_this_room", "state": "unlocked"}},
-            "prerequisites": [
-                {{"type": "object_state", "object_id": "chest_in_previous_room", "state": "unlocked"}}
-            ],
+            "next_step": "Find the keycard hidden in the library and use it on the vault door",
             "key_objects": ["object_id_one", "object_id_two"]
         }}
     ],

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class Prerequisite(BaseModel):
-    """Condition that must hold for the party to enter a room."""
+    """A structured condition — used by Room.goal_completion to mark when a room's goal is done."""
 
     type: str  # "object_state" | "known_info" | "has_item" | "power_active"
     object_id: str | None = None
@@ -25,7 +25,7 @@ class Room(BaseModel):
     adjacency: dict[str, str] = Field(default_factory=dict)
     goal: str = ""
     goal_completion: Prerequisite | None = None
-    prerequisites: list[Prerequisite] = Field(default_factory=list)
+    next_step: str = ""
     key_objects: list[str] = Field(default_factory=list)
 
 

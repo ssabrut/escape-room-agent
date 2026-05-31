@@ -21,8 +21,6 @@ from state import (
     GameWorld,
     PartyMember,
     PartyState,
-    Prerequisite,
-    Room,
     TickAction,
     WorldObject,
 )
@@ -371,32 +369,34 @@ def _resolve_open(obj: WorldObject, ps: PartyState) -> str:
     return f"missing power {obj.requires_power}"
 
 
-def _prerequisite_satisfied(p: Prerequisite, ps: PartyState) -> bool:
-    if p.type == "object_state":
-        return bool(p.object_id) and ps.object_states.get(p.object_id) == p.state
-    if p.type == "known_info":
-        return bool(p.info) and p.info in ps.known_info
-    if p.type == "has_item":
-        return bool(p.object_id) and p.object_id in ps.inventory
-    if p.type == "power_active":
-        return bool(p.id) and p.id in ps.power_active
-    return True
+def _goal_completion_satisfied(completion, ps: PartyState) -> bool:
+    """Check if a goal_completion prerequisite is satisfied."""
+    if completion is None:
+        return False
+    if completion.type == "object_state":
+        return bool(completion.object_id) and ps.object_states.get(completion.object_id) == completion.state
+    if completion.type == "known_info":
+        return bool(completion.info) and completion.info in ps.known_info
+    if completion.type == "has_item":
+        return bool(completion.object_id) and completion.object_id in ps.inventory
+    if completion.type == "power_active":
+        return bool(completion.id) and completion.id in ps.power_active
+    return False
 
 
-def _unmet_prerequisites(room: Room, ps: PartyState) -> list[Prerequisite]:
-    return [p for p in room.prerequisites if not _prerequisite_satisfied(p, ps)]
-
-
-def _format_prereq(p: Prerequisite) -> str:
-    if p.type == "object_state":
-        return f"{p.object_id} must be {p.state}"
-    if p.type == "known_info":
-        return f"must know {p.info}"
-    if p.type == "has_item":
-        return f"must carry {p.object_id}"
-    if p.type == "power_active":
-        return f"power {p.id} must be on"
-    return p.type
+def _format_goal_completion(completion) -> str:
+    """Format a goal_completion for display."""
+    if completion is None:
+        return "(no condition)"
+    if completion.type == "object_state":
+        return f"{completion.object_id} → {completion.state}"
+    if completion.type == "known_info":
+        return f"learn '{completion.info}'"
+    if completion.type == "has_item":
+        return f"carry {completion.object_id}"
+    if completion.type == "power_active":
+        return f"power {completion.id} on"
+    return completion.type
 
 
 def _resolve_action(
@@ -418,11 +418,6 @@ def _resolve_action(
         if dest in rooms_by_id:
             current = rooms_by_id.get(ps.current_room)
             if current and dest in current.adjacency.values():
-                dest_room = rooms_by_id[dest]
-                unmet = _unmet_prerequisites(dest_room, ps)
-                if unmet:
-                    reasons = "; ".join(_format_prereq(p) for p in unmet)
-                    return (f"cannot enter {dest} — {reasons}", None)
                 ps.current_room = dest
                 ps.visited.add(dest)
                 return (f"moved to {dest}", None)
@@ -509,31 +504,23 @@ def _agent_act(
     win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
 
     room_goal = room.goal if room and room.goal else "(no specific goal — explore)"
+    room_next_step = room.next_step if room and room.next_step else "(explore and discover)"
     if room and room.goal_completion is not None:
-        if _prerequisite_satisfied(room.goal_completion, ps):
-            room_goal_status = f"DONE ({_format_prereq(room.goal_completion)})"
+        if _goal_completion_satisfied(room.goal_completion, ps):
+            room_goal_status = f"DONE ✓"
         else:
-            room_goal_status = f"IN PROGRESS — need: {_format_prereq(room.goal_completion)}"
+            room_goal_status = f"IN PROGRESS — need: {_format_goal_completion(room.goal_completion)}"
     else:
         room_goal_status = "(no completion condition)"
     key_objs = (
         ", ".join(room.key_objects) if room and room.key_objects else "(none flagged)"
     )
 
-    # Show what's still missing to unlock any adjacent rooms.
+    # Show adjacent rooms.
     exit_lines: list[str] = []
     if room:
-        rooms_by_id = {r.id: r for r in world.rooms}
         for direction, neighbor_id in room.adjacency.items():
-            neighbor = rooms_by_id.get(neighbor_id)
-            if neighbor is None:
-                continue
-            unmet = _unmet_prerequisites(neighbor, ps)
-            if unmet:
-                reasons = "; ".join(_format_prereq(p) for p in unmet)
-                exit_lines.append(f"{direction} -> {neighbor_id}: BLOCKED ({reasons})")
-            else:
-                exit_lines.append(f"{direction} -> {neighbor_id}: OPEN")
+            exit_lines.append(f"{direction} → {neighbor_id}")
     room_exit_status = "; ".join(exit_lines) if exit_lines else "(no exits)"
 
     prompt = ACTION_PROMPT.format(
@@ -546,6 +533,7 @@ def _agent_act(
         room_description=room.description if room else "",
         room_goal=room_goal,
         room_goal_status=room_goal_status,
+        room_next_step=room_next_step,
         room_key_objects=key_objs,
         room_exit_status=room_exit_status,
         objective=world.objective,
