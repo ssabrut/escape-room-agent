@@ -6,7 +6,6 @@ override the verdict. Do NOT invent codes, items, or facts the party has not dis
 
 Room the party is trying to leave: {room_id}
 Room goal: {room_goal}
-Next-step hint: {next_step}
 Destination: {dest_room}
 
 Goal completion required: {goal_completion}
@@ -18,7 +17,7 @@ VERDICT: {verdict}
 If VERDICT is ALLOW: narrate the party successfully leaving — the lock clicks, the door
 swings, they step through toward {dest_room}.
 If VERDICT is BLOCK: narrate why they cannot leave yet, pointing at what is missing
-without spelling out any secret value. Nudge them toward the next step.
+without spelling out any secret value. Nudge them toward completing the room goal.
 
 Respond ONLY with raw JSON, no prose or fences:
 {{"narration": "one or two sentences of in-world Game Master narration"}}

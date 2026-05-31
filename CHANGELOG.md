@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-01 00:50:17 WIB
+
+### What changed
+- World generation reverted to single-room mode — exactly one room that is both start and final, with empty adjacency, and whose `goal_completion` equals the `win_condition`. The full puzzle chain (clue → code/tool → final unlock) must now resolve inside that one room.
+- The per-room `next_step` hint was removed entirely — the field is gone from the room model, generation prompt, gameplay/eval prompts, and the GM exit-evaluation narration (which now nudges toward completing the room goal rather than a next-step hint).
+- Room truncation is now win-aware — when the LLM over-produces rooms, the room holding the `win_condition` object is kept (anchored first) instead of blindly keeping the first room, preventing unsolvable worlds.
+- Object ids that collide with a room id are now rejected during world build, and the generation prompt forbids emitting an object that represents the room itself.
+
+### Why
+The project is collapsing back to a single room to validate the core solve loop before scaling, which makes the multi-room `next_step` hint obsolete. The win-aware truncation guards against the generator's tendency to over-produce rooms and accidentally drop the one containing the win object, while the id-collision guard prevents malformed worlds where an object shadows its own room.
+
+---
+
 ## 2026-05-31 23:56:02 WIB
 
 ### What changed

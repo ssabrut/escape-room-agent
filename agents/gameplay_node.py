@@ -545,7 +545,6 @@ def _agent_act(
     win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
 
     room_goal = room.goal if room and room.goal else "(no specific goal — explore)"
-    room_next_step = room.next_step if room and room.next_step else "(explore and discover)"
     if room and room.goal_completion is not None:
         if _goal_completion_satisfied(room.goal_completion, ps):
             room_goal_status = f"DONE ✓"
@@ -582,7 +581,6 @@ def _agent_act(
         room_description=room.description if room else "",
         room_goal=room_goal,
         room_goal_status=room_goal_status,
-        room_next_step=room_next_step,
         room_key_objects=key_objs,
         room_exit_status=room_exit_status,
         objective=world.objective,

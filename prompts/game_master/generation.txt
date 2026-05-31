@@ -5,20 +5,18 @@ Theme: {theme}
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Exactly TWO rooms. Room A is the starting room. Room B is the final room. Each room has an id, description, cardinal adjacency to the other, a local goal, a next_step hint, key objects, and a goal_completion condition. The win_condition MUST live in Room B and equal Room B's `goal_completion`.
+* Exactly ONE room. It is both the starting room and the final room. It has an id, description, an empty adjacency object, a local goal, key objects, and a goal_completion condition. The win_condition MUST live in this room and equal the room's `goal_completion`.
 * Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
 
-Room goal & goal_completion rules (two-room mode):
-- Each room has a one-sentence `goal` describing what the party must accomplish there. The `goal` MUST name the SAME object or outcome that `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
-- Each room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
-- Each room has a `next_step`: a plain-English hint for the player (e.g., "Find the keycard hidden in the library", "Crack the safe using the clue you found"). For Room A, this guides toward Room A's `goal_completion`. For Room B, this guides toward the final puzzle.
-- SPOILER RULE: `next_step` and `solution_path` are shown to players. NEVER write a literal code, combination, or password in them (no "the code is 1942", no "enter 1942"). Refer to it as "the hidden code" or "the clue you found". Codes live only in objects' `contains_info` / `requires_code`, never in hints.
-- Room A (start): Its `goal_completion` produces whatever gives Room B's puzzle a solution (e.g., a door unlocked, a keycard taken, a clue learned).
-- Room B (final): Its `goal_completion` MUST equal the `win_condition`.
-- `key_objects` is a list of object ids in this room that matter for its goal — used to focus the player's attention.
+Room goal & goal_completion rules (single-room mode):
+- The room has a one-sentence `goal` describing what the party must accomplish. The `goal` MUST name the SAME object or outcome that `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
+- The room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in). This `goal_completion` MUST equal the `win_condition`.
+- SPOILER RULE: `solution_path` is shown to players. NEVER write a literal code, combination, or password in it (no "the code is 1942", no "enter 1942"). Refer to it as "the hidden code" or "the clue you found". Codes live only in objects' `contains_info` / `requires_code`, never in hints.
+- Because there is one room, the full puzzle chain (clue -> code/tool -> final unlock) must be solvable entirely inside this room.
+- `key_objects` is a list of object ids in this room that matter for its goal — used to focus the party's attention.
 - Goal_completion shapes:
     - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
     - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
@@ -26,9 +24,7 @@ Room goal & goal_completion rules (two-room mode):
     - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
 
 Adjacency rules:
-- Use only cardinal directions: "north", "south", "east", "west"
-- Room A and Room B MUST be cardinal neighbors. If A says east is B, then B MUST say west is A.
-- No other adjacency entries — only the single edge between A and B.
+- There is only one room, so its `adjacency` MUST be an empty object: {{}}.
 
 Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
 - Every code (`requires_code`) MUST be produced by some object's `contains_info` field. The token string in `contains_info` must contain the code substring (e.g., `contains_info: "safe_code_742"` produces the code `742`).
@@ -42,6 +38,7 @@ Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
 
 Object rules:
 - Every object has a unique snake_case id
+- An object id MUST NOT equal the room id. Do not emit an object that represents the room itself.
 - location must be either an existing room id OR another existing object id (for nesting, e.g. a key inside a safe)
 - state examples: "visible", "fixed", "hidden", "locked", "locked_bolt", "locked_room", "unlocked"
 - interactable: true if the player can act on it; takeable: true only for portable items
@@ -72,12 +69,9 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
         {{
             "id": "room_id_here",
             "description": "room description",
-            "adjacency": {{
-                "east": "other_room_id"
-            }},
-            "goal": "one-sentence local goal for this room",
-            "goal_completion": {{"type": "object_state", "object_id": "chest_in_this_room", "state": "unlocked"}},
-            "next_step": "Find the keycard hidden in the library and use it on the vault door",
+            "adjacency": {{}},
+            "goal": "one-sentence goal for this room",
+            "goal_completion": {{"type": "object_state", "object_id": "target_object_id", "state": "unlocked"}},
             "key_objects": ["object_id_one", "object_id_two"]
         }}
     ],

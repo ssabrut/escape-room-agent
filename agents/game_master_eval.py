@@ -60,7 +60,6 @@ def _narrate(
     prompt = EVALUATION_PROMPT.format(
         room_id=room.id,
         room_goal=room.goal or "(no specific goal)",
-        next_step=room.next_step or "(explore and discover)",
         dest_room=dest_room,
         goal_completion=completion_str,
         satisfied="yes" if satisfied else "no",

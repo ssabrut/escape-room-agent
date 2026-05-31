@@ -25,7 +25,6 @@ class Room(BaseModel):
     adjacency: dict[str, str] = Field(default_factory=dict)
     goal: str = ""
     goal_completion: Prerequisite | None = None
-    next_step: str = ""
     key_objects: list[str] = Field(default_factory=list)
 
 

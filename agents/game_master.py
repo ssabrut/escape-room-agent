@@ -102,7 +102,6 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
                 adjacency=adjacency,
                 goal=raw_room.get("goal", ""),
                 goal_completion=_build_prerequisite(raw_room.get("goal_completion")),
-                next_step=raw_room.get("next_step", ""),
                 key_objects=key_objects,
             )
         )
@@ -134,7 +133,6 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
             adjacency=cleaned.get(r.id, {}),
             goal=r.goal,
             goal_completion=r.goal_completion,
-            next_step=r.next_step,
             key_objects=r.key_objects,
         )
         for r in rooms
@@ -159,7 +157,12 @@ def _coerce_id(value) -> str | None:
 def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObject]:
     """Build objects, validating that locations and tool references resolve."""
     candidates: list[dict] = [o for o in raw_objects if isinstance(o, dict) and o.get("id")]
-    known_object_ids = {o["id"] for o in candidates if isinstance(o.get("id"), str)}
+    # Object ids that collide with a room id are rejected, so don't treat them as
+    # valid locations or tool targets either.
+    known_object_ids = {
+        o["id"] for o in candidates
+        if isinstance(o.get("id"), str) and o["id"] not in room_ids
+    }
     valid_locations = room_ids | known_object_ids
 
     objects: list[WorldObject] = []
@@ -167,6 +170,8 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
         obj_id = _coerce_id(raw.get("id"))
         if obj_id is None:
             continue  # malformed id
+        if obj_id in room_ids:
+            continue  # an object's id must not collide with a room id
 
         location = _coerce_id(raw.get("location")) or ""
         if location not in valid_locations:
@@ -246,10 +251,9 @@ def _secret_tokens(objects: list[WorldObject]) -> set[str]:
     return tokens
 
 
-def _scrub_spoilers(rooms: list[Room], solution_path: list[str], secrets: set[str]) -> tuple[list[str], list[str]]:
-    """Redact literal codes from player-facing hints (room.next_step, solution_path).
+def _scrub_spoilers(solution_path: list[str], secrets: set[str]) -> tuple[list[str], list[str]]:
+    """Redact literal codes from the player-facing solution_path.
 
-    next_step is shown live to players, so a leaked code hands them the answer.
     Returns (redactions, cleaned_solution_path) for logging.
     """
     redactions: list[str] = []
@@ -263,10 +267,6 @@ def _scrub_spoilers(rooms: list[Room], solution_path: list[str], secrets: set[st
                 out = out.replace(tok, "the hidden code")
                 redactions.append(f"{where}: '{tok}'")
         return out
-
-    for room in rooms:
-        if room.next_step:
-            room.next_step = _redact(room.next_step, f"next_step[{room.id}]")
 
     cleaned_path = [_redact(step, "solution_path") for step in solution_path]
     return redactions, cleaned_path
@@ -324,7 +324,7 @@ def _bind_goals(rooms: list[Room]) -> list[str]:
     return rewrites
 
 
-MAX_ROOMS = 2
+MAX_ROOMS = 1
 
 _CLUE_HINTS = ("note", "letter", "paper", "scroll", "document", "diary", "journal", "tome", "book", "tablet")
 
@@ -406,10 +406,35 @@ def _token_matches_code(code: str, info: str | None) -> bool:
     return bool(_re.sub(r"[^0-9]", "", info) == _re.sub(r"[^0-9]", "", code) and code)
 
 
+def _select_rooms(rooms: list[Room], data: dict, limit: int) -> list[Room]:
+    """Truncate to `limit` rooms, preferring the room that holds the win object.
+
+    The LLM is asked for one room, but if it over-produces, blindly keeping the
+    first room can drop the room containing the win_condition object (making the
+    world unsolvable). Anchor on the win object's room instead.
+    """
+    win = data.get("win_condition")
+    win_object_id = win.get("object_id") if isinstance(win, dict) else None
+    win_room: str | None = None
+    if win_object_id:
+        for obj in data.get("objects", []):
+            if isinstance(obj, dict) and obj.get("id") == win_object_id:
+                loc = obj.get("location")
+                win_room = loc if isinstance(loc, str) else None
+                break
+
+    ordered = list(rooms)
+    if win_room:
+        anchor = next((r for r in ordered if r.id == win_room), None)
+        if anchor is not None:
+            ordered = [anchor] + [r for r in ordered if r.id != win_room]
+    return ordered[:limit]
+
+
 def _build_world(data: dict) -> GameWorld:
     rooms = _repair_adjacency(_build_rooms(data.get("rooms", [])))
     if MAX_ROOMS > 0 and len(rooms) > MAX_ROOMS:
-        rooms = rooms[:MAX_ROOMS]
+        rooms = _select_rooms(rooms, data, MAX_ROOMS)
         kept_ids = {r.id for r in rooms}
         for r in rooms:
             r.adjacency = {d: n for d, n in r.adjacency.items() if n in kept_ids}
@@ -431,7 +456,7 @@ def _build_world(data: dict) -> GameWorld:
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
 
     secrets = _secret_tokens(objects)
-    redactions, solution_path = _scrub_spoilers(rooms, solution_path, secrets)
+    redactions, solution_path = _scrub_spoilers(solution_path, secrets)
     if redactions:
         print(f"[game_master] scrubbed spoilers: {', '.join(redactions)}", flush=True)
 
