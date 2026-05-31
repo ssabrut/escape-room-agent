@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-31 23:56:02 WIB
+
+### What changed
+- Player-facing hints no longer leak answers — literal codes/combinations (both the raw token like `safe_code_1942` and its bare digits `1942`) are now scrubbed from each room's `next_step` and from the `solution_path`, replaced with "the hidden code". Codes remain only in objects' `contains_info`/`requires_code`.
+- Room goal prose is now bound to its actual completion condition — when the LLM's narrative goal diverges from what `goal_completion` checks, the goal is rewritten to a deterministic sentence derived from the condition (e.g. "Get X into the 'unlocked' state"). `known_info` goals are always normalized to a non-leaking sentence since their subject is a secret token.
+- World generation logs any spoiler redactions and goal rewrites it applies.
+- Generation prompt now requires the `goal` to name the same object/outcome `goal_completion` checks, and adds an explicit SPOILER RULE forbidding literal codes/passwords in `next_step` and `solution_path`.
+
+### Why
+Player-facing hints (`next_step` is shown live during play, `solution_path` in logs) could contain the literal answer code, handing the puzzle to the agents for free. Separately, the LLM sometimes wrote a goal describing a different step than the machine condition actually required, so the displayed objective misled players. Scrubbing secrets and binding goal prose to the real completion condition keeps puzzles solvable-by-effort and the displayed objective truthful.
+
+---
+
 ## 2026-05-31 22:07:29 WIB
 
 ### What changed
