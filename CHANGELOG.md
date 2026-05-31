@@ -2,6 +2,30 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-05-31 22:07:29 WIB
+
+### What changed
+- World generation is now resilient to malformed LLM output — object id, location, and tool-reference fields that arrive as dicts (e.g. `{"id": "crowbar"}`) or lists are normalized to plain id strings, descriptions/states are coerced to strings, and nested structures in scalar fields are dropped (`fuses` is kept only when it is a dict).
+- Objects that still fail validation are skipped individually rather than crashing the whole generation step, so one bad object no longer aborts building the world.
+
+### Why
+The LLM intermittently emits object references and fields in the wrong shape (dicts/lists instead of id strings, malformed nested values), which previously caused Pydantic validation errors that crashed world generation. Coercing id-like fields and skipping unrecoverable objects keeps the generator robust against these schema deviations.
+
+---
+
+## 2026-05-31 10:03:20 WIB
+
+### What changed
+- Stall detection added — when every party member idles for two consecutive ticks, agents are nudged with an explicit prompt to examine an un-inspected object, apply a known clue/tool/code, or move rooms instead of waiting again.
+- `wait` is now offered only as a true last resort — it appears in the action space solely when no productive action exists, and unparseable LLM replies fall back to the first productive option (preferring idle only if explicitly offered).
+- Same-tick teammate awareness — each agent now sees the action a teammate JUST took earlier in the same tick (published in-place as players act), with prompt guidance to split work and avoid duplicating a teammate's current-tick action.
+- Action visibility improved — the tick header now shows known info and a cumulative action log (last 12 entries), and each agent panel surfaces what the teammate did ("SAW : ...").
+
+### Why
+Smoke runs showed agents falling into mutual-idle cascades and duplicating each other's actions within a tick because each player only saw the prior tick's state. Demoting `wait` to a last resort, surfacing same-tick teammate actions, and nudging on detected stalls break these loops and push the party toward productive, non-overlapping progress.
+
+---
+
 ## 2026-05-31 08:55:02 WIB
 
 ### What changed

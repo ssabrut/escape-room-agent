@@ -141,27 +141,46 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
     ]
 
 
+def _coerce_id(value) -> str | None:
+    """Normalize an id-like field to a string.
+
+    The LLM sometimes emits an object reference as a dict (e.g.
+    {"id": "crowbar"}) or a list instead of a plain id string. Pull out a
+    sensible id; otherwise drop it so set membership and Pydantic don't choke.
+    """
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, dict):
+        inner = value.get("id") or value.get("name")
+        return inner if isinstance(inner, str) and inner else None
+    return None
+
+
 def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObject]:
     """Build objects, validating that locations and tool references resolve."""
     candidates: list[dict] = [o for o in raw_objects if isinstance(o, dict) and o.get("id")]
-    known_object_ids = {o["id"] for o in candidates}
+    known_object_ids = {o["id"] for o in candidates if isinstance(o.get("id"), str)}
     valid_locations = room_ids | known_object_ids
 
     objects: list[WorldObject] = []
     for raw in candidates:
-        location = raw.get("location", "")
+        obj_id = _coerce_id(raw.get("id"))
+        if obj_id is None:
+            continue  # malformed id
+
+        location = _coerce_id(raw.get("location")) or ""
         if location not in valid_locations:
             continue  # drop objects placed nowhere real
 
-        requires_tool = raw.get("requires_tool") or None
+        requires_tool = _coerce_id(raw.get("requires_tool"))
         if requires_tool and requires_tool not in known_object_ids:
             requires_tool = None  # null out dangling tool references
 
         kwargs = {
-            "id": raw["id"],
+            "id": obj_id,
             "location": location,
-            "description": raw.get("description", ""),
-            "state": raw.get("state", "visible"),
+            "description": str(raw.get("description", "")),
+            "state": str(raw.get("state", "visible")),
             "interactable": bool(raw.get("interactable", False)),
             "takeable": bool(raw.get("takeable", False)),
             "requires_tool": requires_tool,
@@ -169,10 +188,21 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
         for field in _OPTIONAL_OBJECT_FIELDS:
             if field == "requires_tool":
                 continue
-            if field in raw and raw[field] not in (None, ""):
-                kwargs[field] = raw[field]
+            value = raw.get(field)
+            if value in (None, ""):
+                continue
+            # fuses is a dict; everything else must be a scalar (str/int). Drop
+            # malformed nested structures the LLM occasionally emits.
+            if field == "fuses":
+                if isinstance(value, dict):
+                    kwargs[field] = value
+            elif isinstance(value, (str, int)):
+                kwargs[field] = value
 
-        objects.append(WorldObject(**kwargs))
+        try:
+            objects.append(WorldObject(**kwargs))
+        except Exception:
+            continue  # skip objects that still fail validation rather than crash
     return objects
 
 

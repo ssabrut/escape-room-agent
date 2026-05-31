@@ -251,7 +251,9 @@ def _build_action_space(
             if move not in seen:
                 seen.add(move)
                 space.append(move)
-    if IDLE_ACTION not in seen:
+    # Only offer 'wait' as a true last resort — when no productive action exists.
+    # Otherwise agents idle instead of examining, applying clues, or moving.
+    if not space:
         space.append(IDLE_ACTION)
     return space
 
@@ -478,7 +480,10 @@ def _resolve_choice(response: str, space: list[str]) -> str:
     for option in space:
         if _normalize(option) == norm:
             return option
-    return IDLE_ACTION
+    # Unparseable reply: prefer idling if offered, else the first productive option.
+    if IDLE_ACTION in space:
+        return IDLE_ACTION
+    return space[0] if space else IDLE_ACTION
 
 
 def _format_objects(visible: list[WorldObject], ps: PartyState) -> str:
@@ -492,6 +497,7 @@ def _format_objects(visible: list[WorldObject], ps: PartyState) -> str:
 
 
 HISTORY_WINDOW = 6
+ACTION_LOG_WINDOW = 12
 
 
 def _format_agent_history(ps: PartyState, agent_id: str, limit: int = HISTORY_WINDOW) -> str:
@@ -503,6 +509,23 @@ def _format_agent_history(ps: PartyState, agent_id: str, limit: int = HISTORY_WI
     )
 
 
+STALL_TICKS = 2
+
+
+def _party_stalled(ps: PartyState, party_size: int) -> bool:
+    """True if every action across the last STALL_TICKS ticks was idle.
+
+    A mutual-idle cascade: nobody is making progress, so the next agent should
+    be nudged to break the loop (move rooms or apply a clue).
+    """
+    if party_size <= 0 or ps.tick <= STALL_TICKS:
+        return False
+    window = [e for e in ps.log if e.tick > ps.tick - 1 - STALL_TICKS]
+    if len(window) < party_size * STALL_TICKS:
+        return False
+    return all(e.action == IDLE_ACTION for e in window)
+
+
 def _agent_act(
     agent_id: str,
     member: PartyMember,
@@ -511,6 +534,7 @@ def _agent_act(
     action_space: list[str],
     visible: list[WorldObject],
     teammate_last: TickAction | None,
+    stalled: bool = False,
 ) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
@@ -540,6 +564,14 @@ def _agent_act(
             exit_lines.append(f"{direction} → {neighbor_id}")
     room_exit_status = "; ".join(exit_lines) if exit_lines else "(no exits)"
 
+    history_str = _format_agent_history(ps, agent_id)
+    if stalled:
+        history_str = (
+            "  !! THE PARTY IS STALLED — everyone has been idling. Do NOT 'wait'. "
+            "Examine an un-inspected object, apply a known clue/tool/code, or "
+            "'go <room_id>' to a new room THIS tick.\n" + history_str
+        )
+
     prompt = ACTION_PROMPT.format(
         agent_id=agent_id,
         character_name=member.character.name,
@@ -561,7 +593,7 @@ def _agent_act(
         action_space=space_str,
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
-        agent_recent_history=_format_agent_history(ps, agent_id),
+        agent_recent_history=history_str,
     )
 
     llm = get_llm("player")
@@ -688,17 +720,37 @@ def _render_tick_header(
         )
     inv = ", ".join(ps.inventory) if ps.inventory else "(empty)"
     state_lines.append(f"* shared inventory: {inv}")
+    known = ", ".join(ps.known_info) if ps.known_info else "(none)"
+    state_lines.append(f"* known info: {known}")
     _panel("CURRENT STATE", state_lines)
+
+    # Cumulative log of actions already performed by the party (most recent last).
+    log_lines: list[str] = ["### Actions performed so far"]
+    if ps.log:
+        for e in ps.log[-ACTION_LOG_WINDOW:]:
+            log_lines.append(
+                f"* tick {e.tick} {e.agent_id}: {e.action} -> {e.note or '(no change)'}"
+            )
+        if len(ps.log) > ACTION_LOG_WINDOW:
+            log_lines.append(f"  (+{len(ps.log) - ACTION_LOG_WINDOW} earlier)")
+    else:
+        log_lines.append("* (none yet)")
+    _panel("ACTION LOG", log_lines)
 
 
 def _render_agent_action(
-    member: PartyMember, decided: dict, note: str
+    member: PartyMember, decided: dict, note: str, teammate: TickAction | None = None
 ) -> None:
     ab = member.character.ability
     uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s) left"
     status = _classify_outcome(note)
+    if teammate is not None:
+        saw = f"{teammate.agent_id} -> {teammate.action} ({teammate.note or 'no change'})"
+    else:
+        saw = "(nothing yet)"
     body = [
         f"Ability: {ab.name} [{ab.effect}, {uses}]",
+        f"SAW : teammate {saw}",
         f"DO : {decided['action']}",
         f"{status} : {note}",
     ]
@@ -762,11 +814,16 @@ def gameplay_node(state: GameState) -> dict:
 
         _render_tick_header(world, ps, state.party)
 
-        teammate_last_per_agent = {m.agent_id: None for m in state.party}
+        # Most recent action per agent, seeded from prior ticks. Updated in-place
+        # as each player acts this tick so later players see what earlier players
+        # just did and avoid duplicating it.
+        last_action_by_agent: dict[str, TickAction | None] = {
+            m.agent_id: None for m in state.party
+        }
         for entry in reversed(ps.log):
-            if teammate_last_per_agent.get(entry.agent_id) is None:
-                teammate_last_per_agent[entry.agent_id] = entry
-            if all(v is not None for v in teammate_last_per_agent.values()):
+            if last_action_by_agent.get(entry.agent_id) is None:
+                last_action_by_agent[entry.agent_id] = entry
+            if all(v is not None for v in last_action_by_agent.values()):
                 break
 
         prev_room = ps.current_room
@@ -774,31 +831,36 @@ def gameplay_node(state: GameState) -> dict:
         prev_known = list(ps.known_info)
         prev_power = set(ps.power_active)
 
+        stalled = _party_stalled(ps, len(state.party))
+        if stalled:
+            _stream("  !! Party stalled (mutual idle) — nudging agents to act.")
+
         tick_actions: list[TickAction] = []
         for member in state.party:
             teammate = next(
                 (
-                    teammate_last_per_agent[m.agent_id]
+                    last_action_by_agent[m.agent_id]
                     for m in state.party
                     if m.agent_id != member.agent_id
                 ),
                 None,
             )
             decided = _agent_act(
-                member.agent_id, member, world, ps, action_space, visible, teammate
+                member.agent_id, member, world, ps, action_space, visible, teammate, stalled
             )
             note, target = _resolve_action(decided["action"], world, ps)
-            tick_actions.append(
-                TickAction(
-                    tick=ps.tick,
-                    agent_id=member.agent_id,
-                    say=decided["say"],
-                    action=decided["action"],
-                    target_object=target,
-                    note=note,
-                )
+            this_action = TickAction(
+                tick=ps.tick,
+                agent_id=member.agent_id,
+                say=decided["say"],
+                action=decided["action"],
+                target_object=target,
+                note=note,
             )
-            _render_agent_action(member, decided, note)
+            tick_actions.append(this_action)
+            # Publish this action immediately so the next player this tick sees it.
+            last_action_by_agent[member.agent_id] = this_action
+            _render_agent_action(member, decided, note, teammate)
 
             if _check_victory(world, ps):
                 break

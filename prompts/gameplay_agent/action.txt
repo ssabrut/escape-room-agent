@@ -21,6 +21,7 @@ Known clues / discovered info: {known_info}
 
 Your teammate's most recent line: {teammate_last_say}
 Your teammate's most recent action: {teammate_last_action}
+Your teammate may have JUST acted this same tick. Do NOT pick the same action or target your teammate's most recent action already covers — split the work and act on a different object or task.
 
 Your own recent actions (most recent last) and their outcomes:
 {agent_recent_history}
