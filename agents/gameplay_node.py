@@ -14,6 +14,7 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agents.game_master_eval import GMVerdict, evaluate_room_exit
 from config.settings import get_llm
 from prompts import load_prompt
 from state import (
@@ -137,7 +138,7 @@ STATUS_INFO = "..."     # action ran but nothing changed (examine without new in
 STATUS_FAIL = "XX"      # action invalid / missing precondition
 
 _OK_KEYWORDS = ("unlocked", "took", "moved", "learned", "flipped", "inserted", "entered", "used")
-_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse", "dead end", "nothing new")
+_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse", "dead end", "nothing new", "blocked")
 
 
 def _classify_outcome(note: str) -> str:
@@ -399,6 +400,18 @@ def _format_goal_completion(completion) -> str:
     return completion.type
 
 
+def _gm_gate_exit(world: GameWorld, ps: PartyState, room, dest: str) -> GMVerdict:
+    """Ask the Game Master to adjudicate leaving `room` for `dest`.
+
+    The room's goal_completion is checked deterministically here; the GM only
+    decides+narrates around that fact.
+    """
+    completion = room.goal_completion
+    satisfied = completion is None or _goal_completion_satisfied(completion, ps)
+    completion_str = _format_goal_completion(completion)
+    return evaluate_room_exit(world, ps, room, dest, satisfied, completion_str)
+
+
 def _resolve_action(
     action: str, world: GameWorld, ps: PartyState
 ) -> tuple[str, str | None]:
@@ -418,6 +431,10 @@ def _resolve_action(
         if dest in rooms_by_id:
             current = rooms_by_id.get(ps.current_room)
             if current and dest in current.adjacency.values():
+                verdict = _gm_gate_exit(world, ps, current, dest)
+                _render_gm_verdict(current.id, dest, verdict)
+                if not verdict.allow:
+                    return (f"GM blocked move to {dest} — {verdict.missing}", None)
                 ps.current_room = dest
                 ps.visited.add(dest)
                 return (f"moved to {dest}", None)
@@ -686,6 +703,17 @@ def _render_agent_action(
         f"{status} : {note}",
     ]
     _panel(f"{member.agent_id} -- {member.character.name} ({member.character.role})", body)
+
+
+def _render_gm_verdict(room_id: str, dest: str, verdict: GMVerdict) -> None:
+    decision = "ALLOW ->" if verdict.allow else "BLOCK XX"
+    body = [
+        f"{decision} leave {room_id} for {dest}",
+        f'"{verdict.narration}"',
+    ]
+    if not verdict.allow and verdict.missing:
+        body.append(f"({verdict.missing})")
+    _panel("GAME MASTER", body)
 
 
 def _render_final(ps: PartyState, world: GameWorld) -> None:
