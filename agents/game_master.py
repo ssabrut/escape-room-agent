@@ -229,6 +229,101 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     return rooms
 
 
+def _secret_tokens(objects: list[WorldObject]) -> set[str]:
+    """Codes the player must DISCOVER — these must never be spelled out in hints.
+
+    Includes both the raw token (e.g. 'safe_code_1942') and the bare digits the
+    engine actually matches on (e.g. '1942'), so either form gets redacted.
+    """
+    tokens: set[str] = set()
+    for o in objects:
+        code = o.requires_code
+        if code:
+            tokens.add(code)
+            digits = re.sub(r"[^0-9]", "", code)
+            if digits:
+                tokens.add(digits)
+    return tokens
+
+
+def _scrub_spoilers(rooms: list[Room], solution_path: list[str], secrets: set[str]) -> tuple[list[str], list[str]]:
+    """Redact literal codes from player-facing hints (room.next_step, solution_path).
+
+    next_step is shown live to players, so a leaked code hands them the answer.
+    Returns (redactions, cleaned_solution_path) for logging.
+    """
+    redactions: list[str] = []
+    # longest-first so '1942' inside 'safe_code_1942' is handled by the token pass
+    ordered = sorted(secrets, key=len, reverse=True)
+
+    def _redact(text: str, where: str) -> str:
+        out = text
+        for tok in ordered:
+            if tok and tok in out:
+                out = out.replace(tok, "the hidden code")
+                redactions.append(f"{where}: '{tok}'")
+        return out
+
+    for room in rooms:
+        if room.next_step:
+            room.next_step = _redact(room.next_step, f"next_step[{room.id}]")
+
+    cleaned_path = [_redact(step, "solution_path") for step in solution_path]
+    return redactions, cleaned_path
+
+
+def _goal_completion_subject(p: Prerequisite) -> str | None:
+    """The id/info token a goal_completion hinges on — used to bind goal prose to it."""
+    if p.type in {"object_state", "has_item"}:
+        return p.object_id
+    if p.type == "known_info":
+        return p.info
+    if p.type == "power_active":
+        return p.id
+    return None
+
+
+def _goal_from_completion(p: Prerequisite) -> str:
+    """A deterministic, spoiler-free goal sentence derived from the condition."""
+    if p.type == "object_state":
+        return f"Get {p.object_id} into the '{p.state}' state."
+    if p.type == "has_item":
+        return f"Find and take {p.object_id}."
+    if p.type == "known_info":
+        return "Discover the hidden clue this room conceals."
+    if p.type == "power_active":
+        return f"Bring the {p.id} power line online."
+    return "Solve this room's puzzle."
+
+
+def _bind_goals(rooms: list[Room]) -> list[str]:
+    """Ensure each room's `goal` prose actually refers to its goal_completion subject.
+
+    When the LLM's narrative goal diverges from the machine condition (e.g. goal
+    says 'open the safe' but completion only needs a known_info), replace the goal
+    with a deterministic sentence derived from the condition. Returns rewrites for
+    logging. known_info goals are always normalized (the subject is a hidden token
+    that must not appear in the prose).
+    """
+    rewrites: list[str] = []
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is None:
+            continue
+        subject = _goal_completion_subject(gc)
+        goal = room.goal or ""
+        # has_item/object_state/power: prose should name the subject id.
+        if gc.type in {"object_state", "has_item", "power_active"}:
+            if subject and subject.lower() not in goal.lower():
+                room.goal = _goal_from_completion(gc)
+                rewrites.append(f"{room.id}: goal rebound to completion ({gc.type})")
+        # known_info: the subject is a secret token — force a non-leaking goal.
+        elif gc.type == "known_info":
+            room.goal = _goal_from_completion(gc)
+            rewrites.append(f"{room.id}: known_info goal normalized")
+    return rewrites
+
+
 MAX_ROOMS = 2
 
 _CLUE_HINTS = ("note", "letter", "paper", "scroll", "document", "diary", "journal", "tome", "book", "tablet")
@@ -328,8 +423,17 @@ def _build_world(data: dict) -> GameWorld:
     if patched:
         print(f"[game_master] auto-patched missing clues: {', '.join(patched)}", flush=True)
 
+    rewrites = _bind_goals(rooms)
+    if rewrites:
+        print(f"[game_master] rebound goals to completion: {', '.join(rewrites)}", flush=True)
+
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
+
+    secrets = _secret_tokens(objects)
+    redactions, solution_path = _scrub_spoilers(rooms, solution_path, secrets)
+    if redactions:
+        print(f"[game_master] scrubbed spoilers: {', '.join(redactions)}", flush=True)
 
     return GameWorld(
         scenario=data.get("scenario", ""),

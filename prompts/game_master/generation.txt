@@ -12,9 +12,10 @@ Include:
 * Solution path (numbered steps from start to win)
 
 Room goal & goal_completion rules (two-room mode):
-- Each room has a one-sentence `goal` describing what the party must accomplish there.
+- Each room has a one-sentence `goal` describing what the party must accomplish there. The `goal` MUST name the SAME object or outcome that `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
 - Each room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
-- Each room has a `next_step`: a plain-English human-readable hint for the player (e.g., "Find the keycard hidden in the library", "Crack the safe using the code from the clue"). For Room A, this guides toward Room A's `goal_completion`. For Room B, this guides toward the final puzzle.
+- Each room has a `next_step`: a plain-English hint for the player (e.g., "Find the keycard hidden in the library", "Crack the safe using the clue you found"). For Room A, this guides toward Room A's `goal_completion`. For Room B, this guides toward the final puzzle.
+- SPOILER RULE: `next_step` and `solution_path` are shown to players. NEVER write a literal code, combination, or password in them (no "the code is 1942", no "enter 1942"). Refer to it as "the hidden code" or "the clue you found". Codes live only in objects' `contains_info` / `requires_code`, never in hints.
 - Room A (start): Its `goal_completion` produces whatever gives Room B's puzzle a solution (e.g., a door unlocked, a keycard taken, a clue learned).
 - Room B (final): Its `goal_completion` MUST equal the `win_condition`.
 - `key_objects` is a list of object ids in this room that matter for its goal — used to focus the player's attention.
