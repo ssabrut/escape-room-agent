@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-01 08:33:41 WIB
+
+### What changed
+- Agents now run a dedicated observation phase — the first tick after entering a room is spent observing (each agent enumerates objects and their states and reasons about the goal via a new `observe` prompt) before any action is taken. Rooms remember they've been observed (`observed_rooms`) so the entry pass runs once per room.
+- Every subsequent tick, agents re-observe the current state and then act *from* that fresh observation, which is passed into the action prompt.
+- The object checkmark in the map/tick header now means "puzzle handled" — an object is marked resolved only when its state actually changed from initial or it was taken into inventory, no longer when merely examined.
+
+### Why
+Agents were acting on stale or shallow readings of the room and treating a bare examine as "done", which inflated progress and led to poor decisions. Forcing an explicit observe-then-act cycle (and a one-time entry observation) grounds each action in the current object states, and tightening the resolved-object definition makes the progress display reflect real puzzle advancement.
+
+---
+
 ## 2026-06-01 00:50:17 WIB
 
 ### What changed

@@ -1,0 +1,26 @@
+You are {agent_id}, playing as {character_name} ({character_role}).
+You are in the room "{current_room}". Before acting, OBSERVE the current state and PLAN.
+
+Room description: {room_description}
+Room goal: {room_goal}
+Victory condition: {win_condition}
+
+Every object in this room and its current state (object - state):
+{object_state_list}
+
+Shared inventory: {inventory}
+Known clues / discovered info: {known_info}
+
+Analyze, working BACKWARD from the goal:
+1. Which object is the goal/winning object, and what does it need to change state
+   (a code? a tool? power? an item)?
+2. Which OTHER object most likely supplies that requirement (a clue to examine, a
+   tool to take, a container to open first)?
+3. State the first concrete step the party should take.
+
+Do NOT take an action this turn — this is observation only. Keep it to 2-3 short sentences.
+
+Respond ONLY with raw JSON. No prose, markdown, or fences:
+{{
+    "observation": "what the goal needs and which object likely supplies it (2-3 sentences)"
+}}

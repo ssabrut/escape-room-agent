@@ -30,6 +30,7 @@ from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
+OBSERVE_PROMPT = load_prompt("gameplay_agent", "observe")
 
 MAX_TICKS = 40
 IDLE_ACTION = "wait"
@@ -535,6 +536,7 @@ def _agent_act(
     visible: list[WorldObject],
     teammate_last: TickAction | None,
     stalled: bool = False,
+    observation: str = "",
 ) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
@@ -586,6 +588,7 @@ def _agent_act(
         objective=world.objective,
         win_condition=win_str,
         objects_in_room=_format_objects(visible, ps),
+        current_observation=observation or "(none)",
         inventory=inventory_str,
         known_info=known_str,
         action_space=space_str,
@@ -604,6 +607,71 @@ def _agent_act(
         "say": str(data.get("say", "")).strip(),
         "action": _resolve_choice(raw_choice, action_space),
     }
+
+
+# ---------- observation phase ----------
+
+def _format_object_states(visible: list[WorldObject], ps: PartyState) -> str:
+    """Compact 'object - state' inventory used by the entry observation phase."""
+    if not visible:
+        return "  (no objects visible)"
+    lines = []
+    for o in visible:
+        state = ps.object_states.get(o.id, o.state)
+        lines.append(f"  - {o.id} - {state}")
+    return "\n".join(lines)
+
+
+def _agent_observe(
+    agent_id: str,
+    member: PartyMember,
+    world: GameWorld,
+    ps: PartyState,
+    visible: list[WorldObject],
+) -> str:
+    """One agent observes the room and reasons about the goal — no action taken."""
+    room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    win = world.win_condition
+    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+
+    prompt = OBSERVE_PROMPT.format(
+        agent_id=agent_id,
+        character_name=member.character.name,
+        character_role=member.character.role,
+        current_room=ps.current_room,
+        room_description=room.description if room else "",
+        room_goal=room.goal if room and room.goal else "(no specific goal — explore)",
+        win_condition=win_str,
+        object_state_list=_format_object_states(visible, ps),
+        inventory=", ".join(ps.inventory) if ps.inventory else "(empty)",
+        known_info=", ".join(ps.known_info) if ps.known_info else "(none)",
+    )
+    llm = get_llm("player")
+    response = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    )
+    data = _parse_json(response.content) or {}
+    return str(data.get("observation", "")).strip()
+
+
+def _render_observation(room_id: str, visible: list[WorldObject], ps: PartyState) -> None:
+    body = [f"Entered {room_id} — objects observed (object - state):"]
+    for o in visible:
+        state = ps.object_states.get(o.id, o.state)
+        body.append(f"  {o.id} - {state}")
+    if not visible:
+        body.append("  (no objects visible)")
+    _panel("OBSERVATION", body)
+
+
+def _render_agent_observation(
+    member: PartyMember, observation: str, label: str = "OBSERVES"
+) -> None:
+    body = [observation or "(no observation)"]
+    _panel(
+        f"{member.agent_id} -- {member.character.name} ({member.character.role}) {label}",
+        body,
+    )
 
 
 # ---------- initial state ----------
@@ -651,8 +719,22 @@ def _render_intro(world: GameWorld, party: list[PartyMember]) -> None:
         _stream()
 
 
-def _interacted_object_ids(ps: PartyState) -> set[str]:
-    return {entry.target_object for entry in ps.log if entry.target_object}
+def _resolved_object_ids(world: GameWorld, ps: PartyState) -> set[str]:
+    """Objects that are actually DONE — state changed from initial, or taken.
+
+    Merely examining an object (even one that yields no new info) does NOT mark
+    it resolved; the checkmark means "this object's puzzle is handled".
+    """
+    resolved: set[str] = set()
+    initial = {o.id: o.state for o in world.objects}
+    for obj in world.objects:
+        if obj.id in ps.inventory:
+            resolved.add(obj.id)
+            continue
+        current = ps.object_states.get(obj.id, obj.state)
+        if current != initial.get(obj.id, obj.state):
+            resolved.add(obj.id)
+    return resolved
 
 
 def _compute_map_flow(world: GameWorld, ps: PartyState) -> list[str]:
@@ -678,7 +760,7 @@ def _render_tick_header(
     _stream()
     _rule(f"TICK {ps.tick} / {MAX_TICKS}")
 
-    interacted = _interacted_object_ids(ps)
+    resolved = _resolved_object_ids(world, ps)
 
     flow = _compute_map_flow(world, ps)
     flow_str = " -> ".join(flow) if flow else "(no route)"
@@ -691,7 +773,7 @@ def _render_tick_header(
         world.objects,
         party_room=ps.current_room,
         party_label="* PARTY",
-        interacted_ids=interacted,
+        interacted_ids=resolved,
         object_states=ps.object_states,
     )
     _stream()
@@ -704,7 +786,7 @@ def _render_tick_header(
         if room_objects:
             map_lines.append("    * objects:")
             for o in room_objects:
-                tick_mark = "[x]" if o.id in interacted else "[ ]"
+                tick_mark = "[x]" if o.id in resolved else "[ ]"
                 st = ps.object_states.get(o.id, o.state)
                 map_lines.append(f"        * {tick_mark} {o.id} [{st}]")
         else:
@@ -812,6 +894,28 @@ def gameplay_node(state: GameState) -> dict:
 
         _render_tick_header(world, ps, state.party)
 
+        # Entry observation: the first tick in a newly-entered room is spent
+        # observing — agents enumerate object/state and reason about the goal
+        # before any action is taken.
+        if ps.current_room not in ps.observed_rooms:
+            _render_observation(ps.current_room, visible, ps)
+            for member in state.party:
+                observation = _agent_observe(
+                    member.agent_id, member, world, ps, visible
+                )
+                ps.log.append(
+                    TickAction(
+                        tick=ps.tick,
+                        agent_id=member.agent_id,
+                        say=observation,
+                        action="observe",
+                        note="observed room",
+                    )
+                )
+                _render_agent_observation(member, observation, label="PLANS")
+            ps.observed_rooms.add(ps.current_room)
+            continue
+
         # Most recent action per agent, seeded from prior ticks. Updated in-place
         # as each player acts this tick so later players see what earlier players
         # just did and avoid duplicating it.
@@ -843,8 +947,14 @@ def gameplay_node(state: GameState) -> dict:
                 ),
                 None,
             )
+            # Re-observe the current state every tick, then act FROM that observation.
+            observation = _agent_observe(
+                member.agent_id, member, world, ps, visible
+            )
+            _render_agent_observation(member, observation, label="RE-OBSERVES")
             decided = _agent_act(
-                member.agent_id, member, world, ps, action_space, visible, teammate, stalled
+                member.agent_id, member, world, ps, action_space, visible, teammate,
+                stalled, observation,
             )
             note, target = _resolve_action(decided["action"], world, ps)
             this_action = TickAction(

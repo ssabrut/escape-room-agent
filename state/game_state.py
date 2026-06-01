@@ -135,6 +135,7 @@ class PartyState(BaseModel):
     log: list[TickAction] = Field(default_factory=list)
     ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
     spotted_clues: list[str] = Field(default_factory=list)
+    observed_rooms: set[str] = Field(default_factory=set)  # rooms whose entry observation pass is done
 
 
 class GameState(BaseModel):
