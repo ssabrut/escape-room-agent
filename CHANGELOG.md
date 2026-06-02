@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 10:58:36 WIB
+
+### What changed
+- The Game Master now proactively directs the party onward: once the current room's goal is satisfied and a route to the win room exists, it announces (with LLM-generated narration, plus a templated fallback) the order to advance to the next room — rather than waiting for a player to attempt `go` on their own.
+- The deterministic next hop toward the win room is computed by the engine, and that destination is surfaced into each agent's action prompt as a Game Master directive that overrides their other priorities for that tick, so the party reliably picks `go <dest>`.
+- The GM directive is recorded in the tick log as a non-gameplay action (`gm_directive`), so it's excluded from teammate "last action" context and stall detection, and is rendered in its own Game Master panel.
+
+### Why
+Once a room was cleared, the party could linger instead of moving on. Having the Game Master actively call the advance — with a computed destination injected as an overriding directive — keeps the party progressing toward the win room without relying on agents to independently decide to leave.
+
+---
+
 ## 2026-06-02 10:38:54 WIB
 
 ### What changed

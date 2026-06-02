@@ -14,7 +14,12 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agents.game_master_eval import GMVerdict, evaluate_room_exit
+from agents.game_master_eval import (
+    GMDirective,
+    GMVerdict,
+    announce_room_cleared,
+    evaluate_room_exit,
+)
 from config.settings import get_llm
 from prompts import load_prompt
 from state import (
@@ -44,7 +49,7 @@ DEBATE_ROUNDS = 1
 
 # Log entries that record observation/planning passes rather than a real move.
 # Excluded from teammate "last action" context and stall detection.
-NON_GAMEPLAY_ACTIONS = {"observe", "plan", "reobserve", "replan"}
+NON_GAMEPLAY_ACTIONS = {"observe", "plan", "reobserve", "replan", "gm_directive"}
 
 HIDDEN_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
 UNLOCKED_STATES = {"unlocked", "open", "visible"}
@@ -579,6 +584,7 @@ def _agent_act(
     teammate_last: TickAction | None,
     stalled: bool = False,
     escape_plan: str = "",
+    gm_directive: str = "",
 ) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
@@ -615,7 +621,14 @@ def _agent_act(
             "'go <room_id>' to a new room THIS tick.\n" + history_str
         )
 
+    gm_directive_str = (
+        gm_directive
+        if gm_directive
+        else "(none — keep working this room's goal)"
+    )
+
     prompt = ACTION_PROMPT.format(
+        gm_directive=gm_directive_str,
         agent_id=agent_id,
         character_name=member.character.name,
         character_role=member.character.role,
@@ -1055,6 +1068,37 @@ def _compute_map_flow(world: GameWorld, ps: PartyState) -> list[str]:
     return graph.path(ps.current_room, target_room)
 
 
+def _next_room_toward_win(world: GameWorld, ps: PartyState) -> str | None:
+    """The adjacent room the party should step into next on the way to the win room.
+
+    Returns None when the party is already in the win room (or no route exists).
+    """
+    flow = _compute_map_flow(world, ps)
+    # flow[0] is the current room; flow[1] is the next hop, if any.
+    if len(flow) >= 2:
+        return flow[1]
+    return None
+
+
+def _gm_room_directive(world: GameWorld, ps: PartyState) -> GMDirective | None:
+    """If the current room's goal is done and a next room exists, the GM directs onward.
+
+    Returns None when the room has no completion condition, the goal is not yet
+    satisfied, or the party is already in the final (win) room — in those cases the
+    GM stays quiet and lets the party keep working / win.
+    """
+    room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    if room is None or room.goal_completion is None:
+        return None
+    if not _goal_completion_satisfied(room.goal_completion, ps):
+        return None
+    dest = _next_room_toward_win(world, ps)
+    if dest is None:
+        return None
+    completion_str = _format_goal_completion(room.goal_completion)
+    return announce_room_cleared(world, ps, room, dest, completion_str)
+
+
 def _render_tick_header(
     world: GameWorld,
     ps: PartyState,
@@ -1162,6 +1206,14 @@ def _render_gm_verdict(room_id: str, dest: str, verdict: GMVerdict) -> None:
     ]
     if not verdict.allow and verdict.missing:
         body.append(f"({verdict.missing})")
+    _panel("GAME MASTER", body)
+
+
+def _render_gm_directive(room_id: str, directive: GMDirective) -> None:
+    body = [
+        f"ADVANCE -> goal of {room_id} complete; head to {directive.dest_room}",
+        f'"{directive.narration}"',
+    ]
     _panel("GAME MASTER", body)
 
 
@@ -1293,6 +1345,24 @@ def gameplay_node(state: GameState) -> dict:
         if stalled:
             _stream("  !! Party stalled (mutual idle) — nudging agents to act.")
 
+        # If this room's goal is already done, the Game Master proactively steps
+        # in and directs the party to the next room (rather than waiting for a
+        # player to attempt 'go' on their own). The directive is surfaced to each
+        # agent's action prompt so they pick 'go <dest>' this tick.
+        directive = _gm_room_directive(world, ps)
+        if directive is not None:
+            _stream()
+            _render_gm_directive(ps.current_room, directive)
+            ps.log.append(
+                TickAction(
+                    tick=ps.tick,
+                    agent_id="game_master",
+                    say=directive.narration,
+                    action="gm_directive",
+                    note=f"advance to {directive.dest_room}",
+                )
+            )
+
         tick_actions: list[TickAction] = []
         for member in state.party:
             teammate = next(
@@ -1307,9 +1377,16 @@ def gameplay_node(state: GameState) -> dict:
             # stays grounded in the agreed strategy rather than re-deriving it.
             plan_bullets = ps.room_plans.get(ps.current_room, [])
             plan = "\n".join(f"- {b}" for b in plan_bullets)
+            gm_directive_str = (
+                f"GAME MASTER DIRECTIVE: This room's goal is complete. "
+                f"Move to {directive.dest_room} now via 'go {directive.dest_room}'. "
+                f"{directive.narration}"
+                if directive is not None
+                else ""
+            )
             decided = _agent_act(
                 member.agent_id, member, world, ps, action_space, visible, teammate,
-                stalled, plan,
+                stalled, plan, gm_directive_str,
             )
             note, target = _resolve_action(decided["action"], world, ps)
             this_action = TickAction(

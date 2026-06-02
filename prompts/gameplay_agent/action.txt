@@ -9,6 +9,9 @@ Room goal status: {room_goal_status}
 Key objects in this room (prioritize these): {room_key_objects}
 To leave this room you still need: {room_exit_status}
 
+Game Master directive (if present, this OVERRIDES everything else — obey it this tick):
+{gm_directive}
+
 Overall objective: {objective}
 Victory condition: {win_condition}
 

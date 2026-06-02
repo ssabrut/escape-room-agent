@@ -21,6 +21,7 @@ from state import GameWorld, PartyState, Room
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 EVALUATION_PROMPT = load_prompt("game_master", "evaluation")
+DIRECTIVE_PROMPT = load_prompt("game_master", "directive")
 
 
 class GMVerdict(BaseModel):
@@ -29,6 +30,13 @@ class GMVerdict(BaseModel):
     allow: bool
     narration: str
     missing: str = ""
+
+
+class GMDirective(BaseModel):
+    """The Game Master's proactive prompt to move on once a room's goal is done."""
+
+    dest_room: str
+    narration: str
 
 
 def _parse_json(text: str) -> dict | None:
@@ -106,3 +114,44 @@ def evaluate_room_exit(
     missing = "" if satisfied else f"still need: {completion_str}"
     narration = _narrate(room, dest_room, completion_str, satisfied, missing)
     return GMVerdict(allow=satisfied, narration=narration, missing=missing)
+
+
+def announce_room_cleared(
+    world: GameWorld,
+    ps: PartyState,
+    room: Room,
+    dest_room: str,
+    completion_str: str,
+) -> GMDirective:
+    """The GM speaks up once `room`'s goal is done, directing the party onward.
+
+    Called proactively at the start of a tick (not in response to a `go` action).
+    The destination is decided deterministically by the caller; the GM narrates
+    the order to move to `dest_room`. A templated fallback keeps the loop running
+    if the LLM is unavailable.
+    """
+    prompt = DIRECTIVE_PROMPT.format(
+        room_id=room.id,
+        room_goal=room.goal or "(no specific goal)",
+        dest_room=dest_room,
+        goal_completion=completion_str or "(no condition)",
+    )
+    try:
+        llm = get_llm("game_master")
+        response = llm.invoke(
+            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+        )
+        data = _parse_json(response.content) or {}
+        narration = str(data.get("narration", "")).strip()
+        if narration:
+            return GMDirective(dest_room=dest_room, narration=narration)
+    except Exception:
+        pass
+
+    return GMDirective(
+        dest_room=dest_room,
+        narration=(
+            f"The goal of {room.id} is done. Move on to {dest_room} — "
+            "there is nothing more for you here."
+        ),
+    )
