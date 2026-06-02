@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 09:59:16 WIB
+
+### What changed
+- Generated worlds now contain TWO connected rooms instead of one: a starting room and a final room joined by a single doorway (mirrored adjacency, e.g. east<->west). The win condition lives in the second room.
+- The first room's goal now gates passage to the second: the party cannot reach the final room until the first room's goal_completion (e.g. unlocking the connecting door) is satisfied, and the puzzle chain flows across both rooms.
+- Room truncation now anchors on BOTH the starting room and the win-object room when the LLM over-produces rooms, preserving the playable start->win chain (previously it only kept the win-object room).
+
+### Why
+Expanding from single-room to two-room worlds makes the escape rooms richer and multi-stage, with a gated progression between rooms. The selection logic was updated in lockstep so that over-generation can't drop either endpoint of the start-to-win path.
+
+---
+
 ## 2026-06-02 09:43:25 WIB
 
 ### What changed

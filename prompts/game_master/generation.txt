@@ -5,18 +5,20 @@ Theme: {theme}
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
-* Exactly ONE room. It is both the starting room and the final room. It has an id, description, an empty adjacency object, a local goal, key objects, and a goal_completion condition. The win_condition MUST live in this room and equal the room's `goal_completion`.
+* Exactly TWO rooms, connected by a single doorway. The FIRST room is the starting room; the SECOND room is the final room. Each room has an id, description, an adjacency object (linking the two rooms), a local goal, key objects, and a goal_completion condition. The win_condition MUST live in the SECOND room and equal the second room's `goal_completion`.
 * Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
 
-Room goal & goal_completion rules (single-room mode):
-- The room has a one-sentence `goal` describing what the party must accomplish. The `goal` MUST name the SAME object or outcome that `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
-- The room has a `goal_completion`: a structured condition that is TRUE exactly when the room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in). This `goal_completion` MUST equal the `win_condition`.
+Room goal & goal_completion rules (two-room mode):
+- Each room has a one-sentence `goal` describing what the party must accomplish there. A room's `goal` MUST name the SAME object or outcome that its `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
+- Each room has a `goal_completion`: a structured condition that is TRUE exactly when that room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
+- The FIRST room's `goal_completion` GATES passage to the second room: the party cannot leave the first room until its goal_completion is satisfied. Make completing it the prerequisite for entering the second room (e.g. unlock the connecting door, find the keycard, or learn the clue needed next door).
+- The SECOND room's `goal_completion` MUST equal the `win_condition` — satisfying it ends the game.
 - SPOILER RULE: `solution_path` is shown to players. NEVER write a literal code, combination, or password in it (no "the code is 1942", no "enter 1942"). Refer to it as "the hidden code" or "the clue you found". Codes live only in objects' `contains_info` / `requires_code`, never in hints.
-- Because there is one room, the full puzzle chain (clue -> code/tool -> final unlock) must be solvable entirely inside this room.
-- `key_objects` is a list of object ids in this room that matter for its goal — used to focus the party's attention.
+- The puzzle chain must flow across the two rooms: the first room's chain (clue -> code/tool -> gate) is solvable inside the first room, and the second room's chain is solvable once the party has entered it (it may rely on items/clues carried over from the first room).
+- `key_objects` is a list of object ids in that room that matter for its goal — used to focus the party's attention. Only list ids of objects located in that same room.
 - Goal_completion shapes:
     - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
     - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
@@ -24,16 +26,19 @@ Room goal & goal_completion rules (single-room mode):
     - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
 
 Adjacency rules:
-- There is only one room, so its `adjacency` MUST be an empty object: {{}}.
+- The two rooms MUST be connected with a single mirrored direction pair. Valid directions: north, south, east, west.
+- If the first room reaches the second via "east", the second room MUST reach the first via "west" (the opposites are: north<->south, east<->west).
+- Each room's `adjacency` maps a direction to the OTHER room's id. Example: first room `{{"east": "<second_room_id>"}}`, second room `{{"west": "<first_room_id>"}}`.
+- Reference only the two real room ids in adjacency.
 
 Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
 - Every code (`requires_code`) MUST be produced by some object's `contains_info` field. The token string in `contains_info` must contain the code substring (e.g., `contains_info: "safe_code_742"` produces the code `742`).
 - Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
 - Every `requires_tool` MUST reference an object that is `takeable: true` and reachable before the locked object.
 - WRONG (unsolvable — the code 742 only appears in the prose description, not in contains_info):
-    {{"id": "hidden_note", "location": "room_hold", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
+    {{"id": "hidden_note", "location": "first_room_id", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
 - RIGHT (solvable — examining the note produces the info token, which satisfies a known_info prerequisite or unlocks a requires_code: "742"):
-    {{"id": "hidden_note", "location": "room_hold", "description": "A folded note", "takeable": true, "interactable": true, "contains_info": "safe_code_742"}}
+    {{"id": "hidden_note", "location": "first_room_id", "description": "A folded note", "takeable": true, "interactable": true, "contains_info": "safe_code_742"}}
 - Self-check before responding: for every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it. If you can't, you have an unsolvable world; fix it.
 
 Object rules:
@@ -67,12 +72,20 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
     "objective": "one sentence objective",
     "rooms": [
         {{
-            "id": "room_id_here",
-            "description": "room description",
-            "adjacency": {{}},
-            "goal": "one-sentence goal for this room",
-            "goal_completion": {{"type": "object_state", "object_id": "target_object_id", "state": "unlocked"}},
+            "id": "first_room_id",
+            "description": "first room description",
+            "adjacency": {{"east": "second_room_id"}},
+            "goal": "one-sentence goal that gates passage to the second room",
+            "goal_completion": {{"type": "object_state", "object_id": "connecting_door_id", "state": "unlocked"}},
             "key_objects": ["object_id_one", "object_id_two"]
+        }},
+        {{
+            "id": "second_room_id",
+            "description": "second room description",
+            "adjacency": {{"west": "first_room_id"}},
+            "goal": "one-sentence goal for the final room",
+            "goal_completion": {{"type": "object_state", "object_id": "target_object_id", "state": "unlocked"}},
+            "key_objects": ["object_id_three", "object_id_four"]
         }}
     ],
     "objects": [

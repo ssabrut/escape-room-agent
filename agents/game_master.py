@@ -324,7 +324,7 @@ def _bind_goals(rooms: list[Room]) -> list[str]:
     return rewrites
 
 
-MAX_ROOMS = 1
+MAX_ROOMS = 2
 
 _CLUE_HINTS = ("note", "letter", "paper", "scroll", "document", "diary", "journal", "tome", "book", "tablet")
 
@@ -407,11 +407,12 @@ def _token_matches_code(code: str, info: str | None) -> bool:
 
 
 def _select_rooms(rooms: list[Room], data: dict, limit: int) -> list[Room]:
-    """Truncate to `limit` rooms, preferring the room that holds the win object.
+    """Truncate to `limit` rooms, keeping the start room and the win-object room.
 
-    The LLM is asked for one room, but if it over-produces, blindly keeping the
-    first room can drop the room containing the win_condition object (making the
-    world unsolvable). Anchor on the win object's room instead.
+    The LLM is asked for two rooms, but if it over-produces, blindly keeping the
+    first `limit` rooms can drop the room containing the win_condition object
+    (making the world unsolvable). Anchor on both the starting room (rooms[0])
+    and the win object's room so the playable start->win chain survives.
     """
     win = data.get("win_condition")
     win_object_id = win.get("object_id") if isinstance(win, dict) else None
@@ -424,10 +425,12 @@ def _select_rooms(rooms: list[Room], data: dict, limit: int) -> list[Room]:
                 break
 
     ordered = list(rooms)
-    if win_room:
-        anchor = next((r for r in ordered if r.id == win_room), None)
-        if anchor is not None:
-            ordered = [anchor] + [r for r in ordered if r.id != win_room]
+    start_id = ordered[0].id if ordered else None
+    anchors = [rid for rid in (start_id, win_room) if rid]
+    if anchors:
+        anchored = [r for r in ordered if r.id in anchors]
+        rest = [r for r in ordered if r.id not in anchors]
+        ordered = anchored + rest
     return ordered[:limit]
 
 
