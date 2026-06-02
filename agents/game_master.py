@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameState, GameWorld, Prerequisite, Room, WinCondition, WorldObject
+from state import GameState, GameWorld, Prerequisite, Room, WorldObject
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
@@ -211,15 +211,6 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
     return objects
 
 
-def _build_win_condition(raw: dict, object_ids: set[str]) -> WinCondition:
-    if not isinstance(raw, dict):
-        return WinCondition()
-    object_id = raw.get("object_id", "")
-    if object_id not in object_ids:
-        object_id = next(iter(object_ids), "")
-    return WinCondition(object_id=object_id, state=raw.get("state", ""))
-
-
 def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     """Drop key_object and goal_completion entries that reference unknown object ids."""
     def _valid(p: Prerequisite) -> bool:
@@ -396,6 +387,135 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
     return patched
 
 
+def _dedup_objects(objects: list[WorldObject], rooms: list[Room]) -> tuple[list[WorldObject], list[str]]:
+    """Collapse near-duplicate objects in the same room into one.
+
+    The LLM sometimes emits a container AND a redundant "lock" object for it —
+    e.g. ``golden_chest`` plus ``gold_chest_lock`` in the same room, both locked,
+    both requiring the same tool, with nothing distinguishing them functionally.
+    Two objects are treated as duplicates when they share a location, state, and
+    identical precondition fields (same requires_code/tool/liquid/power/fuses).
+
+    The survivor is the one referenced by a room goal_completion / win target /
+    key_objects (the "real" object the game checks); the other is dropped, and any
+    requires_tool references to the dropped id are repointed at the survivor.
+    """
+    merges: list[str] = []
+    referenced: set[str] = set()
+    for room in rooms:
+        referenced.update(room.key_objects)
+        gc = room.goal_completion
+        if gc is not None and gc.object_id:
+            referenced.add(gc.object_id)
+
+    def _precond_signature(o: WorldObject) -> tuple:
+        return (
+            o.location,
+            o.state,
+            o.requires_code,
+            o.requires_tool,
+            o.requires_liquid,
+            o.requires_power,
+            tuple(sorted((o.fuses or {}).items())),
+        )
+
+    # group by precondition signature
+    groups: dict[tuple, list[WorldObject]] = {}
+    for o in objects:
+        groups.setdefault(_precond_signature(o), []).append(o)
+
+    drop: dict[str, str] = {}  # dropped_id -> survivor_id
+    for sig, group in groups.items():
+        # only collapse when the signature carries a real precondition (locked +
+        # a requirement); identical plain scenery is left alone.
+        has_precond = any(sig[2:6]) or sig[6]
+        if len(group) < 2 or not has_precond:
+            continue
+        survivor = next((o for o in group if o.id in referenced), group[0])
+        for o in group:
+            if o.id is survivor.id or o.id == survivor.id:
+                continue
+            drop[o.id] = survivor.id
+            merges.append(f"{o.id} -> {survivor.id}")
+
+    if not drop:
+        return objects, merges
+
+    kept = [o for o in objects if o.id not in drop]
+    for o in kept:
+        if o.requires_tool in drop:
+            o.requires_tool = drop[o.requires_tool]
+    return kept, merges
+
+
+def _consumed_codes(rooms: list[Room], objects: list[WorldObject]) -> set[str]:
+    """Tokens that something actually USES: requires_code values and known_info goals."""
+    consumed: set[str] = set()
+    for o in objects:
+        if o.requires_code:
+            consumed.add(o.requires_code)
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is not None and gc.type == "known_info" and gc.info:
+            consumed.add(gc.info)
+    return consumed
+
+
+def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+    """Flag dangling puzzle pieces without mutating the world.
+
+    Conservative, warn-only complement to ``_patch_missing_info`` (which fixes the
+    opposite, unambiguous direction). We cannot safely guess which lock a stray
+    clue belongs to, so we surface it for inspection instead of rewiring blindly:
+      - a `contains_info` clue that no requires_code / known_info goal consumes;
+      - a tool that exists but is never reachable (hidden with no reveal path);
+      - duplicated clues (same token carried by multiple objects).
+    """
+    warnings: list[str] = []
+    consumed = _consumed_codes(rooms, objects)
+
+    # clues nobody consumes
+    seen_info: dict[str, list[str]] = {}
+    for o in objects:
+        if not o.contains_info:
+            continue
+        seen_info.setdefault(o.contains_info, []).append(o.id)
+        used = any(
+            _token_matches_code(c, o.contains_info) or o.contains_info in c or c in o.contains_info
+            for c in consumed
+        )
+        if not used:
+            warnings.append(
+                f"clue '{o.contains_info}' on {o.id} is consumed by nothing "
+                f"(no requires_code / known_info goal uses it)"
+            )
+
+    # duplicated clue tokens
+    for token, carriers in seen_info.items():
+        if len(carriers) > 1:
+            warnings.append(f"clue '{token}' duplicated across {', '.join(carriers)}")
+
+    # tools required but unreachable
+    obj_by_id = {o.id: o for o in objects}
+    for o in objects:
+        tool_id = o.requires_tool
+        if not tool_id:
+            continue
+        tool = obj_by_id.get(tool_id)
+        if tool is None:
+            continue  # already nulled by _build_objects if dangling
+        if not tool.takeable:
+            warnings.append(f"{o.id} requires tool {tool_id}, but it is not takeable")
+        if tool.state in HIDDEN_STATES_ROOM and not any(
+            info == tool_id or (info and tool_id in info) for info in (x.contains_info for x in objects)
+        ):
+            warnings.append(
+                f"tool {tool_id} is '{tool.state}' with no clue that reveals it "
+                f"(required by {o.id})"
+            )
+    return warnings
+
+
 HIDDEN_STATES_ROOM = {"locked", "locked_bolt", "locked_room", "hidden"}
 
 
@@ -444,6 +564,13 @@ def _build_world(data: dict) -> GameWorld:
         rooms = _repair_adjacency(rooms)
     room_ids = {r.id for r in rooms}
     objects = _build_objects(data.get("objects", []), room_ids)
+
+    # collapse redundant container/lock pairs before scrubbing, while room refs
+    # still name the survivor we want to keep.
+    objects, merges = _dedup_objects(objects, rooms)
+    if merges:
+        print(f"[game_master] merged duplicate objects: {', '.join(merges)}", flush=True)
+
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
 
@@ -463,13 +590,18 @@ def _build_world(data: dict) -> GameWorld:
     if redactions:
         print(f"[game_master] scrubbed spoilers: {', '.join(redactions)}", flush=True)
 
+    coherence = _check_coherence(rooms, objects)
+    if coherence:
+        print(f"[game_master] coherence warnings: {'; '.join(coherence)}", flush=True)
+
+    # win_condition is a computed property of GameWorld, derived from the final
+    # room's goal_completion — no longer stored separately.
     return GameWorld(
         scenario=data.get("scenario", ""),
         objective=data.get("objective", ""),
         rooms=rooms,
         objects=objects,
         rules=rules,
-        win_condition=_build_win_condition(data.get("win_condition", {}), object_ids),
         solution_path=solution_path,
     )
 

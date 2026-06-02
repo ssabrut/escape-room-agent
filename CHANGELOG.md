@@ -2,6 +2,30 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 10:38:54 WIB
+
+### What changed
+- Objects are now marked "handled" (checkmark) once examined, in addition to being taken or having their state changed. Previously a mere examine never counted as resolved, so the party could keep re-examining the same objects needlessly.
+
+### Why
+Treating an examined object as handled stops the party from wasting turns re-examining objects that have already been inspected, focusing attention on objects whose puzzles are still open.
+
+---
+
+## 2026-06-02 10:30:44 WIB
+
+### What changed
+- The win condition is now derived automatically from the final room's `goal_completion` instead of being stored as a separate field, so the win target lives in exactly one place and can no longer drift from the room it belongs to.
+- World generation now collapses redundant container/lock pairs: when the LLM emits both a container and a separate "lock"/"panel" object sharing the same location and requirement, they are merged into the single object the goal checks, with tool references repointed to the survivor.
+- World generation now emits warn-only coherence checks that flag dangling puzzle pieces — clues that nothing consumes, duplicated clue tokens, and tools that are required but unreachable (not takeable, or hidden with no reveal path).
+- The generation prompt now forbids dangling clues, duplicate clues, and redundant objects, requires hidden tools to be revealable, and requires the win condition to equal the second room's goal_completion.
+- Logged world JSON now omits always-null fields (e.g. unused Prerequisite/WorldObject slots), showing only the keys meaningful for each record.
+
+### Why
+Generated worlds suffered from redundant and incoherent puzzle pieces (duplicate locks, orphan clues, unreachable tools) and from the win target being duplicated across two places where it could drift. Deriving the win condition from the room goal, deduping objects, and adding coherence warnings plus tighter prompt rules make generated worlds cleaner and more reliably solvable.
+
+---
+
 ## 2026-06-02 09:59:16 WIB
 
 ### What changed

@@ -4,11 +4,21 @@ from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class Prerequisite(BaseModel):
-    """A structured condition — used by Room.goal_completion to mark when a room's goal is done."""
+    """A structured condition — used by Room.goal_completion to mark when a room's goal is done.
+
+    A Prerequisite has exactly one `type`; only the fields meaningful for that
+    type carry a value. The always-null sibling fields are dropped at dump time
+    (see ``main._jsonable`` / ``GameWorld`` serialization with ``exclude_none``),
+    so emitted JSON shows only the keys that matter for each condition shape:
+      - object_state -> object_id, state
+      - has_item     -> object_id
+      - known_info   -> info
+      - power_active  -> id
+    """
 
     type: str  # "object_state" | "known_info" | "has_item" | "power_active"
     object_id: str | None = None
@@ -49,7 +59,12 @@ class WorldObject(BaseModel):
 
 
 class WinCondition(BaseModel):
-    """The target object state that ends the game in victory."""
+    """The target object state that ends the game in victory.
+
+    Not stored on its own anymore — :attr:`GameWorld.win_condition` derives this
+    from the final room's ``goal_completion`` so the win target lives in exactly
+    one place and cannot drift from the room it belongs to.
+    """
 
     object_id: str = ""
     state: str = ""
@@ -63,8 +78,23 @@ class GameWorld(BaseModel):
     rooms: list[Room] = Field(default_factory=list)
     objects: list[WorldObject] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
-    win_condition: WinCondition = Field(default_factory=WinCondition)
     solution_path: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def win_condition(self) -> WinCondition:
+        """The game-ending target, derived from the final room's goal_completion.
+
+        The win condition is, by construction (see the generation prompt), the
+        last room's ``object_state`` goal. Deriving it here keeps a single source
+        of truth instead of storing the same object_id/state twice. Falls back to
+        an empty WinCondition when there is no usable final ``object_state`` goal.
+        """
+        for room in reversed(self.rooms):
+            gc = room.goal_completion
+            if gc is not None and gc.type == "object_state" and gc.object_id:
+                return WinCondition(object_id=gc.object_id, state=gc.state or "")
+        return WinCondition()
 
 ABILITY_EFFECTS = {
     "extra_action",

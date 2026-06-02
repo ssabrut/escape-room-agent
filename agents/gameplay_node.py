@@ -1014,15 +1014,24 @@ def _render_intro(world: GameWorld, party: list[PartyMember]) -> None:
 
 
 def _resolved_object_ids(world: GameWorld, ps: PartyState) -> set[str]:
-    """Objects that are actually DONE — state changed from initial, or taken.
+    """Objects the party has interacted with — state changed, taken, or examined.
 
-    Merely examining an object (even one that yields no new info) does NOT mark
-    it resolved; the checkmark means "this object's puzzle is handled".
+    The checkmark means "this object has been handled": its state changed from
+    initial, it was picked up, or it was examined at least once. Examining marks
+    an object as interacted so the party doesn't re-examine it needlessly.
     """
     resolved: set[str] = set()
     initial = {o.id: o.state for o in world.objects}
+    examined = {
+        e.action.split(" ", 1)[1]
+        for e in ps.log
+        if e.action.startswith("examine ") and e.note.startswith("examined")
+    }
     for obj in world.objects:
         if obj.id in ps.inventory:
+            resolved.add(obj.id)
+            continue
+        if obj.id in examined:
             resolved.add(obj.id)
             continue
         current = ps.object_states.get(obj.id, obj.state)

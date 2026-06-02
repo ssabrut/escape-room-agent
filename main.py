@@ -30,7 +30,10 @@ NODE_NAMES = (
 
 def _jsonable(value):
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
+        # exclude_none drops always-null sibling fields (e.g. Prerequisite's
+        # unused type-fields, WorldObject's irrelevant precondition slots) so the
+        # logged JSON shows only the keys that carry meaning for each record.
+        return value.model_dump(mode="json", exclude_none=True)
     if isinstance(value, BaseMessage):
         return {"type": value.type, "content": value.content}
     if isinstance(value, dict):

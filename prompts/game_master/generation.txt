@@ -39,7 +39,11 @@ Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
     {{"id": "hidden_note", "location": "first_room_id", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
 - RIGHT (solvable — examining the note produces the info token, which satisfies a known_info prerequisite or unlocks a requires_code: "742"):
     {{"id": "hidden_note", "location": "first_room_id", "description": "A folded note", "takeable": true, "interactable": true, "contains_info": "safe_code_742"}}
-- Self-check before responding: for every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it. If you can't, you have an unsolvable world; fix it.
+- NO DANGLING CLUES: every `contains_info` token MUST be consumed by something downstream — either a `requires_code` on a locked object, or a `known_info` goal_completion. Do not place a clue that nothing uses. If a door opens with a `requires_tool` key, the puzzle is the KEY, not a code: do NOT also invent a `contains_info` code for it.
+- NO DUPLICATE CLUES: a given info token must be carried by exactly ONE object. Do not scatter the same code across multiple notes.
+- NO REDUNDANT OBJECTS: model each puzzle element once. Do not emit both a container and a separate "lock"/"panel" object that share the same location and the same requirement (e.g. a chest AND a chest_lock both locked by the same key) — fold the requirement onto the one object the goal_completion checks.
+- REVEALABLE TOOLS: if a `requires_tool` target starts `hidden`, an upstream object must reveal it (its `contains_info` names the tool, or its description makes inspecting it produce the tool). A hidden key nothing uncovers is unsolvable.
+- Self-check before responding: for every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it; and for every `contains_info` token — point to the specific consumer that needs it. If either direction has no match, fix it before responding.
 
 Object rules:
 - Every object has a unique snake_case id
@@ -60,6 +64,7 @@ Object rules:
 Win condition rules:
 - object_id must reference an existing object
 - state is the target state that object must reach to win
+- It MUST be identical to the SECOND room's `goal_completion` (same object_id + state). The engine derives the win target from that room goal, so any mismatch is ignored — keep them equal to avoid confusion.
 
 Solution path rules:
 - Ordered numbered steps from initial state to win
