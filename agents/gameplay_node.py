@@ -31,10 +31,16 @@ from visualization import render_room_layout
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
 OBSERVE_PROMPT = load_prompt("gameplay_agent", "observe")
-PLAN_PROMPT = load_prompt("gameplay_agent", "plan")
+PLAN_PROPOSE_PROMPT = load_prompt("gameplay_agent", "plan_propose")
+PLAN_CRITIQUE_PROMPT = load_prompt("gameplay_agent", "plan_critique")
+PLAN_SYNTHESIZE_PROMPT = load_prompt("gameplay_agent", "plan_synthesize")
 
 MAX_TICKS = 40
 IDLE_ACTION = "wait"
+
+# Number of critique/revise rounds in the planning debate (0 = propose+synthesize
+# only). Each round costs one LLM call per agent, so keep this small.
+DEBATE_ROUNDS = 1
 
 # Log entries that record observation/planning passes rather than a real move.
 # Excluded from teammate "last action" context and stall detection.
@@ -732,39 +738,132 @@ def _agent_observe(
     return _as_bullets(data.get("observation"))
 
 
-def _agent_plan(
-    agent_id: str,
-    member: PartyMember,
-    world: GameWorld,
-    ps: PartyState,
-    observation: list[str],
-) -> list[str]:
-    """One agent forms an ordered escape plan from the observation — no action taken."""
+# ---------- planning debate ----------
+
+def _plan_context(world: GameWorld, ps: PartyState, observation: list[str]) -> dict:
+    """Shared template fields used by every prompt in the planning debate."""
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
     win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
-
     all_objects = _objects_for_observation(world, ps)
+    return {
+        "current_room": ps.current_room,
+        "room_description": room.description if room else "",
+        "room_goal": room.goal if room and room.goal else "(no specific goal — explore)",
+        "win_condition": win_str,
+        "observation": "\n".join(f"- {b}" for b in observation) if observation else "(none)",
+        "object_state_list": _format_object_states(all_objects, world, ps),
+        "inventory": ", ".join(ps.inventory) if ps.inventory else "(empty)",
+        "known_info": ", ".join(ps.known_info) if ps.known_info else "(none)",
+    }
 
-    prompt = PLAN_PROMPT.format(
-        agent_id=agent_id,
-        character_name=member.character.name,
-        character_role=member.character.role,
-        current_room=ps.current_room,
-        room_description=room.description if room else "",
-        room_goal=room.goal if room and room.goal else "(no specific goal — explore)",
-        win_condition=win_str,
-        observation="\n".join(f"- {b}" for b in observation) if observation else "(none)",
-        object_state_list=_format_object_states(all_objects, world, ps),
-        inventory=", ".join(ps.inventory) if ps.inventory else "(empty)",
-        known_info=", ".join(ps.known_info) if ps.known_info else "(none)",
-    )
+
+def _invoke_plan(prompt: str) -> tuple[list[str], str]:
+    """Return (plan bullets, one-line reasoning) from a planning prompt."""
     llm = get_llm("player")
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
     data = _parse_json(response.content) or {}
-    return _as_bullets(data.get("plan"))
+    return _as_bullets(data.get("plan")), str(data.get("reasoning", "")).strip()
+
+
+def _format_proposals(proposals: dict[str, tuple[str, list[str]]]) -> str:
+    """Render each member's current plan for the critique/synthesis prompts."""
+    blocks: list[str] = []
+    for agent_id, (name, plan) in proposals.items():
+        bullets = "\n".join(f"    - {b}" for b in plan) if plan else "    - (no plan)"
+        blocks.append(f"  {agent_id} ({name}):\n{bullets}")
+    return "\n".join(blocks)
+
+
+def _agent_propose(
+    member: PartyMember, world: GameWorld, ps: PartyState, observation: list[str]
+) -> tuple[list[str], str]:
+    """One agent's opening plan proposal, colored by their role/ability."""
+    prompt = PLAN_PROPOSE_PROMPT.format(
+        agent_id=member.agent_id,
+        character_name=member.character.name,
+        character_role=member.character.role,
+        **_plan_context(world, ps, observation),
+    )
+    return _invoke_plan(prompt)
+
+
+def _agent_critique(
+    member: PartyMember,
+    world: GameWorld,
+    ps: PartyState,
+    observation: list[str],
+    proposals: dict[str, tuple[str, list[str]]],
+) -> tuple[list[str], str]:
+    """One agent revises their plan after reading every teammate's current plan."""
+    prompt = PLAN_CRITIQUE_PROMPT.format(
+        agent_id=member.agent_id,
+        character_name=member.character.name,
+        character_role=member.character.role,
+        proposals=_format_proposals(proposals),
+        **_plan_context(world, ps, observation),
+    )
+    return _invoke_plan(prompt)
+
+
+def _synthesize_plan(
+    world: GameWorld,
+    ps: PartyState,
+    observation: list[str],
+    proposals: dict[str, tuple[str, list[str]]],
+) -> tuple[list[str], str]:
+    """Merge the debated plans into the single unified plan the party acts on."""
+    prompt = PLAN_SYNTHESIZE_PROMPT.format(
+        proposals=_format_proposals(proposals),
+        **_plan_context(world, ps, observation),
+    )
+    return _invoke_plan(prompt)
+
+
+def _debate_plan(
+    party: list[PartyMember],
+    world: GameWorld,
+    ps: PartyState,
+    observation: list[str],
+    render: bool = True,
+) -> list[str]:
+    """Run a multi-agent debate and return the unified escape plan.
+
+    Propose (each agent) -> DEBATE_ROUNDS x critique/revise -> synthesize.
+    With one agent the debate collapses to a single proposal (no synth call).
+    """
+    # Opening proposals.
+    proposals: dict[str, tuple[str, list[str]]] = {}
+    for member in party:
+        plan, reasoning = _agent_propose(member, world, ps, observation)
+        proposals[member.agent_id] = (member.character.name, plan)
+        if render:
+            _render_agent_plan(member, plan, label="PROPOSES", reasoning=reasoning)
+
+    # A lone agent has nothing to debate — its proposal is the plan.
+    if len(party) == 1:
+        return proposals[party[0].agent_id][1]
+
+    # Critique / revise rounds.
+    for round_no in range(DEBATE_ROUNDS):
+        revised: dict[str, tuple[str, list[str]]] = {}
+        for member in party:
+            plan, reasoning = _agent_critique(member, world, ps, observation, proposals)
+            revised[member.agent_id] = (member.character.name, plan)
+            if render:
+                _render_agent_plan(
+                    member, plan, label=f"REVISES (round {round_no + 1})",
+                    reasoning=reasoning,
+                )
+        proposals = revised
+
+    # Final synthesis into one unified plan.
+    unified, reasoning = _synthesize_plan(world, ps, observation, proposals)
+    if render:
+        _render_unified_plan(ps.current_room, unified, reasoning=reasoning)
+    return unified
 
 
 def _render_observation(room_id: str, visible: list[WorldObject], ps: PartyState) -> None:
@@ -812,14 +911,15 @@ def _room_fingerprint(world: GameWorld, ps: PartyState) -> tuple:
 
 
 def _agent_reobserve(
-    lead: PartyMember, world: GameWorld, ps: PartyState
+    party: list[PartyMember], world: GameWorld, ps: PartyState
 ) -> None:
-    """Lead agent re-surveys the room and refreshes the escape plan in place.
+    """Re-survey the room (lead) and rebuild the unified plan via debate.
 
     Called only on ticks where the room state actually changed (new object
     revealed, item taken, lock opened, power on), so the standing observation and
-    plan stay consistent with what the party can now see.
+    unified plan stay consistent with what the party can now see.
     """
+    lead = party[0]
     observation = _agent_observe(lead.agent_id, lead, world, ps)
     ps.room_observations[ps.current_room] = observation
     ps.log.append(
@@ -833,24 +933,38 @@ def _agent_reobserve(
     )
     _render_agent_observation(lead, observation, label="RE-OBSERVES")
 
-    plan = _agent_plan(lead.agent_id, lead, world, ps, observation)
-    ps.room_plans[ps.current_room] = plan
+    unified = _debate_plan(party, world, ps, observation)
+    ps.room_plans[ps.current_room] = unified
     ps.log.append(
         TickAction(
             tick=ps.tick,
             agent_id=lead.agent_id,
-            say="; ".join(plan),
+            say="; ".join(unified),
             action="replan",
-            note="revised escape plan",
+            note="revised unified plan",
         )
     )
-    _render_agent_plan(lead, plan)
 
 
-def _render_agent_plan(member: PartyMember, plan: list[str]) -> None:
+def _render_agent_plan(
+    member: PartyMember, plan: list[str], label: str = "PLANS", reasoning: str = ""
+) -> None:
+    body = _bullet_lines(plan, "(no plan)")
+    if reasoning:
+        body = body + [f"why: {reasoning}"]
     _panel(
-        f"{member.agent_id} -- {member.character.name} ({member.character.role}) PLANS",
-        _bullet_lines(plan, "(no plan)"),
+        f"{member.agent_id} -- {member.character.name} ({member.character.role}) {label}",
+        body,
+    )
+
+
+def _render_unified_plan(room_id: str, plan: list[str], reasoning: str = "") -> None:
+    body = _bullet_lines(plan, "(no plan)")
+    if reasoning:
+        body = body + [f"why: {reasoning}"]
+    _panel(
+        f"UNIFIED PLAN -- {room_id} (party agreed)",
+        body,
     )
 
 
@@ -1117,23 +1231,22 @@ def gameplay_node(state: GameState) -> dict:
                 if member.agent_id == lead.agent_id:
                     ps.room_observations[ps.current_room] = observation
 
-            for member in state.party:
-                plan = _agent_plan(
-                    member.agent_id, member, world, ps,
-                    ps.room_observations.get(ps.current_room, []),
+            # Planning debate: agents propose, critique/revise, then a single
+            # unified plan is synthesized as the party's shared action reference.
+            unified = _debate_plan(
+                state.party, world, ps,
+                ps.room_observations.get(ps.current_room, []),
+            )
+            ps.room_plans[ps.current_room] = unified
+            ps.log.append(
+                TickAction(
+                    tick=ps.tick,
+                    agent_id=lead.agent_id,
+                    say="; ".join(unified),
+                    action="plan",
+                    note="unified escape plan",
                 )
-                ps.log.append(
-                    TickAction(
-                        tick=ps.tick,
-                        agent_id=member.agent_id,
-                        say="; ".join(plan),
-                        action="plan",
-                        note="planned escape",
-                    )
-                )
-                _render_agent_plan(member, plan)
-                if member.agent_id == lead.agent_id:
-                    ps.room_plans[ps.current_room] = plan
+            )
 
             ps.observed_rooms.add(ps.current_room)
             last_fingerprint = _room_fingerprint(world, ps)
@@ -1144,7 +1257,7 @@ def gameplay_node(state: GameState) -> dict:
         # The lead agent re-observes + re-plans once to resync before anyone acts.
         fingerprint = _room_fingerprint(world, ps)
         if last_fingerprint is not None and fingerprint != last_fingerprint:
-            _agent_reobserve(state.party[0], world, ps)
+            _agent_reobserve(state.party, world, ps)
 
         # Most recent action per agent, seeded from prior ticks. Updated in-place
         # as each player acts this tick so later players see what earlier players

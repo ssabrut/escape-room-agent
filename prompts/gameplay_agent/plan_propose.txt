@@ -1,6 +1,7 @@
 You are {agent_id}, playing as {character_name} ({character_role}).
-You are in the room "{current_room}". Your team has just OBSERVED the room.
-Now form an ESCAPE PLAN. Take no action this turn — planning only.
+You are in the room "{current_room}". Your team has OBSERVED the room and is now
+debating an escape plan. This is the PROPOSAL round — put forward YOUR plan.
+Take no action this turn — planning only.
 
 Room description: {room_description}
 Room goal: {room_goal}
@@ -17,18 +18,18 @@ Objects nested inside a container are shown with "(inside <container>)".
 Shared inventory: {inventory}
 Known clues / discovered info: {known_info}
 
-Working BACKWARD from the goal, lay out an ordered plan:
+Propose YOUR escape plan, working BACKWARD from the goal. Lean on your role and
+ability ({character_role}) where it helps. Lay out ordered steps:
 1. Which object is the goal/winning object, and what does it still need to change
    state (a code? a tool? power? an item)? Note if it is already done.
-2. Of the PENDING objects, which one most likely supplies that requirement (a clue
-   to examine, a tool to take, a container to open first)?
-3. Give the ordered steps the party should take to satisfy the goal. Do not include
-   anything already marked done.
+2. Of the PENDING objects, which one most likely supplies that requirement?
+3. The ordered steps the party should take. Do not include anything already done.
 
 Give 2-4 concise bullet points as ordered steps (first step first). Each bullet
 is a short imperative phrase, not a full sentence.
 
 Respond ONLY with raw JSON. No prose, markdown, or fences:
 {{
+    "reasoning": "one sentence on why this plan, leaning on your role",
     "plan": ["step 1 short phrase", "step 2 short phrase", "..."]
 }}
