@@ -503,6 +503,70 @@ def _repair_tool_refs(objects: list[WorldObject]) -> list[str]:
     return repairs
 
 
+_LLM_LOCKED_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
+_UNLOCKER_HINTS = ("wheel", "key", "lever", "crank", "handle", "valve", "tool", "crowbar", "wrench")
+
+
+def _has_unlock_mechanism(o: WorldObject) -> bool:
+    return bool(
+        o.requires_code or o.requires_tool or o.requires_liquid
+        or o.requires_power or o.fuses
+    )
+
+
+def _repair_unsolvable_gates(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+    """Make goal-gating objects winnable when the LLM locked them with no mechanism.
+
+    A room's goal_completion (and the final room's, which is the win condition)
+    often targets ``object_state -> unlocked/open`` on a locked object. If that
+    object starts in a locked/hidden state but carries NO requires_* mechanism,
+    nothing can ever change its state — the room (or whole game) is unwinnable and
+    the party spins on a GM-blocked exit. We repair it by pointing requires_tool at
+    a same-room takeable that reads like an unlocker; failing that, we relax its
+    initial state to ``visible`` so the goal is at least reachable. Returns a log.
+    """
+    # Collect ids that a goal_completion gates to a non-open state via object_state.
+    gated: dict[str, str] = {}  # object_id -> required target state
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is not None and gc.type == "object_state" and gc.object_id and gc.state:
+            gated[gc.object_id] = gc.state
+
+    by_id = {o.id: o for o in objects}
+    repairs: list[str] = []
+    for obj_id, target_state in gated.items():
+        obj = by_id.get(obj_id)
+        if obj is None:
+            continue
+        if obj.state not in _LLM_LOCKED_STATES:
+            continue  # already openable / not locked
+        if _has_unlock_mechanism(obj):
+            continue  # has a real path to the target state
+        # Prefer a same-room takeable that reads like the intended unlocker; else
+        # any same-room takeable (use_tool drives the gate to 'unlocked', matching
+        # the typical goal target). With no takeable at all, fall back to relaxing
+        # the gate's initial state to its required target so the goal is reachable.
+        same_room_takeables = [
+            o for o in objects
+            if o.location == obj.location and o.takeable and o.id != obj.id
+            and o.state not in _LLM_LOCKED_STATES  # the unlocker must be grabbable
+        ]
+        hinted = [
+            o for o in same_room_takeables
+            if any(h in o.id.lower() for h in _UNLOCKER_HINTS)
+        ]
+        pick = hinted[0] if hinted else (same_room_takeables[0] if same_room_takeables else None)
+        if pick is not None:
+            obj.requires_tool = pick.id
+            repairs.append(f"{obj.id}: locked gate given requires_tool {pick.id}")
+        else:
+            obj.state = target_state
+            repairs.append(
+                f"{obj.id}: locked gate with no mechanism started at target '{target_state}'"
+            )
+    return repairs
+
+
 def _consumed_codes(rooms: list[Room], objects: list[WorldObject]) -> set[str]:
     """Tokens that something actually USES: requires_code values and known_info goals."""
     consumed: set[str] = set()
@@ -634,6 +698,12 @@ def _build_world(data: dict) -> GameWorld:
     tool_repairs = _repair_tool_refs(objects)
     if tool_repairs:
         print(f"[game_master] repaired tool refs: {', '.join(tool_repairs)}", flush=True)
+
+    # Make goal-gating objects that the LLM locked with no unlock path winnable,
+    # so the party can't get stranded on a GM-blocked exit it can never clear.
+    gate_repairs = _repair_unsolvable_gates(rooms, objects)
+    if gate_repairs:
+        print(f"[game_master] repaired unsolvable gates: {', '.join(gate_repairs)}", flush=True)
 
     patched = _patch_missing_info(rooms, objects)
     if patched:

@@ -331,12 +331,26 @@ def _build_action_space(
                 seen.add(v)
                 space.append(v)
     current_room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    # The GM blocks every exit from a room while its goal_completion is unmet (see
+    # _gm_gate_exit). When that gate is currently unsatisfiable, offering 'go' is a
+    # guaranteed dead end the party would spin on — so we hold the exits back while
+    # there is other productive work (examine/unlock/take) to do in this room. If
+    # nothing else is productive, the exits are offered anyway (as a last resort)
+    # so the GM block narration surfaces exactly what the room still needs.
+    gate_blocks_exits = (
+        current_room is not None
+        and current_room.goal_completion is not None
+        and not _goal_completion_satisfied(current_room.goal_completion, ps)
+    )
+    exits: list[str] = []
     if current_room:
         for direction, neighbor in current_room.adjacency.items():
             move = f"go {neighbor}"
             if move not in seen:
                 seen.add(move)
-                space.append(move)
+                exits.append(move)
+    if not gate_blocks_exits or not space:
+        space.extend(exits)
     # Only offer 'wait' as a true last resort — when no productive action exists.
     # Otherwise agents idle instead of examining, applying clues, or moving.
     if not space:

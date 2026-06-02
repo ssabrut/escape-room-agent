@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 13:27:15 WIB
+
+### What changed
+- World generation now repairs goal-gating objects that the LLM locked with no way to unlock them: if a room's goal_completion (or the win condition) targets a locked/hidden object that carries no requires_* mechanism, it's given a `requires_tool` pointing at a same-room takeable that reads like an unlocker (wheel, key, lever, etc.), or — if no takeable exists — its initial state is relaxed to the target so the goal is reachable.
+- Room exits are now held back while the room's goal is unmet and other productive work remains: since the Game Master blocks every exit until the goal is satisfied, offering `go` would be a dead end the party spins on. Exits are still offered as a last resort when nothing else is productive, so the GM's block narration can surface what the room still needs.
+
+### Why
+The party could get permanently stranded on a Game Master-blocked exit whose goal was either unwinnable (a locked gate with no unlock mechanism) or simply not worth attempting yet. Repairing unsolvable gates and withholding pointless `go` actions keep the party making progress instead of looping on guaranteed failures.
+
+---
+
 ## 2026-06-02 12:45:00 WIB
 
 ### What changed
