@@ -2,6 +2,20 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 09:43:25 WIB
+
+### What changed
+- Escape planning is now a multi-agent debate instead of a single per-agent plan: each party member first PROPOSES a plan (colored by their role/ability), then runs critique/revise rounds where they read every teammate's plan and improve their own, and finally a facilitator SYNTHESIZES one unified plan the whole party acts on. The number of critique rounds is tunable (`DEBATE_ROUNDS`, default 1).
+- A lone agent skips the debate — its proposal becomes the plan directly with no synthesis call.
+- Each planning step now surfaces a one-line "why" reasoning in its panel, and the agreed plan is shown in a dedicated "UNIFIED PLAN" panel.
+- The mid-room re-plan (triggered when the room state changes) now rebuilds the plan through the same debate rather than a single lead-agent plan.
+- The single `plan` prompt was split into three specialized prompts (`plan_propose`, `plan_critique`, `plan_synthesize`) driving the respective debate phases.
+
+### Why
+A single agent's escape plan didn't make use of the party's distinct roles and abilities and could lock in a flawed strategy. Having agents propose, critique each other, and converge on a synthesized plan produces a stronger, role-informed strategy that the whole party agrees on, while keeping the debate cheap (bounded rounds, skipped entirely for solo play).
+
+---
+
 ## 2026-06-02 09:18:07 WIB
 
 ### What changed
