@@ -270,11 +270,36 @@ def _already_examined(obj: WorldObject, ps: PartyState) -> bool:
     )
 
 
+def _code_satisfied_by(required: str, info: str) -> bool:
+    """True if a known clue `info` supplies the code `required`.
+
+    The generator names the door's `requires_code` with a bare stem (e.g.
+    ``captain_combination``) but carries the clue as a decorated token that
+    embeds the answer (e.g. ``captain_combination_8429``). Matching only on exact
+    equality or the clue's last segment ("8429") misses that prefix case and
+    leaves a solvable door permanently locked. So we accept a match when:
+      - the tokens are equal, or
+      - one token's stem is a prefix/substring of the other (covers the
+        stem-vs-decorated case both directions), or
+      - their digit sequences are equal and non-empty (covers code-as-number).
+    """
+    req, inf = required.lower(), info.lower()
+    if req == inf:
+        return True
+    # Clue follows the "<required>_<answer>" convention: required is a prefix of
+    # the clue token, on a token (underscore) boundary. Check both directions.
+    if req and (inf.startswith(req + "_") or inf == req or req.startswith(inf + "_")):
+        return True
+    if required in info.split("_") or info in required.split("_"):
+        return True
+    req_digits = re.sub(r"\D", "", req)
+    inf_digits = re.sub(r"\D", "", inf)
+    return bool(req_digits) and req_digits == inf_digits
+
+
 def _code_known(required: str, ps: PartyState) -> bool:
-    """Mirror `_resolve_enter_code`'s success test: code present in known_info."""
-    return required in ps.known_info or required in (
-        info.split("_")[-1] for info in ps.known_info
-    )
+    """Mirror `_resolve_enter_code`'s success test: a known clue supplies the code."""
+    return any(_code_satisfied_by(required, info) for info in ps.known_info)
 
 
 def _liquid_available(required: str, ps: PartyState, by_id: dict[str, WorldObject]) -> bool:
@@ -393,9 +418,7 @@ def _resolve_enter_code(obj: WorldObject, ps: PartyState) -> str:
     state = ps.object_states.get(obj.id, obj.state)
     if state not in HIDDEN_STATES:
         return f"{obj.id} already open"
-    if obj.requires_code in ps.known_info or obj.requires_code in (
-        info.split("_")[-1] for info in ps.known_info
-    ):
+    if _code_known(obj.requires_code, ps):
         ps.object_states[obj.id] = "unlocked"
         return f"entered code {obj.requires_code} → {obj.id} unlocked"
     return f"code unknown — examine clues first"

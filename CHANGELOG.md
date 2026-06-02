@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 14:21:45 WIB
+
+### What changed
+- Code-locked doors now unlock from clues that embed the answer in a decorated token: a clue like `captain_combination_8429` now satisfies a door requiring `captain_combination`. Matching accepts equal tokens, a stem that is an underscore-boundary prefix of the other (either direction), a shared underscore-separated segment, or equal non-empty digit sequences — so the bare-stem requirement and its answer-bearing clue are recognized as the same code.
+- Both the action-availability check (whether to offer `enter_code`) and the actual `enter_code` resolution now share this single code-matching rule, keeping the offered verb and its success test in sync.
+
+### Why
+The generator named a door's `requires_code` with a bare stem (e.g. `captain_combination`) but carried the matching clue as a decorated token embedding the answer (e.g. `captain_combination_8429`). The old test only matched exact equality or the clue's last segment, so this prefix case was missed and a solvable door stayed permanently locked.
+
+---
+
 ## 2026-06-02 13:27:15 WIB
 
 ### What changed
