@@ -256,21 +256,65 @@ def _objects_in_room(
 
 # ---------- action space ----------
 
-def _verbs_for(obj: WorldObject, ps: PartyState) -> list[str]:
+def _already_examined(obj: WorldObject, ps: PartyState) -> bool:
+    """True once `obj` has been examined — re-examining can never reveal anything.
+
+    `_resolve_examine` only yields new info on the first examine (it captures
+    `contains_info` into `known_info` then); every later examine is a dead end.
+    So once examined, the verb is dropped from the action space entirely rather
+    than left in the menu for an agent to waste a tick on.
+    """
+    return any(
+        e.action == f"examine {obj.id}" and e.note.startswith("examined")
+        for e in ps.log
+    )
+
+
+def _code_known(required: str, ps: PartyState) -> bool:
+    """Mirror `_resolve_enter_code`'s success test: code present in known_info."""
+    return required in ps.known_info or required in (
+        info.split("_")[-1] for info in ps.known_info
+    )
+
+
+def _liquid_available(required: str, ps: PartyState, by_id: dict[str, WorldObject]) -> bool:
+    """Mirror `_resolve_insert_liquid`: a held item matches the required liquid."""
+    for held_id in ps.inventory:
+        held = by_id.get(held_id)
+        haystack = " ".join([held_id] + ([held.description] if held else []))
+        if _liquid_token_matches(required, haystack):
+            return True
+    return False
+
+
+def _verbs_for(
+    obj: WorldObject, ps: PartyState, by_id: dict[str, WorldObject] | None = None
+) -> list[str]:
     state = ps.object_states.get(obj.id, obj.state)
-    verbs: list[str] = [f"examine {obj.id}"]
+    by_id = by_id if by_id is not None else {}
+    verbs: list[str] = []
+    if not _already_examined(obj, ps):
+        verbs.append(f"examine {obj.id}")
     if obj.takeable and state in UNLOCKED_STATES and obj.id not in ps.inventory:
         verbs.append(f"take {obj.id}")
-    if obj.requires_code and state in HIDDEN_STATES:
+    # Only offer an unlock verb when its precondition is CURRENTLY satisfiable —
+    # otherwise it's a guaranteed dead end ("missing tool", "code unknown", ...)
+    # that agents would burn ticks retrying. Once they gather the tool/code/liquid
+    # or bring power online, the verb reappears.
+    if obj.requires_code and state in HIDDEN_STATES and _code_known(obj.requires_code, ps):
         verbs.append(f"enter_code {obj.id}")
-    if obj.requires_tool and state in HIDDEN_STATES:
+    if obj.requires_tool and state in HIDDEN_STATES and obj.requires_tool in ps.inventory:
         verbs.append(f"use_tool {obj.id}")
-    if obj.requires_liquid and state in HIDDEN_STATES:
+    if (
+        obj.requires_liquid
+        and state in HIDDEN_STATES
+        and _liquid_available(obj.requires_liquid, ps, by_id)
+    ):
         verbs.append(f"insert_liquid {obj.id}")
     if obj.fuses is not None:
         for label in obj.fuses:
             verbs.append(f"flip_fuse {obj.id} {label}")
-    if obj.requires_power and state in HIDDEN_STATES:
+    if obj.requires_power and state in HIDDEN_STATES and obj.requires_power in ps.power_active:
         verbs.append(f"open {obj.id}")
     return verbs
 
@@ -280,8 +324,9 @@ def _build_action_space(
 ) -> list[str]:
     seen: set[str] = set()
     space: list[str] = []
+    by_id = {o.id: o for o in world.objects}
     for obj in visible:
-        for v in _verbs_for(obj, ps):
+        for v in _verbs_for(obj, ps, by_id):
             if v not in seen:
                 seen.add(v)
                 space.append(v)

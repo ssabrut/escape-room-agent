@@ -448,6 +448,61 @@ def _dedup_objects(objects: list[WorldObject], rooms: list[Room]) -> tuple[list[
     return kept, merges
 
 
+def _stem(token: str) -> str:
+    """Reduce an id to its matchable core: lowercased, qualifier suffixes dropped.
+
+    The generator often refers to one object by a bare name in one place and a
+    decorated name in another — e.g. a door wants ``brg_key`` while the takeable
+    object is ``brg_key_revealed``. Stripping common state/qualifier suffixes lets
+    those resolve to the same stem so a dangling tool ref can be repaired instead
+    of nulled (which would make the lock open with no tool at all).
+    """
+    s = token.lower()
+    for suffix in ("_revealed", "_hidden", "_locked", "_unlocked", "_item", "_object", "_tool", "_key"):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[: -len(suffix)]
+    return s
+
+
+def _repair_tool_refs(objects: list[WorldObject]) -> list[str]:
+    """Repoint dangling requires_tool refs at a fuzzy-matching takeable object.
+
+    Runs after dedup/scrub, once final object ids are settled. A door whose
+    requires_tool names no real object is unwinnable; rather than null it (a free
+    open), we look for a takeable object whose id stem matches and repoint to it.
+    Refs with no plausible match are nulled as before. Returns repair log lines.
+    """
+    by_id = {o.id: o for o in objects}
+    takeable_by_stem: dict[str, list[str]] = {}
+    for o in objects:
+        if o.takeable:
+            takeable_by_stem.setdefault(_stem(o.id), []).append(o.id)
+
+    repairs: list[str] = []
+    for o in objects:
+        tool_id = o.requires_tool
+        if not tool_id or tool_id in by_id:
+            continue  # no ref, or already resolves to a real object
+        candidates = takeable_by_stem.get(_stem(tool_id), [])
+        # prefer a candidate sharing the stem; if exactly one, it's unambiguous.
+        match = candidates[0] if len(candidates) == 1 else None
+        if match is None:
+            # fall back to a takeable id that contains (or is contained by) the stem
+            stem = _stem(tool_id)
+            loose = [
+                tid for tid in (oid for o2 in objects if o2.takeable for oid in [o2.id])
+                if stem and (stem in _stem(tid) or _stem(tid) in stem)
+            ]
+            match = loose[0] if len(loose) == 1 else None
+        if match is not None:
+            o.requires_tool = match
+            repairs.append(f"{o.id}: requires_tool {tool_id} -> {match}")
+        else:
+            o.requires_tool = None
+            repairs.append(f"{o.id}: requires_tool {tool_id} -> (nulled, no match)")
+    return repairs
+
+
 def _consumed_codes(rooms: list[Room], objects: list[WorldObject]) -> set[str]:
     """Tokens that something actually USES: requires_code values and known_info goals."""
     consumed: set[str] = set()
@@ -573,6 +628,12 @@ def _build_world(data: dict) -> GameWorld:
 
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
+
+    # Repair (or null) requires_tool refs that dedup/scrub left dangling, so a
+    # near-miss name like brg_key vs brg_key_revealed doesn't strand a door.
+    tool_repairs = _repair_tool_refs(objects)
+    if tool_repairs:
+        print(f"[game_master] repaired tool refs: {', '.join(tool_repairs)}", flush=True)
 
     patched = _patch_missing_info(rooms, objects)
     if patched:

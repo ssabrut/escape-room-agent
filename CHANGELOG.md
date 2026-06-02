@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 12:45:00 WIB
+
+### What changed
+- Dangling `requires_tool` references are now repaired by fuzzy-matching to a takeable object rather than being nulled outright: when a lock names a near-miss id (e.g. `brg_key` vs the real `brg_key_revealed`), it's repointed to the matching object by stripping common qualifier suffixes, so the lock keeps its tool requirement instead of opening for free. Refs with no plausible match are still nulled.
+- The action space now hides unlock verbs whose precondition is not currently satisfiable: `enter_code`, `use_tool`, `insert_liquid`, and power-`open` only appear once the party actually has the code, tool, liquid, or active power. The verbs reappear when the prerequisite is met.
+- The `examine` verb is dropped from the action space once an object has already been examined, since re-examining can never reveal new information.
+
+### Why
+Agents were burning ticks on guaranteed dead-end actions — re-examining exhausted objects and retrying unlocks they couldn't satisfy — and a dangling tool reference could strand a door or make it open with no tool at all. Pruning impossible verbs and repairing near-miss tool ids keeps the action space honest and the world solvable.
+
+---
+
 ## 2026-06-02 10:58:36 WIB
 
 ### What changed
