@@ -14,22 +14,12 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agents.game_master_eval import (
-    GMDirective,
-    GMVerdict,
-    announce_room_cleared,
-    evaluate_room_exit,
-)
+from agents.game_master_eval import (GMDirective, GMVerdict,
+                                     announce_room_cleared, evaluate_room_exit)
 from config.settings import get_llm
 from prompts import load_prompt
-from state import (
-    GameState,
-    GameWorld,
-    PartyMember,
-    PartyState,
-    TickAction,
-    WorldObject,
-)
+from state import (GameState, GameWorld, PartyMember, PartyState, TickAction,
+                   WorldObject)
 from state.game_state import Ability
 from visualization import render_room_layout
 
@@ -76,6 +66,7 @@ def _state_satisfies(actual: str | None, target: str | None) -> bool:
 
 
 # ---------- world graph ----------
+
 
 class WorldGraph:
     def __init__(self, world: GameWorld) -> None:
@@ -170,12 +161,33 @@ def _rule(label: str = "") -> None:
 
 
 # Outcome status codes used to badge each action.
-STATUS_OK = "OK"        # state changed (unlocked, took item, moved, info learned)
-STATUS_INFO = "..."     # action ran but nothing changed (examine without new info, idle)
-STATUS_FAIL = "XX"      # action invalid / missing precondition
+STATUS_OK = "OK"  # state changed (unlocked, took item, moved, info learned)
+STATUS_INFO = "..."  # action ran but nothing changed (examine without new info, idle)
+STATUS_FAIL = "XX"  # action invalid / missing precondition
 
-_OK_KEYWORDS = ("unlocked", "took", "moved", "learned", "flipped", "inserted", "entered", "used")
-_FAIL_KEYWORDS = ("missing", "no matching", "unknown", "cannot", "not accessible", "no direct", "no target", "no fuse", "dead end", "nothing new", "blocked")
+_OK_KEYWORDS = (
+    "unlocked",
+    "took",
+    "moved",
+    "learned",
+    "flipped",
+    "inserted",
+    "entered",
+    "used",
+)
+_FAIL_KEYWORDS = (
+    "missing",
+    "no matching",
+    "unknown",
+    "cannot",
+    "not accessible",
+    "no direct",
+    "no target",
+    "no fuse",
+    "dead end",
+    "nothing new",
+    "blocked",
+)
 
 
 def _classify_outcome(note: str) -> str:
@@ -233,7 +245,9 @@ def _normalize(text: str) -> str:
 
 
 def _format_ability(ability: Ability) -> str:
-    uses = "passive" if ability.max_uses < 0 else f"{ability.uses_remaining} use(s) left"
+    uses = (
+        "passive" if ability.max_uses < 0 else f"{ability.uses_remaining} use(s) left"
+    )
     return f"{ability.name} [{ability.effect}, {uses}] — {ability.description}"
 
 
@@ -248,7 +262,10 @@ def _consume_use(ability: Ability) -> bool:
 
 # ---------- object visibility ----------
 
-def _object_visible(obj: WorldObject, ps: PartyState, parent_lookup: dict[str, WorldObject]) -> bool:
+
+def _object_visible(
+    obj: WorldObject, ps: PartyState, parent_lookup: dict[str, WorldObject]
+) -> bool:
     """An object is visible if it (or its container chain) resolves up to the current room."""
     state = ps.object_states.get(obj.id, obj.state)
     if state == "hidden":
@@ -267,14 +284,13 @@ def _object_visible(obj: WorldObject, ps: PartyState, parent_lookup: dict[str, W
         cursor = parent
 
 
-def _objects_in_room(
-    world: GameWorld, ps: PartyState
-) -> list[WorldObject]:
+def _objects_in_room(world: GameWorld, ps: PartyState) -> list[WorldObject]:
     parent_lookup = {o.id: o for o in world.objects}
     return [o for o in world.objects if _object_visible(o, ps, parent_lookup)]
 
 
 # ---------- action space ----------
+
 
 def _already_examined(obj: WorldObject, ps: PartyState) -> bool:
     """True once `obj` has been examined — re-examining can never reveal anything.
@@ -322,7 +338,9 @@ def _code_known(required: str, ps: PartyState) -> bool:
     return any(_code_satisfied_by(required, info) for info in ps.known_info)
 
 
-def _liquid_available(required: str, ps: PartyState, by_id: dict[str, WorldObject]) -> bool:
+def _liquid_available(
+    required: str, ps: PartyState, by_id: dict[str, WorldObject]
+) -> bool:
     """Mirror `_resolve_insert_liquid`: a held item matches the required liquid."""
     for held_id in ps.inventory:
         held = by_id.get(held_id)
@@ -346,9 +364,17 @@ def _verbs_for(
     # otherwise it's a guaranteed dead end ("missing tool", "code unknown", ...)
     # that agents would burn ticks retrying. Once they gather the tool/code/liquid
     # or bring power online, the verb reappears.
-    if obj.requires_code and state in HIDDEN_STATES and _code_known(obj.requires_code, ps):
+    if (
+        obj.requires_code
+        and state in HIDDEN_STATES
+        and _code_known(obj.requires_code, ps)
+    ):
         verbs.append(f"enter_code {obj.id}")
-    if obj.requires_tool and state in HIDDEN_STATES and obj.requires_tool in ps.inventory:
+    if (
+        obj.requires_tool
+        and state in HIDDEN_STATES
+        and obj.requires_tool in ps.inventory
+    ):
         verbs.append(f"use_tool {obj.id}")
     if (
         obj.requires_liquid
@@ -359,7 +385,11 @@ def _verbs_for(
     if obj.fuses is not None:
         for label in obj.fuses:
             verbs.append(f"flip_fuse {obj.id} {label}")
-    if obj.requires_power and state in HIDDEN_STATES and obj.requires_power in ps.power_active:
+    if (
+        obj.requires_power
+        and state in HIDDEN_STATES
+        and obj.requires_power in ps.power_active
+    ):
         verbs.append(f"open {obj.id}")
     return verbs
 
@@ -404,6 +434,7 @@ def _build_action_space(
 
 
 # ---------- action resolution ----------
+
 
 def _resolve_examine(obj: WorldObject, ps: PartyState) -> str:
     if obj.contains_info and obj.contains_info not in ps.known_info:
@@ -474,10 +505,7 @@ def _resolve_insert_liquid(
     required = obj.requires_liquid
     for held_id in ps.inventory:
         held = by_id.get(held_id)
-        haystack = " ".join(
-            [held_id]
-            + ([held.description] if held else [])
-        )
+        haystack = " ".join([held_id] + ([held.description] if held else []))
         if _liquid_token_matches(required, haystack):
             ps.object_states[obj.id] = "unlocked"
             return f"inserted matching liquid ({required}) into {obj.id} → unlocked"
@@ -614,6 +642,7 @@ def _resolve_action(
 
 # ---------- llm action selection ----------
 
+
 def _resolve_choice(response: str, space: list[str]) -> str:
     text = response.strip()
     idx_match = re.match(r"^\s*(\d+)\s*$", text)
@@ -645,9 +674,12 @@ HISTORY_WINDOW = 6
 ACTION_LOG_WINDOW = 12
 
 
-def _format_agent_history(ps: PartyState, agent_id: str, limit: int = HISTORY_WINDOW) -> str:
+def _format_agent_history(
+    ps: PartyState, agent_id: str, limit: int = HISTORY_WINDOW
+) -> str:
     entries = [
-        e for e in ps.log
+        e
+        for e in ps.log
         if e.agent_id == agent_id and e.action not in NON_GAMEPLAY_ACTIONS
     ][-limit:]
     if not entries:
@@ -669,9 +701,9 @@ def _party_stalled(ps: PartyState, party_size: int) -> bool:
     if party_size <= 0 or ps.tick <= STALL_TICKS:
         return False
     window = [
-        e for e in ps.log
-        if e.tick > ps.tick - 1 - STALL_TICKS
-        and e.action not in NON_GAMEPLAY_ACTIONS
+        e
+        for e in ps.log
+        if e.tick > ps.tick - 1 - STALL_TICKS and e.action not in NON_GAMEPLAY_ACTIONS
     ]
     if len(window) < party_size * STALL_TICKS:
         return False
@@ -696,14 +728,20 @@ def _agent_act(
     space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
 
     win = world.win_condition
-    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+    win_str = (
+        f"object {win.object_id} reaches state '{win.state}'"
+        if win.object_id
+        else "unknown"
+    )
 
     room_goal = room.goal if room and room.goal else "(no specific goal — explore)"
     if room and room.goal_completion is not None:
         if _goal_completion_satisfied(room.goal_completion, ps):
             room_goal_status = f"DONE ✓"
         else:
-            room_goal_status = f"IN PROGRESS — need: {_format_goal_completion(room.goal_completion)}"
+            room_goal_status = (
+                f"IN PROGRESS — need: {_format_goal_completion(room.goal_completion)}"
+            )
     else:
         room_goal_status = "(no completion condition)"
     key_objs = (
@@ -726,9 +764,7 @@ def _agent_act(
         )
 
     gm_directive_str = (
-        gm_directive
-        if gm_directive
-        else "(none — keep working this room's goal)"
+        gm_directive if gm_directive else "(none — keep working this room's goal)"
     )
 
     prompt = ACTION_PROMPT.format(
@@ -770,6 +806,7 @@ def _agent_act(
 
 # ---------- observation phase ----------
 
+
 def _objects_for_observation(world: GameWorld, ps: PartyState) -> list[WorldObject]:
     """Every object whose container chain roots in the current room.
 
@@ -796,7 +833,9 @@ def _objects_for_observation(world: GameWorld, ps: PartyState) -> list[WorldObje
     return [o for o in world.objects if _roots_in_room(o)]
 
 
-def _format_object_states(objects: list[WorldObject], world: GameWorld, ps: PartyState) -> str:
+def _format_object_states(
+    objects: list[WorldObject], world: GameWorld, ps: PartyState
+) -> str:
     """'object - state [done|pending]' survey of the whole room for observation.
 
     Includes every object (interacted or not, reachable or still nested) with its
@@ -829,7 +868,11 @@ def _agent_observe(
     """One agent surveys the room and lists the objects present — no action taken."""
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
-    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+    win_str = (
+        f"object {win.object_id} reaches state '{win.state}'"
+        if win.object_id
+        else "unknown"
+    )
 
     # Survey the FULL room state (handled + pending, reachable + nested), not just
     # the currently-reachable `visible` set.
@@ -857,18 +900,27 @@ def _agent_observe(
 
 # ---------- planning debate ----------
 
+
 def _plan_context(world: GameWorld, ps: PartyState, observation: list[str]) -> dict:
     """Shared template fields used by every prompt in the planning debate."""
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
-    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+    win_str = (
+        f"object {win.object_id} reaches state '{win.state}'"
+        if win.object_id
+        else "unknown"
+    )
     all_objects = _objects_for_observation(world, ps)
     return {
         "current_room": ps.current_room,
         "room_description": room.description if room else "",
-        "room_goal": room.goal if room and room.goal else "(no specific goal — explore)",
+        "room_goal": (
+            room.goal if room and room.goal else "(no specific goal — explore)"
+        ),
         "win_condition": win_str,
-        "observation": "\n".join(f"- {b}" for b in observation) if observation else "(none)",
+        "observation": (
+            "\n".join(f"- {b}" for b in observation) if observation else "(none)"
+        ),
         "object_state_list": _format_object_states(all_objects, world, ps),
         "inventory": ", ".join(ps.inventory) if ps.inventory else "(empty)",
         "known_info": ", ".join(ps.known_info) if ps.known_info else "(none)",
@@ -971,7 +1023,9 @@ def _debate_plan(
             revised[member.agent_id] = (member.character.name, plan)
             if render:
                 _render_agent_plan(
-                    member, plan, label=f"REVISES (round {round_no + 1})",
+                    member,
+                    plan,
+                    label=f"REVISES (round {round_no + 1})",
                     reasoning=reasoning,
                 )
         proposals = revised
@@ -983,7 +1037,9 @@ def _debate_plan(
     return unified
 
 
-def _render_observation(room_id: str, visible: list[WorldObject], ps: PartyState) -> None:
+def _render_observation(
+    room_id: str, visible: list[WorldObject], ps: PartyState
+) -> None:
     body = [f"Entered {room_id} — objects observed (object - state):"]
     for o in visible:
         state = ps.object_states.get(o.id, o.state)
@@ -1086,6 +1142,7 @@ def _render_unified_plan(room_id: str, plan: list[str], reasoning: str = "") -> 
 
 
 # ---------- initial state ----------
+
 
 def _build_initial_party_state(world: GameWorld) -> PartyState:
     starting_room = world.rooms[0].id if world.rooms else ""
@@ -1290,7 +1347,9 @@ def _render_agent_action(
     uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s) left"
     status = _classify_outcome(note)
     if teammate is not None:
-        saw = f"{teammate.agent_id} -> {teammate.action} ({teammate.note or 'no change'})"
+        saw = (
+            f"{teammate.agent_id} -> {teammate.action} ({teammate.note or 'no change'})"
+        )
     else:
         saw = "(nothing yet)"
     body = [
@@ -1299,7 +1358,9 @@ def _render_agent_action(
         f"DO : {decided['action']}",
         f"{status} : {note}",
     ]
-    _panel(f"{member.agent_id} -- {member.character.name} ({member.character.role})", body)
+    _panel(
+        f"{member.agent_id} -- {member.character.name} ({member.character.role})", body
+    )
 
 
 def _render_gm_verdict(room_id: str, dest: str, verdict: GMVerdict) -> None:
@@ -1326,7 +1387,11 @@ def _render_final(ps: PartyState, world: GameWorld) -> None:
     outcome = "VICTORY" if ps.victory else f"ENDED (final room: {ps.current_room})"
     inv = ", ".join(ps.inventory) if ps.inventory else "(empty)"
     known = ", ".join(ps.known_info) if ps.known_info else "(none)"
-    win_obj_state = ps.object_states.get(world.win_condition.object_id, "?") if world.win_condition.object_id else "?"
+    win_obj_state = (
+        ps.object_states.get(world.win_condition.object_id, "?")
+        if world.win_condition.object_id
+        else "?"
+    )
     body = [
         f"Outcome      : {outcome}",
         f"Ticks used   : {ps.tick} / {MAX_TICKS}",
@@ -1340,6 +1405,7 @@ def _render_final(ps: PartyState, world: GameWorld) -> None:
 
 
 # ---------- main node ----------
+
 
 def gameplay_node(state: GameState) -> dict:
     world = state.world
@@ -1362,7 +1428,9 @@ def gameplay_node(state: GameState) -> dict:
             ps.victory = True
             _banner("VICTORY", char="*")
             _stream(f"  Party achieved the win condition at tick {ps.tick}.")
-            new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
+            new_messages.append(
+                AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
+            )
             break
 
         ps.tick += 1
@@ -1380,9 +1448,7 @@ def gameplay_node(state: GameState) -> dict:
             _render_observation(ps.current_room, visible, ps)
             lead = state.party[0]
             for member in state.party:
-                observation = _agent_observe(
-                    member.agent_id, member, world, ps
-                )
+                observation = _agent_observe(member.agent_id, member, world, ps)
                 ps.log.append(
                     TickAction(
                         tick=ps.tick,
@@ -1399,7 +1465,9 @@ def gameplay_node(state: GameState) -> dict:
             # Planning debate: agents propose, critique/revise, then a single
             # unified plan is synthesized as the party's shared action reference.
             unified = _debate_plan(
-                state.party, world, ps,
+                state.party,
+                world,
+                ps,
                 ps.room_observations.get(ps.current_room, []),
             )
             ps.room_plans[ps.current_room] = unified
@@ -1489,8 +1557,16 @@ def gameplay_node(state: GameState) -> dict:
                 else ""
             )
             decided = _agent_act(
-                member.agent_id, member, world, ps, action_space, visible, teammate,
-                stalled, plan, gm_directive_str,
+                member.agent_id,
+                member,
+                world,
+                ps,
+                action_space,
+                visible,
+                teammate,
+                stalled,
+                plan,
+                gm_directive_str,
             )
             note, target = _resolve_action(decided["action"], world, ps)
             this_action = TickAction(
@@ -1536,8 +1612,12 @@ def gameplay_node(state: GameState) -> dict:
     if not ps.game_over:
         ps.game_over = True
         _banner("TIME UP", char="*")
-        _stream(f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition.")
-        new_messages.append(AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}"))
+        _stream(
+            f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition."
+        )
+        new_messages.append(
+            AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}")
+        )
 
     _render_final(ps, world)
 

@@ -10,7 +10,9 @@ load_dotenv()
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     game_master_model: str = os.getenv("GAME_MASTER_MODEL", "llama3.2")
-    player_model: str = os.getenv("PLAYER_MODEL", os.getenv("GAME_MASTER_MODEL", "llama3.2"))
+    player_model: str = os.getenv(
+        "PLAYER_MODEL", os.getenv("GAME_MASTER_MODEL", "llama3.2")
+    )
     game_master_temperature: float = float(os.getenv("GAME_MASTER_TEMPERATURE", "0.8"))
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
 
@@ -26,7 +28,9 @@ def get_llm(role: str = "game_master") -> ChatOllama:
     s = Settings()
     resolver = _ROLE_CONFIG.get(role)
     if resolver is None:
-        raise ValueError(f"Unknown LLM role: {role!r}. Expected one of {list(_ROLE_CONFIG)}")
+        raise ValueError(
+            f"Unknown LLM role: {role!r}. Expected one of {list(_ROLE_CONFIG)}"
+        )
     model, temperature = resolver(s)
     return ChatOllama(
         model=model,

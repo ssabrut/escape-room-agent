@@ -96,6 +96,7 @@ class GameWorld(BaseModel):
                 return WinCondition(object_id=gc.object_id, state=gc.state or "")
         return WinCondition()
 
+
 ABILITY_EFFECTS = {
     "extra_action",
     "auto_succeed_persuasion",
@@ -153,21 +154,33 @@ class PartyState(BaseModel):
     current_room: str = ""
     inventory: list[str] = Field(default_factory=list)  # object ids the party carries
     visited: set[str] = Field(default_factory=set)
-    object_states: dict[str, str] = Field(default_factory=dict)  # object_id -> current state
-    known_info: list[str] = Field(default_factory=list)  # contains_info tokens discovered
+    object_states: dict[str, str] = Field(
+        default_factory=dict
+    )  # object_id -> current state
+    known_info: list[str] = Field(
+        default_factory=list
+    )  # contains_info tokens discovered
     fuse_states: dict[str, dict[str, str]] = Field(
         default_factory=dict
     )  # panel_id -> {fuse_label: "ON"|"OFF"}
-    power_active: set[str] = Field(default_factory=set)  # power identifiers currently on
+    power_active: set[str] = Field(
+        default_factory=set
+    )  # power identifiers currently on
     tick: int = 0
     game_over: bool = False
     victory: bool = False
     log: list[TickAction] = Field(default_factory=list)
     ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
     spotted_clues: list[str] = Field(default_factory=list)
-    observed_rooms: set[str] = Field(default_factory=set)  # rooms whose entry observation pass is done
-    room_observations: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> observed-object bullets
-    room_plans: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> escape-plan bullets
+    observed_rooms: set[str] = Field(
+        default_factory=set
+    )  # rooms whose entry observation pass is done
+    room_observations: dict[str, list[str]] = Field(
+        default_factory=dict
+    )  # room_id -> observed-object bullets
+    room_plans: dict[str, list[str]] = Field(
+        default_factory=dict
+    )  # room_id -> escape-plan bullets
 
 
 class GameState(BaseModel):

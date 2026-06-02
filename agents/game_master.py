@@ -156,11 +156,14 @@ def _coerce_id(value) -> str | None:
 
 def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObject]:
     """Build objects, validating that locations and tool references resolve."""
-    candidates: list[dict] = [o for o in raw_objects if isinstance(o, dict) and o.get("id")]
+    candidates: list[dict] = [
+        o for o in raw_objects if isinstance(o, dict) and o.get("id")
+    ]
     # Object ids that collide with a room id are rejected, so don't treat them as
     # valid locations or tool targets either.
     known_object_ids = {
-        o["id"] for o in candidates
+        o["id"]
+        for o in candidates
         if isinstance(o.get("id"), str) and o["id"] not in room_ids
     }
     valid_locations = room_ids | known_object_ids
@@ -213,6 +216,7 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
 
 def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     """Drop key_object and goal_completion entries that reference unknown object ids."""
+
     def _valid(p: Prerequisite) -> bool:
         if p.type in {"object_state", "has_item"}:
             return p.object_id in object_ids
@@ -242,7 +246,9 @@ def _secret_tokens(objects: list[WorldObject]) -> set[str]:
     return tokens
 
 
-def _scrub_spoilers(solution_path: list[str], secrets: set[str]) -> tuple[list[str], list[str]]:
+def _scrub_spoilers(
+    solution_path: list[str], secrets: set[str]
+) -> tuple[list[str], list[str]]:
     """Redact literal codes from the player-facing solution_path.
 
     Returns (redactions, cleaned_solution_path) for logging.
@@ -317,10 +323,23 @@ def _bind_goals(rooms: list[Room]) -> list[str]:
 
 MAX_ROOMS = 2
 
-_CLUE_HINTS = ("note", "letter", "paper", "scroll", "document", "diary", "journal", "tome", "book", "tablet")
+_CLUE_HINTS = (
+    "note",
+    "letter",
+    "paper",
+    "scroll",
+    "document",
+    "diary",
+    "journal",
+    "tome",
+    "book",
+    "tablet",
+)
 
 
-def _required_info_tokens(rooms: list[Room], objects: list[WorldObject]) -> list[tuple[str, str]]:
+def _required_info_tokens(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[tuple[str, str]]:
     """Collect (info_token, source_room) pairs that the world must produce.
 
     Source room is where the info needs to be available (i.e., a room the party
@@ -374,9 +393,7 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
             continue
         if any(_token_matches_code(token, info) for info in produced):
             continue
-        candidates = sorted(
-            objects, key=lambda o: _score(o, source_room), reverse=True
-        )
+        candidates = sorted(objects, key=lambda o: _score(o, source_room), reverse=True)
         winner = next((o for o in candidates if _score(o, source_room) >= 0), None)
         if winner is None:
             continue
@@ -387,7 +404,9 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
     return patched
 
 
-def _dedup_objects(objects: list[WorldObject], rooms: list[Room]) -> tuple[list[WorldObject], list[str]]:
+def _dedup_objects(
+    objects: list[WorldObject], rooms: list[Room]
+) -> tuple[list[WorldObject], list[str]]:
     """Collapse near-duplicate objects in the same room into one.
 
     The LLM sometimes emits a container AND a redundant "lock" object for it —
@@ -458,7 +477,16 @@ def _stem(token: str) -> str:
     of nulled (which would make the lock open with no tool at all).
     """
     s = token.lower()
-    for suffix in ("_revealed", "_hidden", "_locked", "_unlocked", "_item", "_object", "_tool", "_key"):
+    for suffix in (
+        "_revealed",
+        "_hidden",
+        "_locked",
+        "_unlocked",
+        "_item",
+        "_object",
+        "_tool",
+        "_key",
+    ):
         if s.endswith(suffix) and len(s) > len(suffix):
             s = s[: -len(suffix)]
     return s
@@ -490,7 +518,8 @@ def _repair_tool_refs(objects: list[WorldObject]) -> list[str]:
             # fall back to a takeable id that contains (or is contained by) the stem
             stem = _stem(tool_id)
             loose = [
-                tid for tid in (oid for o2 in objects if o2.takeable for oid in [o2.id])
+                tid
+                for tid in (oid for o2 in objects if o2.takeable for oid in [o2.id])
                 if stem and (stem in _stem(tid) or _stem(tid) in stem)
             ]
             match = loose[0] if len(loose) == 1 else None
@@ -504,17 +533,32 @@ def _repair_tool_refs(objects: list[WorldObject]) -> list[str]:
 
 
 _LLM_LOCKED_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
-_UNLOCKER_HINTS = ("wheel", "key", "lever", "crank", "handle", "valve", "tool", "crowbar", "wrench")
+_UNLOCKER_HINTS = (
+    "wheel",
+    "key",
+    "lever",
+    "crank",
+    "handle",
+    "valve",
+    "tool",
+    "crowbar",
+    "wrench",
+)
 
 
 def _has_unlock_mechanism(o: WorldObject) -> bool:
     return bool(
-        o.requires_code or o.requires_tool or o.requires_liquid
-        or o.requires_power or o.fuses
+        o.requires_code
+        or o.requires_tool
+        or o.requires_liquid
+        or o.requires_power
+        or o.fuses
     )
 
 
-def _repair_unsolvable_gates(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+def _repair_unsolvable_gates(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[str]:
     """Make goal-gating objects winnable when the LLM locked them with no mechanism.
 
     A room's goal_completion (and the final room's, which is the win condition)
@@ -547,15 +591,23 @@ def _repair_unsolvable_gates(rooms: list[Room], objects: list[WorldObject]) -> l
         # the typical goal target). With no takeable at all, fall back to relaxing
         # the gate's initial state to its required target so the goal is reachable.
         same_room_takeables = [
-            o for o in objects
-            if o.location == obj.location and o.takeable and o.id != obj.id
+            o
+            for o in objects
+            if o.location == obj.location
+            and o.takeable
+            and o.id != obj.id
             and o.state not in _LLM_LOCKED_STATES  # the unlocker must be grabbable
         ]
         hinted = [
-            o for o in same_room_takeables
+            o
+            for o in same_room_takeables
             if any(h in o.id.lower() for h in _UNLOCKER_HINTS)
         ]
-        pick = hinted[0] if hinted else (same_room_takeables[0] if same_room_takeables else None)
+        pick = (
+            hinted[0]
+            if hinted
+            else (same_room_takeables[0] if same_room_takeables else None)
+        )
         if pick is not None:
             obj.requires_tool = pick.id
             repairs.append(f"{obj.id}: locked gate given requires_tool {pick.id}")
@@ -600,7 +652,9 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
             continue
         seen_info.setdefault(o.contains_info, []).append(o.id)
         used = any(
-            _token_matches_code(c, o.contains_info) or o.contains_info in c or c in o.contains_info
+            _token_matches_code(c, o.contains_info)
+            or o.contains_info in c
+            or c in o.contains_info
             for c in consumed
         )
         if not used:
@@ -626,7 +680,8 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
         if not tool.takeable:
             warnings.append(f"{o.id} requires tool {tool_id}, but it is not takeable")
         if tool.state in HIDDEN_STATES_ROOM and not any(
-            info == tool_id or (info and tool_id in info) for info in (x.contains_info for x in objects)
+            info == tool_id or (info and tool_id in info)
+            for info in (x.contains_info for x in objects)
         ):
             warnings.append(
                 f"tool {tool_id} is '{tool.state}' with no clue that reveals it "
@@ -642,6 +697,7 @@ def _token_matches_code(code: str, info: str | None) -> bool:
     if not info:
         return False
     import re as _re
+
     return bool(_re.sub(r"[^0-9]", "", info) == _re.sub(r"[^0-9]", "", code) and code)
 
 
@@ -688,7 +744,9 @@ def _build_world(data: dict) -> GameWorld:
     # still name the survivor we want to keep.
     objects, merges = _dedup_objects(objects, rooms)
     if merges:
-        print(f"[game_master] merged duplicate objects: {', '.join(merges)}", flush=True)
+        print(
+            f"[game_master] merged duplicate objects: {', '.join(merges)}", flush=True
+        )
 
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
@@ -697,21 +755,32 @@ def _build_world(data: dict) -> GameWorld:
     # near-miss name like brg_key vs brg_key_revealed doesn't strand a door.
     tool_repairs = _repair_tool_refs(objects)
     if tool_repairs:
-        print(f"[game_master] repaired tool refs: {', '.join(tool_repairs)}", flush=True)
+        print(
+            f"[game_master] repaired tool refs: {', '.join(tool_repairs)}", flush=True
+        )
 
     # Make goal-gating objects that the LLM locked with no unlock path winnable,
     # so the party can't get stranded on a GM-blocked exit it can never clear.
     gate_repairs = _repair_unsolvable_gates(rooms, objects)
     if gate_repairs:
-        print(f"[game_master] repaired unsolvable gates: {', '.join(gate_repairs)}", flush=True)
+        print(
+            f"[game_master] repaired unsolvable gates: {', '.join(gate_repairs)}",
+            flush=True,
+        )
 
     patched = _patch_missing_info(rooms, objects)
     if patched:
-        print(f"[game_master] auto-patched missing clues: {', '.join(patched)}", flush=True)
+        print(
+            f"[game_master] auto-patched missing clues: {', '.join(patched)}",
+            flush=True,
+        )
 
     rewrites = _bind_goals(rooms)
     if rewrites:
-        print(f"[game_master] rebound goals to completion: {', '.join(rewrites)}", flush=True)
+        print(
+            f"[game_master] rebound goals to completion: {', '.join(rewrites)}",
+            flush=True,
+        )
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]

@@ -130,7 +130,9 @@ def _render(result: dict) -> None:
             else f"ENDED (final room: {party_state.current_room})"
         )
         inv = ", ".join(party_state.inventory) if party_state.inventory else "(empty)"
-        known = ", ".join(party_state.known_info) if party_state.known_info else "(none)"
+        known = (
+            ", ".join(party_state.known_info) if party_state.known_info else "(none)"
+        )
         print(f"  Result    : {outcome}")
         print(f"  Ticks used: {party_state.tick}")
         print(f"  Inventory : {inv}")
