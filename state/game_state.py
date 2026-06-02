@@ -7,45 +7,64 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
-class RoomItem(BaseModel):
-    name: str
-    description: str
+class Prerequisite(BaseModel):
+    """A structured condition — used by Room.goal_completion to mark when a room's goal is done."""
+
+    type: str  # "object_state" | "known_info" | "has_item" | "power_active"
+    object_id: str | None = None
+    state: str | None = None
+    info: str | None = None
+    id: str | None = None
 
 
 class Room(BaseModel):
     """Static blueprint of a room — never mutated after generation."""
 
-    name: str
+    id: str
     description: str
     adjacency: dict[str, str] = Field(default_factory=dict)
-    items: list[RoomItem] = Field(default_factory=list)
+    goal: str = ""
+    goal_completion: Prerequisite | None = None
+    key_objects: list[str] = Field(default_factory=list)
 
 
-class Gate(BaseModel):
-    """A single step in the game flow sequence."""
+class WorldObject(BaseModel):
+    """An object placed in the world — fixed scenery, item, container, panel, door, etc."""
 
-    room: str
-    requires: str | None = None  # None means freely accessible
-    unlocks: str  # what this gate's completion opens up
+    id: str
+    location: str  # room id or another object id (for nesting)
+    description: str
+    state: str = "visible"
+    interactable: bool = False
+    takeable: bool = False
+    requires_code: str | None = None
+    code_digits: int | None = None
+    requires_tool: str | None = None
+    requires_liquid: str | None = None
+    requires_power: str | None = None
+    fuses: dict[str, str] | None = None
+    contains_info: str | None = None
+    slot_description: str | None = None
+    note: str | None = None
 
 
-class GameFlow(BaseModel):
-    """Ordered sequence of gates from start to win."""
+class WinCondition(BaseModel):
+    """The target object state that ends the game in victory."""
 
-    starting_room: str = ""
-    win_condition: str = ""
-    gates: list[Gate] = Field(default_factory=list)
+    object_id: str = ""
+    state: str = ""
 
 
 class GameWorld(BaseModel):
     """The frozen dungeon blueprint produced by the game master."""
 
-    title: str = ""
-    setup: str = ""
-    atmosphere: str = ""
+    scenario: str = ""
     objective: str = ""
     rooms: list[Room] = Field(default_factory=list)
-    game_flow: GameFlow = Field(default_factory=GameFlow)
+    objects: list[WorldObject] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+    win_condition: WinCondition = Field(default_factory=WinCondition)
+    solution_path: list[str] = Field(default_factory=list)
 
 ABILITY_EFFECTS = {
     "extra_action",
@@ -87,19 +106,6 @@ class PartyMember(BaseModel):
     reasoning: str  # why this agent chose this character
 
 
-class Mission(BaseModel):
-    """An interactive mission the player must complete to progress through a room."""
-
-    room: str
-    gate_index: int
-    description: str  # narrative task description shown to the player
-    required_actions: list[
-        str
-    ]  # interaction keywords that count as completing the mission
-    reward_item: str  # existing room item awarded on completion
-    unlocks_exit_to: str  # room name that becomes accessible after completion
-
-
 class TickAction(BaseModel):
     """A single agent's action + spoken line on one tick of gameplay."""
 
@@ -107,26 +113,31 @@ class TickAction(BaseModel):
     agent_id: str
     say: str
     action: str
-    matched_required_action: str | None = (
-        None  # which required_action this satisfied, if any
-    )
-    note: str = ""  # short outcome message (e.g., "completed", "no effect")
+    target_object: str | None = None  # object id this action operated on, if any
+    note: str = ""  # short outcome message (e.g., "unlocked", "no effect")
 
 
 class PartyState(BaseModel):
     """Shared runtime state of the co-op party."""
 
     current_room: str = ""
-    inventory: list[RoomItem] = Field(default_factory=list)
+    inventory: list[str] = Field(default_factory=list)  # object ids the party carries
     visited: set[str] = Field(default_factory=set)
-    completed_actions_by_gate: dict[int, list[str]] = Field(default_factory=dict)
-    completed_gates: list[int] = Field(default_factory=list)
+    object_states: dict[str, str] = Field(default_factory=dict)  # object_id -> current state
+    known_info: list[str] = Field(default_factory=list)  # contains_info tokens discovered
+    fuse_states: dict[str, dict[str, str]] = Field(
+        default_factory=dict
+    )  # panel_id -> {fuse_label: "ON"|"OFF"}
+    power_active: set[str] = Field(default_factory=set)  # power identifiers currently on
     tick: int = 0
     game_over: bool = False
     victory: bool = False
     log: list[TickAction] = Field(default_factory=list)
     ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
     spotted_clues: list[str] = Field(default_factory=list)
+    observed_rooms: set[str] = Field(default_factory=set)  # rooms whose entry observation pass is done
+    room_observations: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> observed-object bullets
+    room_plans: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> escape-plan bullets
 
 
 class GameState(BaseModel):
@@ -137,5 +148,4 @@ class GameState(BaseModel):
     world: GameWorld | None = None
     characters: list[Character] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
-    missions: list[Mission] = Field(default_factory=list)
     party_state: PartyState | None = None

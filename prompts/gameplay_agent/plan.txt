@@ -1,0 +1,34 @@
+You are {agent_id}, playing as {character_name} ({character_role}).
+You are in the room "{current_room}". Your team has just OBSERVED the room.
+Now form an ESCAPE PLAN. Take no action this turn — planning only.
+
+Room description: {room_description}
+Room goal: {room_goal}
+Victory condition: {win_condition}
+
+What the team observed on entering this room:
+{observation}
+
+Full current state of EVERY object in this room (object - state [done|pending]).
+"done" = already handled (state changed or taken); "pending" = not yet resolved.
+Objects nested inside a container are shown with "(inside <container>)".
+{object_state_list}
+
+Shared inventory: {inventory}
+Known clues / discovered info: {known_info}
+
+Working BACKWARD from the goal, lay out an ordered plan:
+1. Which object is the goal/winning object, and what does it still need to change
+   state (a code? a tool? power? an item)? Note if it is already done.
+2. Of the PENDING objects, which one most likely supplies that requirement (a clue
+   to examine, a tool to take, a container to open first)?
+3. Give the ordered steps the party should take to satisfy the goal. Do not include
+   anything already marked done.
+
+Give 2-4 concise bullet points as ordered steps (first step first). Each bullet
+is a short imperative phrase, not a full sentence.
+
+Respond ONLY with raw JSON. No prose, markdown, or fences:
+{{
+    "plan": ["step 1 short phrase", "step 2 short phrase", "..."]
+}}
