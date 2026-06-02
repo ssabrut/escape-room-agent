@@ -95,7 +95,7 @@ def _generate_one(llm: ChatOllama, theme: str, rooms: int, chain_depth: int,
     return world, build_log
 
 
-def _oracle_solve(world: GameWorld, trace: bool = False):
+def _oracle_solve(world: GameWorld):
     """Run the heuristic oracle once; return (victory, measured_chain_depth, history).
 
     chain_depth is the count of ordered dependency links the oracle had to clear
@@ -105,8 +105,72 @@ def _oracle_solve(world: GameWorld, trace: bool = False):
     """
     if not world.win_condition.object_id or len(world.rooms) < 1:
         return False, 0, []
-    result = HeadlessEpisode(world).run(heuristic_policy, record_history=trace)
+    # Always record history: the trace of a winning solve is rewritten back onto
+    # the world as a hallucination-free solution_path (see _solution_from_trace).
+    result = HeadlessEpisode(world).run(heuristic_policy, record_history=True)
     return result.victory, result.chain_depth, result.history
+
+
+def _action_of(trace_line: str) -> str:
+    """Extract the raw action ('enter_code safe_3') from a 'tN <action> -> note' line."""
+    body = trace_line.split(" ", 1)[1] if trace_line[:1] == "t" and " " in trace_line else trace_line
+    return body.split(" -> ", 1)[0].strip()
+
+
+def _replay_wins(world: GameWorld, actions: list[str]) -> bool:
+    """Replay a fixed action sequence through the engine; True if it reaches victory.
+
+    Uses a scripted policy that emits the given actions in order (skipping any not
+    currently legal), so we can test whether a *subset* of the oracle's trace still
+    solves the world — the basis for minimizing the solution path.
+    """
+    from agents.gameplay_node import IDLE_ACTION
+
+    pending = list(actions)
+
+    def _scripted(_world, _ps, action_space):
+        # Emit the next scripted action that is currently legal; idle if exhausted.
+        while pending:
+            nxt = pending.pop(0)
+            if nxt in action_space:
+                return nxt
+        return IDLE_ACTION
+
+    return HeadlessEpisode(world).run(_scripted).victory
+
+
+def _minimal_actions(world: GameWorld, actions: list[str]) -> list[str]:
+    """Greedy leave-one-out minimization of a winning action sequence.
+
+    A step is necessary iff dropping it makes the remaining sequence fail to win.
+    Iterating once in order removes every individually-droppable step (decoy takes,
+    dead-end drawer opens, redundant examines) while preserving a still-winning
+    path. O(n) replays — cheap for ~15-step traces.
+    """
+    kept = list(actions)
+    i = 0
+    while i < len(kept):
+        trial = kept[:i] + kept[i + 1:]
+        if _replay_wins(world, trial):
+            kept = trial  # step i was unnecessary
+        else:
+            i += 1  # step i is required; keep it, move on
+    return kept
+
+
+def _solution_from_trace(world: GameWorld, history: list[str]) -> list[str]:
+    """Rebuild a MINIMAL, numbered solution_path from the oracle's winning trace.
+
+    The oracle's history is a guaranteed-valid walk over the ACTUAL (post-repair)
+    object graph, so deriving the path from it eliminates the LLM-hallucinated /
+    repair-drifted object refs the model's own solution_path carried. We then strip
+    the oracle's decoy detours via leave-one-out minimization, leaving only the
+    steps actually required to win — the optimal path (and the target a trained
+    policy should converge to).
+    """
+    actions = [_action_of(line) for line in history if line.strip()]
+    minimal = _minimal_actions(world, actions)
+    return [f"{i}. {a}" for i, a in enumerate(minimal, 1)]
 
 
 def _world_signature(world: GameWorld) -> tuple:
@@ -174,7 +238,7 @@ def generate_bank(count: int, rooms: int, chain_depth: int, decoys: int,
         if sig in seen:
             print(" duplicate, skipped")
             continue
-        victory, depth, history = _oracle_solve(world, trace=debug)
+        victory, depth, history = _oracle_solve(world)
         size = f"{len(world.rooms)}r/{len(world.objects)}o"
         if not victory:
             print(f" unsolvable by oracle ({size})")
@@ -192,6 +256,10 @@ def generate_bank(count: int, rooms: int, chain_depth: int, decoys: int,
             continue
         seen.add(sig)
         kept += 1
+        # Replace the LLM's solution_path (which references hallucinated /
+        # repair-drifted object ids) with one derived from the oracle's actual
+        # winning trace over the final object graph — guaranteed consistent.
+        world.solution_path = _solution_from_trace(world, history)
         out = WORLDS_DIR / f"world_{kept:03d}.json"
         out.write_text(
             json.dumps({"world": world.model_dump(mode="json", exclude_none=True)},

@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 16:52:41 WIB
+
+### What changed
+- Each kept benchmark world's `solution_path` is now rebuilt from the oracle's actual winning trace over the final (post-repair) object graph, replacing the LLM-authored path. This eliminates hallucinated or repair-drifted object references and guarantees the recorded solution is one the engine can actually replay to victory.
+- The recorded solution is now the MINIMAL winning path: a greedy leave-one-out pass replays subsets of the trace through the engine and drops any step (decoy takes, dead-end drawer opens, redundant examines) that isn't required to win, leaving only the steps needed for an optimal solve.
+- The oracle now always records its solve history (the trace is needed to derive the solution path), so the prior `trace`/`debug`-gated history recording was removed.
+
+### Why
+The LLM-generated `solution_path` referenced object ids that no longer matched the world after generation-time repairs drifted the object graph, so the stored solution couldn't be trusted or replayed. Deriving the path from the oracle's guaranteed-valid winning trace and then minimizing it produces a consistent, optimal solution — the target a trained policy should converge to.
+
+---
+
 ## 2026-06-02 16:08:08 WIB
 
 ### What changed
