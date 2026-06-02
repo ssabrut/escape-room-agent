@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 14:32:02 WIB
+
+### What changed
+- A cleared lock now actually satisfies a goal/win that named a "solved" synonym: goal_completion and the win condition of type `object_state` are matched with state equivalence, so an object the engine marked `"unlocked"` also satisfies a target written as `"open"`, `"opened"`, `"unsealed"`, `"dissolved"`, or `"deactivated"` (the `"visible"` state is excluded — merely visible is not a solved lock). Previously such a goal could never be met and the game became unwinnable.
+- The generation prompt now constrains the open/unlock state vocabulary (target `state` MUST be the literal `"unlocked"`, not a synonym) and forbids unsolvable tool setups: a `requires_tool` target must be takeable and start in a reachable (non-locked/hidden) state and must not be gated behind the very lock it opens, and tool chains must not be circular (no A↔B cycles) — each chain must terminate at an immediately takeable tool. The self-check was expanded into a numbered checklist covering these cases.
+
+### Why
+The resolvers always write `"unlocked"` when a lock is cleared, but the generator named matching goal/win targets with synonyms like `"open"` or `"dissolved"`, so a correctly-solved puzzle never registered and the world was unwinnable. Treating the "opened" synonym family as equivalent fixes existing worlds, while the tightened prompt rules (canonical state vocabulary, no circular or self-gated tool dependencies) prevent the generator from authoring these unsolvable worlds in the first place.
+
+---
+
 ## 2026-06-02 14:21:45 WIB
 
 ### What changed

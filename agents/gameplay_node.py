@@ -54,6 +54,26 @@ NON_GAMEPLAY_ACTIONS = {"observe", "plan", "reobserve", "replan", "gm_directive"
 HIDDEN_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
 UNLOCKED_STATES = {"unlocked", "open", "visible"}
 
+# "Puzzle solved" terminal states that a goal/win target may name. The resolvers
+# always write "unlocked" when a lock is cleared, but the generator names the
+# matching goal target with any synonym (open, opened, dissolved, ...). Treat
+# them as equivalent so a correctly-cleared lock actually satisfies the goal.
+# (Excludes "visible" — a merely-visible object is not a solved lock.)
+OPENED_STATES = {"unlocked", "open", "opened", "unsealed", "dissolved", "deactivated"}
+
+
+def _state_satisfies(actual: str | None, target: str | None) -> bool:
+    """True if object state `actual` meets goal/win target `target`.
+
+    Exact match, or both sides are in the "opened" synonym family — so a chest the
+    resolver marked "unlocked" satisfies a goal/win that asked for "open".
+    """
+    if actual == target:
+        return True
+    if actual is None or target is None:
+        return False
+    return actual in OPENED_STATES and target in OPENED_STATES
+
 
 # ---------- world graph ----------
 
@@ -500,7 +520,9 @@ def _goal_completion_satisfied(completion, ps: PartyState) -> bool:
     if completion is None:
         return False
     if completion.type == "object_state":
-        return bool(completion.object_id) and ps.object_states.get(completion.object_id) == completion.state
+        return bool(completion.object_id) and _state_satisfies(
+            ps.object_states.get(completion.object_id), completion.state
+        )
     if completion.type == "known_info":
         return bool(completion.info) and completion.info in ps.known_info
     if completion.type == "has_item":
@@ -1087,7 +1109,7 @@ def _check_victory(world: GameWorld, ps: PartyState) -> bool:
     win = world.win_condition
     if not win.object_id:
         return False
-    return ps.object_states.get(win.object_id) == win.state
+    return _state_satisfies(ps.object_states.get(win.object_id), win.state)
 
 
 def _render_party_map(world: GameWorld, ps: PartyState) -> None:

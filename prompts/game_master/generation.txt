@@ -21,6 +21,7 @@ Room goal & goal_completion rules (two-room mode):
 - `key_objects` is a list of object ids in that room that matter for its goal — used to focus the party's attention. Only list ids of objects located in that same room.
 - Goal_completion shapes:
     - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
+    - STATE VOCABULARY: when the goal is to open/unlock a container, door, or lock, the target `state` MUST be the literal string `"unlocked"`. The engine writes `"unlocked"` whenever a lock is cleared (via tool, code, liquid, or power) — so a goal that asks for `"open"`, `"opened"`, `"dissolved"`, `"unsealed"`, etc. will NEVER be satisfied and the game becomes unwinnable. Use `"unlocked"`, not a synonym.
     - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
     - {{"type": "has_item", "object_id": "<existing_id>"}} — e.g., the party must carry a keycard
     - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
@@ -34,7 +35,8 @@ Adjacency rules:
 Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
 - Every code (`requires_code`) MUST be produced by some object's `contains_info` field. The token string in `contains_info` must contain the code substring (e.g., `contains_info: "safe_code_742"` produces the code `742`).
 - Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
-- Every `requires_tool` MUST reference an object that is `takeable: true` and reachable before the locked object.
+- Every `requires_tool` MUST reference an object that is `takeable: true` AND starts in a reachable state (`visible`, not `locked`/`hidden`/nested behind the very lock it opens) so the party can actually pick it up before using it. A tool that is `takeable: false`, or locked behind the door it unlocks, makes the puzzle UNSOLVABLE.
+- NO CIRCULAR TOOL DEPENDENCIES: if object A's `requires_tool` is B, then B (and anything B depends on) MUST NOT depend on A — directly or transitively. Two objects requiring each other (A needs B, B needs A) can never be solved. Each tool chain must terminate at a tool that is immediately takeable with no prerequisite.
 - WRONG (unsolvable — the code 742 only appears in the prose description, not in contains_info):
     {{"id": "hidden_note", "location": "first_room_id", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
 - RIGHT (solvable — examining the note produces the info token, which satisfies a known_info prerequisite or unlocks a requires_code: "742"):
@@ -43,7 +45,11 @@ Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
 - NO DUPLICATE CLUES: a given info token must be carried by exactly ONE object. Do not scatter the same code across multiple notes.
 - NO REDUNDANT OBJECTS: model each puzzle element once. Do not emit both a container and a separate "lock"/"panel" object that share the same location and the same requirement (e.g. a chest AND a chest_lock both locked by the same key) — fold the requirement onto the one object the goal_completion checks.
 - REVEALABLE TOOLS: if a `requires_tool` target starts `hidden`, an upstream object must reveal it (its `contains_info` names the tool, or its description makes inspecting it produce the tool). A hidden key nothing uncovers is unsolvable.
-- Self-check before responding: for every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it; and for every `contains_info` token — point to the specific consumer that needs it. If either direction has no match, fix it before responding.
+- Self-check before responding, fix any failure BEFORE you output:
+    1. For every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it; and for every `contains_info` token — point to the specific consumer that needs it. If either direction has no match, fix it.
+    2. For every `requires_tool`, confirm the referenced object has `takeable: true` and a non-locked starting state, and that it is NOT gated behind the very lock it opens.
+    3. Walk each tool chain to its end and confirm it terminates (no A↔B cycle, no chain that loops back on itself).
+    4. For every `goal_completion`/`win_condition` of type `object_state` whose intent is "opened/unlocked", confirm `state` is exactly `"unlocked"` (no synonym).
 
 Object rules:
 - Every object has a unique snake_case id
