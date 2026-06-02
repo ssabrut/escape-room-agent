@@ -53,7 +53,18 @@ class EpisodeResult:
     known_info: int
     last_room: str
     win_object_state: str | None
+    # Number of ordered dependency links the oracle had to clear: each action that
+    # actually unlocked a lock, brought power online, or moved to a new room. This
+    # is the real "how deep is the puzzle" measure (unlike raw ticks, which inflate
+    # with shuffling) — used to reject shallow worlds from the bank.
+    chain_depth: int = 0
     history: list[str] = field(default_factory=list)
+
+
+# Verbs whose successful resolution clears a dependency link (advances the chain).
+_PROGRESS_VERBS = {"enter_code", "use_tool", "insert_liquid", "open", "flip_fuse"}
+# Note substrings that mean the action actually changed gate/lock/power state.
+_PROGRESS_NOTES = ("unlocked", "→ on", "satisfied", "moved to")
 
 
 class HeadlessEpisode:
@@ -72,6 +83,7 @@ class HeadlessEpisode:
         world = self.world
         ps: PartyState = gp._build_initial_party_state(world)
         history: list[str] = []
+        chain_depth = 0
 
         # Patch the GM exit gate to the deterministic verdict for the duration of
         # this episode, then restore — keeps the run model-free without editing
@@ -106,6 +118,12 @@ class HeadlessEpisode:
                     # rather than corrupting state on a bad return.
                     action = gp.IDLE_ACTION
                 note, target = gp._resolve_action(action, world, ps)
+                verb = action.split(" ", 1)[0]
+                lnote = note.lower()
+                if (verb in _PROGRESS_VERBS or verb == "go") and any(
+                    p in lnote for p in _PROGRESS_NOTES
+                ):
+                    chain_depth += 1
                 # The live loop appends every action to ps.log; several engine
                 # helpers (e.g. _already_examined dedup) read that log, so the
                 # headless run must populate it too or it re-picks dead actions.
@@ -137,5 +155,6 @@ class HeadlessEpisode:
             win_object_state=(
                 ps.object_states.get(win.object_id) if win.object_id else None
             ),
+            chain_depth=chain_depth,
             history=history,
         )

@@ -2,6 +2,22 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 16:08:08 WIB
+
+### What changed
+- A clue token's required-info source room is now resolved to the room that actually holds the locked object consuming it (walking the container chain up to its room), instead of always blaming the start room. A second-room safe's clue is no longer stranded back in room one, and a `known_info` goal sources to its own room.
+- The missing-clue patcher no longer buries a code clue on an object that is used as someone else's tool, and only credits a takeable object as a good clue carrier when it also reads like something you examine (a note/journal), so codes the party must READ land on readable objects.
+- World generation now repairs locks whose required code is supplied by nothing but the lock's own `contains_info` (the answer written onto the lock while `requires_code` names a different, unproduced token): `requires_code` is repointed to that self-carried clue so the lock is at least solvable. Runs after the patch pass so a genuine upstream clue is preferred.
+- `requires_tool` targets that name a real but non-takeable object (e.g. a fixed terminal), or a tool locked/hidden behind the very gate it opens, are now forced grabbable — made takeable and relaxed to a visible state — instead of only warned about, so the lock is no longer dead.
+- `power_active` goal gates are now made satisfiable: since the engine only brings power online via a fuse flip producing a `sekring_<label>_ON` token, any power gate whose id isn't such a producible token gets a fuse panel attached to a same-room object and its goal id rewritten to the matching token.
+- The headless benchmark now records each episode's `chain_depth` — the count of ordered dependency links the oracle actually cleared (unlocks, power-on, room moves) — as a truer puzzle-depth measure than raw ticks, for rejecting shallow worlds from the bank.
+- The benchmark oracle policy now deprioritizes actions that failed with no state change since (so it stops head-banging a GM-blocked exit or an unsatisfiable tool), revives them once the world advances, and avoids re-flipping a fuse that's already ON (which would toggle power back off and oscillate forever).
+
+### Why
+The benchmark surfaced worlds that were unwinnable or that the oracle could never solve: clues stranded in the wrong room, codes buried on tools, locks gated only by their own answer, non-takeable required tools, and `power_active` gates with no producible fuse token (the `emergency_relay_power` spin-forever case). These generation-time repairs make benchmark target worlds reliably winnable, while the oracle's dead-action and fuse-toggle guards plus the `chain_depth` metric keep the headless solver from looping to timeout and give a real measure of puzzle depth.
+
+---
+
 ## 2026-06-02 14:32:02 WIB
 
 ### What changed

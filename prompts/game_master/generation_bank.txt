@@ -1,0 +1,63 @@
+Generate a complete, HARD escape room scenario for a 2D text-based game. This is for an automated difficulty benchmark, so prioritize a deep, multi-step puzzle chain over prose.
+
+Theme: {theme}
+Number of rooms: {num_rooms} (a linear chain: room 1 is the start, room {num_rooms} is the final room)
+
+Difficulty targets (make this genuinely hard to solve efficiently):
+* DEEP CHAINS: the solution must require at least {chain_depth} dependent steps in sequence — e.g. examine clue -> enter code -> reveals a tool -> use tool on a door -> reveals next clue -> ... Each step must depend on the previous one's result.
+* DECOYS: scatter {decoys} extra objects per room that look interactable (examinable notes, takeable items, locked drawers) but are NOT on the solution path. They must be harmless dead-ends, never required.
+* ROUTING: the rooms form a linear chain (room i connects to room i+1). Each room except the last GATES passage to the next via its goal_completion. The win object lives in the final room.
+
+Include:
+* scenario (one short paragraph)
+* objective (one sentence)
+* rooms: exactly {num_rooms}, each with id, description, adjacency (linear chain), goal, key_objects, goal_completion
+* objects placed across the rooms (real puzzle pieces + decoys)
+* rules, win_condition, solution_path
+
+Room goal & goal_completion rules:
+- Each room has a one-sentence `goal` that names the SAME object/outcome its `goal_completion` checks.
+- Each non-final room's `goal_completion` GATES passage onward: the party cannot leave room i until room i's goal_completion is satisfied. Make it the prerequisite for unlocking the door to room i+1 (or carrying the keycard/clue needed next).
+- The FINAL room's `goal_completion` MUST equal the win_condition. Satisfying it ends the game.
+- goal_completion shapes:
+    - {{"type": "object_state", "object_id": "<existing_id>", "state": "unlocked"}}  (use the literal "unlocked" for any open/unlock goal — synonyms like "open"/"opened" are NEVER satisfied)
+    - {{"type": "known_info", "info": "<info_token>"}}
+    - {{"type": "has_item", "object_id": "<existing_id>"}}
+    - {{"type": "power_active", "id": "<power_token>"}}
+- `key_objects` lists only object ids located in that same room that matter to its goal.
+
+Adjacency rules (linear chain):
+- Connect room i to room i+1 with a mirrored direction pair (north<->south, east<->west). If room i reaches room i+1 via "east", room i+1 reaches room i via "west".
+- Each room's `adjacency` references only the real ids of its chain neighbors.
+
+Solvability rules (CRITICAL — the runtime ignores solution_path entirely):
+- Every `requires_code` MUST be produced by some object's `contains_info` whose token contains the code substring (e.g. contains_info "safe_code_742" produces code "742").
+- Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
+- Every `requires_tool` MUST reference a `takeable: true` object that starts reachable (state "visible", not locked behind the very lock it opens). No circular tool deps (no A needs B while B needs A). Each tool chain must terminate at an immediately-takeable tool.
+- A `requires_tool` target that starts "hidden" MUST be revealed by an upstream object (its contains_info names the tool).
+- NO DANGLING CLUES: every contains_info token is consumed downstream by a requires_code or a known_info goal. DECOY notes must NOT carry a contains_info token that nothing uses — give decoys plain descriptions with NO contains_info, or make them takeable junk with no requirement.
+- NO DUPLICATE CLUES: each info token carried by exactly one object.
+- Self-check before responding and fix failures: for every requirement point to its supplier, for every real contains_info point to its consumer, confirm tools are takeable+reachable, confirm chains terminate, confirm every open/unlock goal uses state exactly "unlocked".
+
+Object rules:
+- unique snake_case id, never equal to a room id
+- location is an existing room id OR another existing object id (for nesting)
+- states: "visible", "fixed", "hidden", "locked", "locked_bolt", "unlocked"
+- Optional precondition fields (only when relevant): requires_code (+code_digits int), requires_tool (object id), requires_liquid (e.g. "pH_7"), requires_power (e.g. "sekring_C_ON"), fuses (label->"ON"/"OFF"), contains_info (string), slot_description, note
+
+Respond ONLY with raw JSON — no prose, no markdown fences.
+
+{{
+    "scenario": "one paragraph",
+    "objective": "one sentence",
+    "rooms": [
+        {{"id": "room_1", "description": "...", "adjacency": {{"east": "room_2"}}, "goal": "...", "goal_completion": {{"type": "object_state", "object_id": "door_1", "state": "unlocked"}}, "key_objects": ["..."]}}
+    ],
+    "objects": [
+        {{"id": "clue_note", "location": "room_1", "description": "a folded note", "state": "visible", "interactable": true, "takeable": true, "contains_info": "safe_code_742"}},
+        {{"id": "wall_safe", "location": "room_1", "description": "a keypad safe", "state": "locked", "interactable": true, "requires_code": "742", "code_digits": 3}}
+    ],
+    "rules": ["..."],
+    "win_condition": {{"object_id": "final_target", "state": "unlocked"}},
+    "solution_path": ["1. ...", "2. ..."]
+}}

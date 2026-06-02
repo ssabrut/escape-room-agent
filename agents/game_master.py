@@ -342,27 +342,45 @@ def _required_info_tokens(
 ) -> list[tuple[str, str]]:
     """Collect (info_token, source_room) pairs that the world must produce.
 
-    Source room is where the info needs to be available (i.e., a room the party
-    can reach before needing the token). For now we use the first room as the
-    source since maps are at most 2 rooms.
+    Source room is where the info's clue should live: the room of the object that
+    actually consumes the token, so the clue is discoverable in the same room as
+    (or before) the lock it opens. A known_info goal sources to its own room. A
+    requires_code sources to the room holding that locked object — NOT blindly the
+    start room, which would strand a second-room safe's clue back in room one.
     """
     out: list[tuple[str, str]] = []
     start_room = rooms[0].id if rooms else ""
+    by_id = {o.id: o for o in objects}
+    room_ids = {r.id for r in rooms}
     seen: set[str] = set()
 
-    def _add(token: str) -> None:
+    def _room_of(obj: WorldObject) -> str:
+        # Walk the container chain up to the room the object ultimately sits in.
+        cursor = obj
+        guard: set[str] = set()
+        while cursor.id not in guard:
+            guard.add(cursor.id)
+            if cursor.location in room_ids:
+                return cursor.location
+            parent = by_id.get(cursor.location)
+            if parent is None:
+                break
+            cursor = parent
+        return start_room
+
+    def _add(token: str, source_room: str) -> None:
         if token and token not in seen:
             seen.add(token)
-            out.append((token, start_room))
+            out.append((token, source_room))
 
     for room in rooms:
         gc = room.goal_completion
         if gc is not None and gc.type == "known_info" and gc.info:
-            _add(gc.info)
+            _add(gc.info, room.id)
 
     for obj in objects:
         if obj.requires_code:
-            _add(obj.requires_code)
+            _add(obj.requires_code, _room_of(obj))
     return out
 
 
@@ -370,6 +388,9 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
     """Attach missing `contains_info` to a plausible carrier object so the world is solvable."""
     patched: list[str] = []
     produced = {o.contains_info for o in objects if o.contains_info}
+    # Objects used as a tool by something else read as "use me", not "examine me",
+    # so they're poor places to bury a code clue the party must READ.
+    tool_ids = {o.requires_tool for o in objects if o.requires_tool}
 
     def _score(obj: WorldObject, source_room: str) -> int:
         if obj.location != source_room:
@@ -380,12 +401,17 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
             return -1
         haystack = f"{obj.id} {obj.description}".lower()
         score = 0
-        if any(h in haystack for h in _CLUE_HINTS):
+        readable = any(h in haystack for h in _CLUE_HINTS)
+        if readable:
             score += 10
-        if obj.takeable:
+        # A takeable object only makes a good clue carrier if it also reads like
+        # something you examine (a note/journal). A bare takeable tool does not.
+        if obj.takeable and readable:
             score += 3
         if obj.interactable:
             score += 2
+        if obj.id in tool_ids:
+            score -= 5  # it's somebody's tool; prefer a readable object instead
         return score
 
     for token, source_room in _required_info_tokens(rooms, objects):
@@ -402,6 +428,51 @@ def _patch_missing_info(rooms: list[Room], objects: list[WorldObject]) -> list[s
         produced.add(token)
         patched.append(f"{token} -> {winner.id}")
     return patched
+
+
+def _rebind_self_clue_locks(objects: list[WorldObject]) -> list[str]:
+    """Fix locks whose required code is supplied by NOTHING but themselves.
+
+    The LLM sometimes writes the answer onto the lock's own ``contains_info`` while
+    its ``requires_code`` names a different token — e.g. a door with
+    ``requires_code: 'door_seq'`` but ``contains_info: 'final_seq_5555'``. Examining
+    the door teaches '5555', but the engine only accepts 'door_seq', so the lock can
+    never open and the room (or whole game) is unwinnable.
+
+    When a ``requires_code`` token is produced by no object's ``contains_info`` (by
+    digit-equality or substring), but the locked object itself carries a
+    ``contains_info``, we repoint ``requires_code`` to that self-carried token so the
+    engine's equality test succeeds. This yields a one-object puzzle (examine the
+    lock to learn its code, then enter it) — degenerate but solvable, which is the
+    point: a benchmark target must be winnable. Returns a repair log.
+    """
+    def _supplied_by_other(lock: WorldObject) -> bool:
+        code = lock.requires_code
+        for o in objects:
+            if o is lock or not o.contains_info:
+                continue
+            info = o.contains_info
+            if (
+                _token_matches_code(code, info)
+                or code in info
+                or info in code
+            ):
+                return True
+        return False
+
+    repairs: list[str] = []
+    for lock in objects:
+        if not lock.requires_code:
+            continue
+        if _supplied_by_other(lock):
+            continue  # some upstream clue already opens it
+        if not lock.contains_info:
+            continue  # nothing to rebind to; left for _check_coherence to warn
+        old = lock.requires_code
+        lock.requires_code = lock.contains_info
+        lock.interactable = True
+        repairs.append(f"{lock.id}: requires_code {old} -> self clue {lock.contains_info}")
+    return repairs
 
 
 def _dedup_objects(
@@ -532,6 +603,45 @@ def _repair_tool_refs(objects: list[WorldObject]) -> list[str]:
     return repairs
 
 
+def _make_required_tools_takeable(objects: list[WorldObject]) -> list[str]:
+    """Force every `requires_tool` target to be pickup-able, else the lock is dead.
+
+    A door whose requires_tool names a real object that is NOT takeable (e.g. a
+    fixed terminal) can never be used — the party cannot carry it to satisfy
+    `use_tool`, so the lock (and any room it gates) is unwinnable. The generator
+    only WARNS about this; here we repair it: the referenced tool is made takeable
+    and, if it started locked/hidden behind its own gate, relaxed to a reachable
+    state so it can actually be grabbed.
+
+    Guard: never make the GATE object itself its own tool, and never relocate a
+    tool out of a container — we only flip takeable/state on the existing tool.
+    Runs after _repair_tool_refs, once requires_tool ids are final.
+    """
+    by_id = {o.id: o for o in objects}
+    repairs: list[str] = []
+    for o in objects:
+        tool_id = o.requires_tool
+        if not tool_id:
+            continue
+        tool = by_id.get(tool_id)
+        if tool is None or tool.id == o.id:
+            continue  # dangling refs are handled upstream; skip self-reference
+        changed: list[str] = []
+        if not tool.takeable:
+            tool.takeable = True
+            changed.append("takeable")
+        # A tool locked/hidden behind the very lock it opens can't be reached; if
+        # it is nested inside the gate object, or starts in a locked/hidden state,
+        # relax it to visible so it is grabbable before the lock is cleared.
+        if tool.location == o.id or tool.state in _LLM_LOCKED_STATES:
+            tool.state = "visible"
+            changed.append("visible")
+        if changed:
+            tool.interactable = True
+            repairs.append(f"{tool.id}: made {'+'.join(changed)} (tool for {o.id})")
+    return repairs
+
+
 _LLM_LOCKED_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
 _UNLOCKER_HINTS = (
     "wheel",
@@ -616,6 +726,74 @@ def _repair_unsolvable_gates(
             repairs.append(
                 f"{obj.id}: locked gate with no mechanism started at target '{target_state}'"
             )
+    return repairs
+
+
+def _fuse_label_for(token: str) -> str:
+    """A single-letter-ish fuse label derived from a power token.
+
+    The engine only ever produces power tokens of the form ``sekring_<label>_ON``
+    (see gameplay_node._resolve_flip_fuse). A ``power_active`` goal whose id is any
+    other string can never be satisfied. We pick a stable label from the token so
+    the rewritten goal id and the panel's fuse agree.
+    """
+    stem = re.sub(r"[^a-z0-9]", "", token.lower()) or "x"
+    return stem[:4].upper()
+
+
+def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+    """Make ``power_active`` goal gates satisfiable.
+
+    The engine can only turn power ON via a fuse flip, which yields the token
+    ``sekring_<label>_ON``. A goal_completion of type ``power_active`` whose id is
+    not such a token (or whose token no object's fuses produce) is unwinnable: the
+    party reaches the gated exit and spins forever (exactly the
+    ``emergency_relay_power`` case the benchmark surfaced). We repair by giving a
+    same-room object a fuse panel and rewriting the goal id to the
+    ``sekring_<label>_ON`` token that panel produces. Returns a repair log.
+    """
+    repairs: list[str] = []
+    by_id = {o.id: o for o in objects}
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is None or gc.type != "power_active" or not gc.id:
+            continue
+        # Already producible? Some object's fuses must yield exactly gc.id.
+        producible = any(
+            o.fuses and any(f"sekring_{lbl}_ON" == gc.id for lbl in o.fuses)
+            for o in objects
+            if o.location == room.id or by_id.get(o.location) and by_id[o.location].location == room.id
+        )
+        if producible:
+            continue
+        orig_id = gc.id
+        label = _fuse_label_for(gc.id)
+        token = f"sekring_{label}_ON"
+        # Prefer an existing reachable, non-takeable object in the room to host the
+        # panel (a panel is fixed scenery); else the gate object itself; else skip.
+        host = next(
+            (
+                o
+                for o in objects
+                if o.location == room.id
+                and not o.takeable
+                and o.state not in _LLM_LOCKED_STATES
+                and o.fuses is None
+            ),
+            None,
+        )
+        if host is None:
+            host = next((o for o in objects if o.location == room.id and o.fuses is None), None)
+        if host is None:
+            continue
+        host.fuses = {label: "OFF"}
+        host.interactable = True
+        if host.state in _LLM_LOCKED_STATES:
+            host.state = "visible"
+        gc.id = token
+        repairs.append(
+            f"{room.id}: power gate '{orig_id}' -> fuse {label} on {host.id} ({token})"
+        )
     return repairs
 
 
@@ -759,6 +937,15 @@ def _build_world(data: dict) -> GameWorld:
             f"[game_master] repaired tool refs: {', '.join(tool_repairs)}", flush=True
         )
 
+    # A requires_tool that names a real-but-non-takeable object (or one locked
+    # behind its own gate) is unwinnable; force such tools grabbable.
+    takeable_repairs = _make_required_tools_takeable(objects)
+    if takeable_repairs:
+        print(
+            f"[game_master] made required tools takeable: {', '.join(takeable_repairs)}",
+            flush=True,
+        )
+
     # Make goal-gating objects that the LLM locked with no unlock path winnable,
     # so the party can't get stranded on a GM-blocked exit it can never clear.
     gate_repairs = _repair_unsolvable_gates(rooms, objects)
@@ -768,10 +955,30 @@ def _build_world(data: dict) -> GameWorld:
             flush=True,
         )
 
+    # power_active gates need a fuse panel to be satisfiable (the engine only
+    # produces sekring_<label>_ON tokens); repair any that lack one.
+    power_repairs = _repair_power_gates(rooms, objects)
+    if power_repairs:
+        print(
+            f"[game_master] repaired power gates: {', '.join(power_repairs)}",
+            flush=True,
+        )
+
     patched = _patch_missing_info(rooms, objects)
     if patched:
         print(
             f"[game_master] auto-patched missing clues: {', '.join(patched)}",
+            flush=True,
+        )
+
+    # A lock whose required code is supplied by nothing but its own contains_info
+    # (the answer written onto the lock) can't open — bind requires_code to that
+    # self clue so it is at least solvable. Runs after the patch pass so a genuine
+    # upstream clue is preferred over the degenerate self-clue.
+    self_clue = _rebind_self_clue_locks(objects)
+    if self_clue:
+        print(
+            f"[game_master] rebound self-clue locks: {', '.join(self_clue)}",
             flush=True,
         )
 
