@@ -36,6 +36,10 @@ PLAN_PROMPT = load_prompt("gameplay_agent", "plan")
 MAX_TICKS = 40
 IDLE_ACTION = "wait"
 
+# Log entries that record observation/planning passes rather than a real move.
+# Excluded from teammate "last action" context and stall detection.
+NON_GAMEPLAY_ACTIONS = {"observe", "plan", "reobserve", "replan"}
+
 HIDDEN_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
 UNLOCKED_STATES = {"unlocked", "open", "visible"}
 
@@ -527,7 +531,10 @@ ACTION_LOG_WINDOW = 12
 
 
 def _format_agent_history(ps: PartyState, agent_id: str, limit: int = HISTORY_WINDOW) -> str:
-    entries = [e for e in ps.log if e.agent_id == agent_id][-limit:]
+    entries = [
+        e for e in ps.log
+        if e.agent_id == agent_id and e.action not in NON_GAMEPLAY_ACTIONS
+    ][-limit:]
     if not entries:
         return "  (none yet)"
     return "\n".join(
@@ -546,7 +553,11 @@ def _party_stalled(ps: PartyState, party_size: int) -> bool:
     """
     if party_size <= 0 or ps.tick <= STALL_TICKS:
         return False
-    window = [e for e in ps.log if e.tick > ps.tick - 1 - STALL_TICKS]
+    window = [
+        e for e in ps.log
+        if e.tick > ps.tick - 1 - STALL_TICKS
+        and e.action not in NON_GAMEPLAY_ACTIONS
+    ]
     if len(window) < party_size * STALL_TICKS:
         return False
     return all(e.action == IDLE_ACTION for e in window)
@@ -779,6 +790,63 @@ def _render_agent_observation(
     )
 
 
+def _room_fingerprint(world: GameWorld, ps: PartyState) -> tuple:
+    """A hashable snapshot of everything that could change the room picture.
+
+    Used to decide whether the lead agent should re-observe + re-plan: if the
+    states of objects rooted in the current room (plus shared inventory, known
+    info, and power) are unchanged since last tick, nothing new was revealed and
+    the standing observation/plan still hold — so we skip the extra LLM calls.
+    """
+    room_objs = _objects_for_observation(world, ps)
+    obj_states = tuple(
+        sorted((o.id, ps.object_states.get(o.id, o.state)) for o in room_objs)
+    )
+    return (
+        ps.current_room,
+        obj_states,
+        tuple(sorted(ps.inventory)),
+        tuple(sorted(ps.known_info)),
+        tuple(sorted(ps.power_active)),
+    )
+
+
+def _agent_reobserve(
+    lead: PartyMember, world: GameWorld, ps: PartyState
+) -> None:
+    """Lead agent re-surveys the room and refreshes the escape plan in place.
+
+    Called only on ticks where the room state actually changed (new object
+    revealed, item taken, lock opened, power on), so the standing observation and
+    plan stay consistent with what the party can now see.
+    """
+    observation = _agent_observe(lead.agent_id, lead, world, ps)
+    ps.room_observations[ps.current_room] = observation
+    ps.log.append(
+        TickAction(
+            tick=ps.tick,
+            agent_id=lead.agent_id,
+            say="; ".join(observation),
+            action="reobserve",
+            note="re-observed room",
+        )
+    )
+    _render_agent_observation(lead, observation, label="RE-OBSERVES")
+
+    plan = _agent_plan(lead.agent_id, lead, world, ps, observation)
+    ps.room_plans[ps.current_room] = plan
+    ps.log.append(
+        TickAction(
+            tick=ps.tick,
+            agent_id=lead.agent_id,
+            say="; ".join(plan),
+            action="replan",
+            note="revised escape plan",
+        )
+    )
+    _render_agent_plan(lead, plan)
+
+
 def _render_agent_plan(member: PartyMember, plan: list[str]) -> None:
     _panel(
         f"{member.agent_id} -- {member.character.name} ({member.character.role}) PLANS",
@@ -929,14 +997,16 @@ def _render_tick_header(
     )
 
     # Cumulative log of actions already performed by the party (most recent last).
+    # Observation/planning passes are shown in their own panels, not here.
+    action_log = [e for e in ps.log if e.action not in NON_GAMEPLAY_ACTIONS]
     log_lines: list[str] = ["### Actions performed so far"]
-    if ps.log:
-        for e in ps.log[-ACTION_LOG_WINDOW:]:
+    if action_log:
+        for e in action_log[-ACTION_LOG_WINDOW:]:
             log_lines.append(
                 f"* tick {e.tick} {e.agent_id}: {e.action} -> {e.note or '(no change)'}"
             )
-        if len(ps.log) > ACTION_LOG_WINDOW:
-            log_lines.append(f"  (+{len(ps.log) - ACTION_LOG_WINDOW} earlier)")
+        if len(action_log) > ACTION_LOG_WINDOW:
+            log_lines.append(f"  (+{len(action_log) - ACTION_LOG_WINDOW} earlier)")
     else:
         log_lines.append("* (none yet)")
     _panel("ACTION LOG", log_lines)
@@ -1003,6 +1073,10 @@ def gameplay_node(state: GameState) -> dict:
     _render_intro(world, state.party)
     _render_party_map(world, ps)
 
+    # Tracks the room picture as of the end of the previous tick. When it differs
+    # at the start of a tick, the lead agent re-observes + re-plans (see below).
+    last_fingerprint: tuple | None = None
+
     while not ps.game_over and ps.tick < MAX_TICKS:
         if _check_victory(world, ps):
             ps.game_over = True
@@ -1062,7 +1136,15 @@ def gameplay_node(state: GameState) -> dict:
                     ps.room_plans[ps.current_room] = plan
 
             ps.observed_rooms.add(ps.current_room)
+            last_fingerprint = _room_fingerprint(world, ps)
             continue
+
+        # If last tick changed the room picture (revealed an object, took an item,
+        # opened a lock, brought power online), the entry observation/plan is stale.
+        # The lead agent re-observes + re-plans once to resync before anyone acts.
+        fingerprint = _room_fingerprint(world, ps)
+        if last_fingerprint is not None and fingerprint != last_fingerprint:
+            _agent_reobserve(state.party[0], world, ps)
 
         # Most recent action per agent, seeded from prior ticks. Updated in-place
         # as each player acts this tick so later players see what earlier players
@@ -1071,6 +1153,10 @@ def gameplay_node(state: GameState) -> dict:
             m.agent_id: None for m in state.party
         }
         for entry in reversed(ps.log):
+            # Skip observation/planning entries — teammates care about each other's
+            # last *gameplay* action, not the lead's re-observe/re-plan bookkeeping.
+            if entry.action in NON_GAMEPLAY_ACTIONS:
+                continue
             if last_action_by_agent.get(entry.agent_id) is None:
                 last_action_by_agent[entry.agent_id] = entry
             if all(v is not None for v in last_action_by_agent.values()):
@@ -1142,6 +1228,7 @@ def gameplay_node(state: GameState) -> dict:
                 _stream(f"  {c}")
 
         ps.log.extend(tick_actions)
+        last_fingerprint = _room_fingerprint(world, ps)
 
     if not ps.game_over:
         ps.game_over = True

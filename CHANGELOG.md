@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 09:18:07 WIB
+
+### What changed
+- The lead agent now re-observes and re-plans mid-room whenever the room picture actually changes — a new object is revealed, an item is taken, a lock opens, or power comes online — keeping the standing observation and escape plan in sync with what the party can currently see. Ticks where nothing changed skip the extra LLM calls via a room-state fingerprint.
+- Observation and planning passes (`observe`, `plan`, `reobserve`, `replan`) are now treated as bookkeeping rather than real moves: they're excluded from each agent's action history, from teammate "last action" context, from stall detection, and from the action-log panel (they appear in their own observation/plan panels instead).
+
+### Why
+The entry observation and plan became stale as soon as the party changed the room, and counting observation passes as actions polluted teammate context and stall detection. Refreshing the plan only when the room state genuinely changes keeps decisions grounded without wasting LLM calls, and excluding bookkeeping entries keeps action history and stall logic focused on real gameplay moves.
+
+---
+
 ## 2026-06-02 09:07:41 WIB
 
 ### What changed
