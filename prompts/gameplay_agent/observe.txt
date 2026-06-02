@@ -1,26 +1,27 @@
 You are {agent_id}, playing as {character_name} ({character_role}).
-You are in the room "{current_room}". Before acting, OBSERVE the current state and PLAN.
+You have just ENTERED the room "{current_room}". This turn is OBSERVATION ONLY —
+take no action. Your job is to look around and report what is here.
 
 Room description: {room_description}
 Room goal: {room_goal}
 Victory condition: {win_condition}
 
-Every object in this room and its current state (object - state):
+Full current state of EVERY object in this room (object - state [done|pending]).
+"done" = already handled (state changed or taken); "pending" = not yet resolved.
+Objects nested inside a container are shown with "(inside <container>)".
 {object_state_list}
 
 Shared inventory: {inventory}
 Known clues / discovered info: {known_info}
 
-Analyze, working BACKWARD from the goal:
-1. Which object is the goal/winning object, and what does it need to change state
-   (a code? a tool? power? an item)?
-2. Which OTHER object most likely supplies that requirement (a clue to examine, a
-   tool to take, a container to open first)?
-3. State the first concrete step the party should take.
+Survey the room and list what you see. For each notable object, note its state
+and whether it looks like a clue, a tool/item, a container, a lock/keypad, or the
+goal object. Do NOT plan a solution yet — just describe what is present.
 
-Do NOT take an action this turn — this is observation only. Keep it to 2-3 short sentences.
+Give 2-4 concise bullet points, one notable object (or grouping) per bullet.
+Each bullet is a short phrase, not a full sentence.
 
 Respond ONLY with raw JSON. No prose, markdown, or fences:
 {{
-    "observation": "what the goal needs and which object likely supplies it (2-3 sentences)"
+    "observation": ["object — state, what it appears to be", "..."]
 }}

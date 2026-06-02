@@ -15,8 +15,8 @@ Victory condition: {win_condition}
 Objects visible in this room (with current state):
 {objects_in_room}
 
-Your observation of the current state this tick (act on this):
-{current_observation}
+The party's escape plan for this room (act to advance this plan):
+{escape_plan}
 
 Shared inventory: {inventory}
 Known clues / discovered info: {known_info}

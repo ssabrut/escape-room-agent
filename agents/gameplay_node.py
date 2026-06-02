@@ -31,6 +31,7 @@ from visualization import render_room_layout
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")
 OBSERVE_PROMPT = load_prompt("gameplay_agent", "observe")
+PLAN_PROMPT = load_prompt("gameplay_agent", "plan")
 
 MAX_TICKS = 40
 IDLE_ACTION = "wait"
@@ -166,6 +167,30 @@ def _parse_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             return None
     return None
+
+
+def _as_bullets(value) -> list[str]:
+    """Coerce an LLM JSON field into a clean list of bullet strings.
+
+    Accepts a JSON array, or falls back to splitting a string on newlines /
+    sentence boundaries. Strips any leading bullet/numbering markers.
+    """
+    items: list[str]
+    if isinstance(value, list):
+        items = [str(v) for v in value]
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        items = re.split(r"\n+|(?<=[.;])\s+", text)
+    else:
+        return []
+    out: list[str] = []
+    for item in items:
+        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", item).strip()
+        if cleaned:
+            out.append(cleaned)
+    return out
 
 
 def _normalize(text: str) -> str:
@@ -536,7 +561,7 @@ def _agent_act(
     visible: list[WorldObject],
     teammate_last: TickAction | None,
     stalled: bool = False,
-    observation: str = "",
+    escape_plan: str = "",
 ) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
@@ -588,7 +613,7 @@ def _agent_act(
         objective=world.objective,
         win_condition=win_str,
         objects_in_room=_format_objects(visible, ps),
-        current_observation=observation or "(none)",
+        escape_plan=escape_plan or "(none)",
         inventory=inventory_str,
         known_info=known_str,
         action_space=space_str,
@@ -611,14 +636,53 @@ def _agent_act(
 
 # ---------- observation phase ----------
 
-def _format_object_states(visible: list[WorldObject], ps: PartyState) -> str:
-    """Compact 'object - state' inventory used by the entry observation phase."""
-    if not visible:
-        return "  (no objects visible)"
+def _objects_for_observation(world: GameWorld, ps: PartyState) -> list[WorldObject]:
+    """Every object whose container chain roots in the current room.
+
+    Unlike `_objects_in_room`, this does NOT hide objects nested in still-closed
+    containers — the observation should survey the FULL state of the room (what
+    has been handled and what is still pending), not only what is currently
+    reachable.
+    """
+    by_id = {o.id: o for o in world.objects}
+
+    def _roots_in_room(obj: WorldObject) -> bool:
+        cursor = obj
+        seen: set[str] = set()
+        while cursor.id not in seen:
+            seen.add(cursor.id)
+            if cursor.location == ps.current_room:
+                return True
+            parent = by_id.get(cursor.location)
+            if parent is None:
+                return False
+            cursor = parent
+        return False
+
+    return [o for o in world.objects if _roots_in_room(o)]
+
+
+def _format_object_states(objects: list[WorldObject], world: GameWorld, ps: PartyState) -> str:
+    """'object - state [done|pending]' survey of the whole room for observation.
+
+    Includes every object (interacted or not, reachable or still nested) with its
+    current state and whether its puzzle has been resolved, so planning accounts
+    for the complete picture.
+    """
+    if not objects:
+        return "  (no objects in this room)"
+    resolved = _resolved_object_ids(world, ps)
+    by_id = {o.id: o for o in world.objects}
     lines = []
-    for o in visible:
+    for o in objects:
         state = ps.object_states.get(o.id, o.state)
-        lines.append(f"  - {o.id} - {state}")
+        status = "done" if o.id in resolved else "pending"
+        # surface nesting so the agent knows a clue/tool sits inside a container
+        if o.location != ps.current_room and o.location in by_id:
+            where = f" (inside {o.location})"
+        else:
+            where = ""
+        lines.append(f"  - {o.id} - {state} [{status}]{where}")
     return "\n".join(lines)
 
 
@@ -627,12 +691,15 @@ def _agent_observe(
     member: PartyMember,
     world: GameWorld,
     ps: PartyState,
-    visible: list[WorldObject],
-) -> str:
-    """One agent observes the room and reasons about the goal — no action taken."""
+) -> list[str]:
+    """One agent surveys the room and lists the objects present — no action taken."""
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
     win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+
+    # Survey the FULL room state (handled + pending, reachable + nested), not just
+    # the currently-reachable `visible` set.
+    all_objects = _objects_for_observation(world, ps)
 
     prompt = OBSERVE_PROMPT.format(
         agent_id=agent_id,
@@ -642,7 +709,7 @@ def _agent_observe(
         room_description=room.description if room else "",
         room_goal=room.goal if room and room.goal else "(no specific goal — explore)",
         win_condition=win_str,
-        object_state_list=_format_object_states(visible, ps),
+        object_state_list=_format_object_states(all_objects, world, ps),
         inventory=", ".join(ps.inventory) if ps.inventory else "(empty)",
         known_info=", ".join(ps.known_info) if ps.known_info else "(none)",
     )
@@ -651,7 +718,42 @@ def _agent_observe(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
     data = _parse_json(response.content) or {}
-    return str(data.get("observation", "")).strip()
+    return _as_bullets(data.get("observation"))
+
+
+def _agent_plan(
+    agent_id: str,
+    member: PartyMember,
+    world: GameWorld,
+    ps: PartyState,
+    observation: list[str],
+) -> list[str]:
+    """One agent forms an ordered escape plan from the observation — no action taken."""
+    room = next((r for r in world.rooms if r.id == ps.current_room), None)
+    win = world.win_condition
+    win_str = f"object {win.object_id} reaches state '{win.state}'" if win.object_id else "unknown"
+
+    all_objects = _objects_for_observation(world, ps)
+
+    prompt = PLAN_PROMPT.format(
+        agent_id=agent_id,
+        character_name=member.character.name,
+        character_role=member.character.role,
+        current_room=ps.current_room,
+        room_description=room.description if room else "",
+        room_goal=room.goal if room and room.goal else "(no specific goal — explore)",
+        win_condition=win_str,
+        observation="\n".join(f"- {b}" for b in observation) if observation else "(none)",
+        object_state_list=_format_object_states(all_objects, world, ps),
+        inventory=", ".join(ps.inventory) if ps.inventory else "(empty)",
+        known_info=", ".join(ps.known_info) if ps.known_info else "(none)",
+    )
+    llm = get_llm("player")
+    response = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    )
+    data = _parse_json(response.content) or {}
+    return _as_bullets(data.get("plan"))
 
 
 def _render_observation(room_id: str, visible: list[WorldObject], ps: PartyState) -> None:
@@ -664,13 +766,23 @@ def _render_observation(room_id: str, visible: list[WorldObject], ps: PartyState
     _panel("OBSERVATION", body)
 
 
+def _bullet_lines(items: list[str], empty: str) -> list[str]:
+    return [f"- {b}" for b in items] if items else [empty]
+
+
 def _render_agent_observation(
-    member: PartyMember, observation: str, label: str = "OBSERVES"
+    member: PartyMember, observation: list[str], label: str = "OBSERVES"
 ) -> None:
-    body = [observation or "(no observation)"]
     _panel(
         f"{member.agent_id} -- {member.character.name} ({member.character.role}) {label}",
-        body,
+        _bullet_lines(observation, "(no observation)"),
+    )
+
+
+def _render_agent_plan(member: PartyMember, plan: list[str]) -> None:
+    _panel(
+        f"{member.agent_id} -- {member.character.name} ({member.character.role}) PLANS",
+        _bullet_lines(plan, "(no plan)"),
     )
 
 
@@ -804,6 +916,18 @@ def _render_tick_header(
     state_lines.append(f"* known info: {known}")
     _panel("CURRENT STATE", state_lines)
 
+    # Observation + escape plan formed when the party first entered this room.
+    observation = ps.room_observations.get(ps.current_room, [])
+    plan = ps.room_plans.get(ps.current_room, [])
+    _panel(
+        "OBSERVED RESULT",
+        [f"### {ps.current_room}"] + _bullet_lines(observation, "(not yet observed)"),
+    )
+    _panel(
+        "ESCAPE PLAN",
+        [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)"),
+    )
+
     # Cumulative log of actions already performed by the party (most recent last).
     log_lines: list[str] = ["### Actions performed so far"]
     if ps.log:
@@ -894,25 +1018,49 @@ def gameplay_node(state: GameState) -> dict:
 
         _render_tick_header(world, ps, state.party)
 
-        # Entry observation: the first tick in a newly-entered room is spent
-        # observing — agents enumerate object/state and reason about the goal
-        # before any action is taken.
+        # Entry observation+planning: the first tick in a newly-entered room is
+        # spent (1) OBSERVING — agents enumerate the objects present — then
+        # (2) PLANNING — forming an ordered escape plan from that observation.
+        # No action is taken on this tick. Both the lead observation and plan are
+        # persisted on the party state so the live tick header can show them.
         if ps.current_room not in ps.observed_rooms:
             _render_observation(ps.current_room, visible, ps)
+            lead = state.party[0]
             for member in state.party:
                 observation = _agent_observe(
-                    member.agent_id, member, world, ps, visible
+                    member.agent_id, member, world, ps
                 )
                 ps.log.append(
                     TickAction(
                         tick=ps.tick,
                         agent_id=member.agent_id,
-                        say=observation,
+                        say="; ".join(observation),
                         action="observe",
                         note="observed room",
                     )
                 )
-                _render_agent_observation(member, observation, label="PLANS")
+                _render_agent_observation(member, observation, label="OBSERVES")
+                if member.agent_id == lead.agent_id:
+                    ps.room_observations[ps.current_room] = observation
+
+            for member in state.party:
+                plan = _agent_plan(
+                    member.agent_id, member, world, ps,
+                    ps.room_observations.get(ps.current_room, []),
+                )
+                ps.log.append(
+                    TickAction(
+                        tick=ps.tick,
+                        agent_id=member.agent_id,
+                        say="; ".join(plan),
+                        action="plan",
+                        note="planned escape",
+                    )
+                )
+                _render_agent_plan(member, plan)
+                if member.agent_id == lead.agent_id:
+                    ps.room_plans[ps.current_room] = plan
+
             ps.observed_rooms.add(ps.current_room)
             continue
 
@@ -947,14 +1095,13 @@ def gameplay_node(state: GameState) -> dict:
                 ),
                 None,
             )
-            # Re-observe the current state every tick, then act FROM that observation.
-            observation = _agent_observe(
-                member.agent_id, member, world, ps, visible
-            )
-            _render_agent_observation(member, observation, label="RE-OBSERVES")
+            # Act FROM the room's escape plan formed on entry, so each action
+            # stays grounded in the agreed strategy rather than re-deriving it.
+            plan_bullets = ps.room_plans.get(ps.current_room, [])
+            plan = "\n".join(f"- {b}" for b in plan_bullets)
             decided = _agent_act(
                 member.agent_id, member, world, ps, action_space, visible, teammate,
-                stalled, observation,
+                stalled, plan,
             )
             note, target = _resolve_action(decided["action"], world, ps)
             this_action = TickAction(

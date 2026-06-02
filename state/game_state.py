@@ -136,6 +136,8 @@ class PartyState(BaseModel):
     ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
     spotted_clues: list[str] = Field(default_factory=list)
     observed_rooms: set[str] = Field(default_factory=set)  # rooms whose entry observation pass is done
+    room_observations: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> observed-object bullets
+    room_plans: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> escape-plan bullets
 
 
 class GameState(BaseModel):

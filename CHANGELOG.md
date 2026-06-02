@@ -2,6 +2,20 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-02 09:07:41 WIB
+
+### What changed
+- Room entry now runs a two-stage observe-then-plan pass: agents first OBSERVE (surveying the full room and listing notable objects as bullet points) and then PLAN (forming an ordered escape plan from that observation). No action is taken on the entry tick.
+- The observation now surveys the *complete* room state rather than only currently-reachable objects — every object whose container chain roots in the room is listed with its state, a `[done|pending]` status, and a `(inside <container>)` note when nested, so planning accounts for clues and tools still locked in closed containers.
+- Per-tick actions are now grounded in the room's agreed escape plan (formed on entry and persisted per-room) instead of a freshly re-derived observation each tick. The action prompt now receives the escape plan.
+- The lead agent's observation and escape plan persist per-room (`room_observations`, `room_plans`) and are surfaced in the live tick header under new "OBSERVED RESULT" and "ESCAPE PLAN" panels.
+- Observations and plans are now structured as bullet lists (rendered as bullets and logged), coercing varied LLM output shapes into clean bullets.
+
+### Why
+Re-observing and re-reasoning from scratch every tick let agents drift off strategy and ignore puzzle pieces hidden inside closed containers. Splitting entry into an observation that captures the whole room (handled and pending, reachable and nested) and a committed escape plan keeps each subsequent action anchored to one agreed strategy rather than re-deriving it tick by tick.
+
+---
+
 ## 2026-06-01 08:33:41 WIB
 
 ### What changed
