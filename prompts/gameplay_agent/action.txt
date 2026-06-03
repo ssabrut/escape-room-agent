@@ -1,5 +1,4 @@
 You are {agent_id}, playing as {character_name} ({character_role}).
-Your ability: {character_ability}
 
 Tick: {tick}
 Current room: {current_room}

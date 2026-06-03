@@ -18,8 +18,8 @@ Objects nested inside a container are shown with "(inside <container>)".
 Shared inventory: {inventory}
 Known clues / discovered info: {known_info}
 
-Propose YOUR escape plan, working BACKWARD from the goal. Lean on your role and
-ability ({character_role}) where it helps. Lay out ordered steps:
+Propose YOUR escape plan, working BACKWARD from the goal. Lean on your role
+({character_role}) where it helps. Lay out ordered steps:
 1. Which object is the goal/winning object, and what does it still need to change
    state (a code? a tool? power? an item)? Note if it is already done.
 2. Of the PENDING objects, which one most likely supplies that requirement?

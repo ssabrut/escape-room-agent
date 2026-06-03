@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-03 09:03:28 WIB
+
+### What changed
+- Characters no longer have mechanical abilities — the `Ability` model, all ability-related constants (`ABILITY_EFFECTS`, `ABILITY_TRIGGERS`), and the per-party `ability_rooms_triggered` tracking field have been removed from the data model entirely.
+- Character generation no longer asks the LLM to assign or describe abilities; the generation prompt and JSON schema no longer include the `ability` block.
+- Agent action and plan-proposal prompts no longer reference a character's ability; agents reason only from their role when proposing and executing plans.
+- Character display in the player-selection screen and the live game startup no longer shows ability name, effect, or uses.
+
+### Why
+The ability system added complexity (effect resolution, use-tracking, per-room trigger state) without being reliably exercised or benchmarked in the current headless evaluation loop. Removing it simplifies the state model and prompts so the benchmark can focus on core puzzle-solving behavior driven by role alone.
+
+---
+
 ## 2026-06-03 08:51:39 WIB
 
 ### What changed

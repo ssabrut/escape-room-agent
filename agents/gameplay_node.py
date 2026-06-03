@@ -23,7 +23,6 @@ from agents.game_master_eval import (
 from config.settings import get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, PartyMember, PartyState, TickAction, WorldObject
-from state.game_state import Ability
 from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
@@ -245,22 +244,6 @@ def _as_bullets(value) -> list[str]:
 
 def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9_ ]+", " ", text.lower()).strip()
-
-
-def _format_ability(ability: Ability) -> str:
-    uses = (
-        "passive" if ability.max_uses < 0 else f"{ability.uses_remaining} use(s) left"
-    )
-    return f"{ability.name} [{ability.effect}, {uses}] — {ability.description}"
-
-
-def _consume_use(ability: Ability) -> bool:
-    if ability.max_uses < 0:
-        return True
-    if ability.uses_remaining <= 0:
-        return False
-    ability.uses_remaining -= 1
-    return True
 
 
 # ---------- object visibility ----------
@@ -775,7 +758,6 @@ def _agent_act(
         agent_id=agent_id,
         character_name=member.character.name,
         character_role=member.character.role,
-        character_ability=_format_ability(member.character.ability),
         tick=ps.tick + 1,
         current_room=ps.current_room,
         room_description=room.description if room else "",
@@ -952,7 +934,7 @@ def _format_proposals(proposals: dict[str, tuple[str, list[str]]]) -> str:
 def _agent_propose(
     member: PartyMember, world: GameWorld, ps: PartyState, observation: list[str]
 ) -> tuple[list[str], str]:
-    """One agent's opening plan proposal, colored by their role/ability."""
+    """One agent's opening plan proposal, colored by their role."""
     prompt = PLAN_PROPOSE_PROMPT.format(
         agent_id=member.agent_id,
         character_name=member.character.name,
@@ -1346,8 +1328,6 @@ def _render_tick_header(
 def _render_agent_action(
     member: PartyMember, decided: dict, note: str, teammate: TickAction | None = None
 ) -> None:
-    ab = member.character.ability
-    uses = "passive" if ab.max_uses < 0 else f"{ab.uses_remaining} use(s) left"
     status = _classify_outcome(note)
     if teammate is not None:
         saw = (
@@ -1356,7 +1336,6 @@ def _render_agent_action(
     else:
         saw = "(nothing yet)"
     body = [
-        f"Ability: {ab.name} [{ab.effect}, {uses}]",
         f"SAW : teammate {saw}",
         f"DO : {decided['action']}",
         f"{status} : {note}",

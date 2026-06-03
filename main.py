@@ -72,9 +72,6 @@ def _render_characters(characters: list) -> None:
     for i, char in enumerate(characters, 1):
         print(f"  [{i}] {char.name}  —  {char.role}")
         print(f"       {char.backstory}")
-        ab = char.ability
-        uses = "passive" if ab.max_uses < 0 else f"{ab.max_uses} use(s)"
-        print(f"       ✦ {ab.name} [{ab.effect}, {uses}] — {ab.description}")
         print()
 
 
