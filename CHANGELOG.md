@@ -2,6 +2,24 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-03 14:42:10 WIB
+
+### What changed
+- The gameplay loop is now headless and tick-driven: `gameplay_node` runs exactly one tick per graph invocation and returns, and a new `game_master_eval_node` checks for victory, time-up, or a local room-goal completion after each tick — looping back to gameplay or terminating accordingly. Victory and time-up rendering have moved into the eval node.
+- The LangGraph graph is wired with a conditional edge from `game_master_eval` back to `gameplay` (or to END), replacing the old single terminal edge from `gameplay` to END.
+- Party room-movement is now atomic: all `go` actions within a tick are deferred and resolved together, so a later agent cannot pick a different exit mid-tick and split the party. A single departure destination is agreed on and all agents move as one.
+- Each agent now receives a cross-room global object table when observing: every object the party has seen across all rooms (state, location, agent notes) is injected into the observe prompt, enabling agents to cross-reference clues and tools from earlier rooms when planning.
+- Agents collect per-object notes during observation (a structured `object_notes` map alongside the bullet list), which are stored in a new `global_object_observations` table on `PartyState` and refreshed after every action tick.
+- The action-space `examine` verb is now suppressed for takeable objects that haven't been picked up yet, surfacing `take` first so agents grab items in one tick rather than examining then taking on separate ticks.
+- The room fingerprint (used to decide whether the lead agent should re-observe) is now stored as a string on `PartyState` (`last_fingerprint`) so it survives across graph node boundaries between ticks.
+- World generation now repairs missing win conditions: if the final room's `goal_completion` is absent or not an `object_state` type, a valid win condition is synthesised from the room's locked key objects so the game can terminate correctly.
+- Fuse panels can no longer be assigned to decoy objects during power-gate repair; decoys are excluded from host selection in both the primary and fallback candidate passes.
+
+### Why
+The gameplay loop was a single monolithic `while` loop inside one graph node, making it impossible to inspect or benchmark individual ticks and preventing the graph from checkpointing or branching mid-run. Splitting into a per-tick `gameplay_node` + `game_master_eval_node` pair with a conditional back-edge makes the loop observable and headless-benchmark-friendly. The cross-room observation table and global notes were added to reduce the information asymmetry agents faced when a clue from room one was needed to unlock something in room two.
+
+---
+
 ## 2026-06-03 09:03:28 WIB
 
 ### What changed

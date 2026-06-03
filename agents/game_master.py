@@ -772,8 +772,10 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
         orig_id = gc.id
         label = _fuse_label_for(gc.id)
         token = f"sekring_{label}_ON"
-        # Prefer an existing reachable, non-takeable object in the room to host the
-        # panel (a panel is fixed scenery); else the gate object itself; else skip.
+        # Prefer an existing reachable, non-takeable, non-decoy object in the room to
+        # host the panel (a panel is fixed scenery); else the gate object itself; else skip.
+        # Never assign a fuse panel to a decoy — it would force the player to interact
+        # with a red-herring object as if it were a real puzzle element.
         host = next(
             (
                 o
@@ -782,12 +784,18 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
                 and not o.takeable
                 and o.state not in _LLM_LOCKED_STATES
                 and o.fuses is None
+                and "decoy" not in o.id
             ),
             None,
         )
         if host is None:
             host = next(
-                (o for o in objects if o.location == room.id and o.fuses is None), None
+                (
+                    o
+                    for o in objects
+                    if o.location == room.id and o.fuses is None and "decoy" not in o.id
+                ),
+                None,
             )
         if host is None:
             continue
@@ -800,6 +808,57 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
             f"{room.id}: power gate '{orig_id}' -> fuse {label} on {host.id} ({token})"
         )
     return repairs
+
+
+def _repair_missing_win_condition(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[str]:
+    """Ensure the final room has an object_state goal_completion (the win condition).
+
+    ``win_condition`` is derived from the last room's ``goal_completion``. When the
+    LLM omits it (or gives a non-object_state type), the property falls back to the
+    nearest earlier room that does have one — causing the player to win before ever
+    reaching the final room. We repair by synthesising an object_state completion
+    from the final room's key_objects or any locked object in that room.
+    """
+    if not rooms:
+        return []
+    final_room = rooms[-1]
+    gc = final_room.goal_completion
+    if gc is not None and gc.type == "object_state" and gc.object_id:
+        return []  # already has a valid win condition
+
+    # Look for a locked object in the final room to use as the win target.
+    final_room_id = final_room.id
+    by_id = {o.id: o for o in objects}
+    candidates = [
+        o
+        for o in objects
+        if o.location == final_room_id
+        and "decoy" not in o.id
+        and o.state in _LLM_LOCKED_STATES
+    ]
+    # Prefer key_objects that are locked; fall back to any locked object in the room.
+    key_set = set(final_room.key_objects)
+    keyed = [o for o in candidates if o.id in key_set]
+    pick = (keyed[0] if keyed else candidates[0]) if candidates else None
+
+    if pick is None:
+        # No locked object — try any non-decoy key_object in the final room.
+        for kid in final_room.key_objects:
+            obj = by_id.get(kid)
+            if obj and obj.location == final_room_id and "decoy" not in obj.id:
+                pick = obj
+                break
+
+    if pick is None:
+        return []
+
+    target_state = "unlocked" if pick.state in _LLM_LOCKED_STATES else pick.state
+    final_room.goal_completion = Prerequisite(
+        type="object_state", object_id=pick.id, state=target_state
+    )
+    return [f"{final_room_id}: synthesised win condition -> {pick.id} = {target_state}"]
 
 
 def _consumed_codes(rooms: list[Room], objects: list[WorldObject]) -> set[str]:
@@ -948,6 +1007,16 @@ def _build_world(data: dict) -> GameWorld:
     if takeable_repairs:
         print(
             f"[game_master] made required tools takeable: {', '.join(takeable_repairs)}",
+            flush=True,
+        )
+
+    # Ensure the final room has an object_state goal_completion (the win condition).
+    # Without this, win_condition falls back to an earlier room's goal and the player
+    # can win without ever reaching the last room.
+    win_repairs = _repair_missing_win_condition(rooms, objects)
+    if win_repairs:
+        print(
+            f"[game_master] repaired missing win condition: {', '.join(win_repairs)}",
             flush=True,
         )
 

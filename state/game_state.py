@@ -113,6 +113,16 @@ class PartyMember(BaseModel):
     reasoning: str  # why this agent chose this character
 
 
+class ObjectObservation(BaseModel):
+    """A structured cross-room observation entry for a single world object."""
+
+    object_id: str
+    state: str
+    location: str  # room id where this object lives
+    notes: list[str] = Field(default_factory=list)  # agent-produced bullet notes
+    last_seen_tick: int = 0
+
+
 class TickAction(BaseModel):
     """A single agent's action + spoken line on one tick of gameplay."""
 
@@ -156,6 +166,10 @@ class PartyState(BaseModel):
     room_plans: dict[str, list[str]] = Field(
         default_factory=dict
     )  # room_id -> escape-plan bullets
+    last_fingerprint: str | None = None  # room snapshot from end of previous tick
+    global_object_observations: dict[str, ObjectObservation] = Field(
+        default_factory=dict
+    )  # object_id -> latest structured observation across all rooms
 
 
 class GameState(BaseModel):

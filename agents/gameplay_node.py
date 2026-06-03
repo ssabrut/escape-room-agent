@@ -22,7 +22,15 @@ from agents.game_master_eval import (
 )
 from config.settings import get_llm
 from prompts import load_prompt
-from state import GameState, GameWorld, PartyMember, PartyState, TickAction, WorldObject
+from state import (
+    GameState,
+    GameWorld,
+    ObjectObservation,
+    PartyMember,
+    PartyState,
+    TickAction,
+    WorldObject,
+)
 from visualization import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
@@ -342,10 +350,15 @@ def _verbs_for(
     state = ps.object_states.get(obj.id, obj.state)
     by_id = by_id if by_id is not None else {}
     verbs: list[str] = []
-    if not _already_examined(obj, ps):
-        verbs.append(f"examine {obj.id}")
-    if obj.takeable and state in UNLOCKED_STATES and obj.id not in ps.inventory:
+    # Take before examine: pick up the object first, then examine from inventory.
+    # Examine is suppressed on takeable objects that haven't been picked up yet,
+    # so agents don't waste a tick examining in-world then taking next tick.
+    # Non-takeable objects (and items already in inventory) are examined normally.
+    can_take = obj.takeable and state in UNLOCKED_STATES and obj.id not in ps.inventory
+    if can_take:
         verbs.append(f"take {obj.id}")
+    if not can_take and not _already_examined(obj, ps):
+        verbs.append(f"examine {obj.id}")
     # Only offer an unlock verb when its precondition is CURRENTLY satisfiable —
     # otherwise it's a guaranteed dead end ("missing tool", "code unknown", ...)
     # that agents would burn ticks retrying. Once they gather the tool/code/liquid
@@ -844,13 +857,73 @@ def _format_object_states(
     return "\n".join(lines)
 
 
+def _update_global_observations(
+    world: GameWorld,
+    ps: PartyState,
+    new_notes: dict[str, list[str]] | None = None,
+) -> None:
+    """Upsert an ObjectObservation entry for every object the party has encountered.
+
+    Covers all objects in visited rooms plus anything in the party's inventory.
+    ``new_notes`` maps object_id -> fresh bullet strings produced by an observe/
+    re-observe call this tick; when provided they replace the stored notes for
+    that object. Objects without new notes keep their existing notes but get their
+    state and last_seen_tick refreshed.
+    """
+    seen_locations: set[str] = ps.visited | {ps.current_room}
+    for obj in world.objects:
+        obj_room = obj.location
+        # Resolve nested objects up to the room level.
+        visited = False
+        loc = obj_room
+        for _ in range(10):
+            if loc in seen_locations:
+                visited = True
+                break
+            parent = next((o for o in world.objects if o.id == loc), None)
+            if parent is None:
+                break
+            loc = parent.location
+        if not visited and obj.id not in ps.inventory:
+            continue
+
+        current_state = ps.object_states.get(obj.id, obj.state)
+        existing = ps.global_object_observations.get(obj.id)
+        notes = (new_notes or {}).get(obj.id)
+        ps.global_object_observations[obj.id] = ObjectObservation(
+            object_id=obj.id,
+            state=current_state,
+            location=loc if loc in seen_locations else obj_room,
+            notes=notes if notes is not None else (existing.notes if existing else []),
+            last_seen_tick=ps.tick,
+        )
+
+
+def _format_global_observations(ps: PartyState) -> str:
+    """Render global_object_observations as a compact table for prompt injection."""
+    if not ps.global_object_observations:
+        return "(none yet)"
+    lines: list[str] = []
+    for obj_id, obs in sorted(ps.global_object_observations.items()):
+        notes_str = "; ".join(obs.notes) if obs.notes else "-"
+        lines.append(
+            f"  {obj_id} | room: {obs.location} | state: {obs.state} | notes: {notes_str}"
+        )
+    return "\n".join(lines)
+
+
 def _agent_observe(
     agent_id: str,
     member: PartyMember,
     world: GameWorld,
     ps: PartyState,
-) -> list[str]:
-    """One agent surveys the room and lists the objects present — no action taken."""
+) -> tuple[list[str], dict[str, list[str]]]:
+    """One agent surveys the room and lists the objects present — no action taken.
+
+    Returns (observation_bullets, object_notes) where object_notes maps object_id
+    to a list containing the agent's note for that object. Both are appended to
+    global_object_observations by the caller.
+    """
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
     win_str = (
@@ -874,13 +947,19 @@ def _agent_observe(
         object_state_list=_format_object_states(all_objects, world, ps),
         inventory=", ".join(ps.inventory) if ps.inventory else "(empty)",
         known_info=", ".join(ps.known_info) if ps.known_info else "(none)",
+        global_observations=_format_global_observations(ps),
     )
     llm = get_llm("player")
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
     data = _parse_json(response.content) or {}
-    return _as_bullets(data.get("observation"))
+    bullets = _as_bullets(data.get("observation"))
+    raw_notes = data.get("object_notes") or {}
+    object_notes: dict[str, list[str]] = {
+        k: [str(v)] for k, v in raw_notes.items() if isinstance(v, str) and v
+    }
+    return bullets, object_notes
 
 
 # ---------- planning debate ----------
@@ -1047,25 +1126,25 @@ def _render_agent_observation(
     )
 
 
-def _room_fingerprint(world: GameWorld, ps: PartyState) -> tuple:
-    """A hashable snapshot of everything that could change the room picture.
+def _room_fingerprint(world: GameWorld, ps: PartyState) -> str:
+    """A stable string snapshot of everything that could change the room picture.
 
     Used to decide whether the lead agent should re-observe + re-plan: if the
     states of objects rooted in the current room (plus shared inventory, known
     info, and power) are unchanged since last tick, nothing new was revealed and
     the standing observation/plan still hold — so we skip the extra LLM calls.
+    Returned as a str so it can be stored on PartyState across graph node calls.
     """
     room_objs = _objects_for_observation(world, ps)
-    obj_states = tuple(
-        sorted((o.id, ps.object_states.get(o.id, o.state)) for o in room_objs)
-    )
-    return (
+    obj_states = sorted((o.id, ps.object_states.get(o.id, o.state)) for o in room_objs)
+    parts = [
         ps.current_room,
-        obj_states,
-        tuple(sorted(ps.inventory)),
-        tuple(sorted(ps.known_info)),
-        tuple(sorted(ps.power_active)),
-    )
+        repr(obj_states),
+        repr(sorted(ps.inventory)),
+        repr(sorted(ps.known_info)),
+        repr(sorted(ps.power_active)),
+    ]
+    return "|".join(parts)
 
 
 def _agent_reobserve(
@@ -1078,8 +1157,9 @@ def _agent_reobserve(
     unified plan stay consistent with what the party can now see.
     """
     lead = party[0]
-    observation = _agent_observe(lead.agent_id, lead, world, ps)
+    observation, object_notes = _agent_observe(lead.agent_id, lead, world, ps)
     ps.room_observations[ps.current_room] = observation
+    _update_global_observations(world, ps, object_notes)
     ps.log.append(
         TickAction(
             tick=ps.tick,
@@ -1325,6 +1405,14 @@ def _render_tick_header(
     _panel("ACTION LOG", log_lines)
 
 
+def _render_action_space(member: PartyMember, space: list[str]) -> None:
+    lines = [f"  {i + 1}. {a}" for i, a in enumerate(space)]
+    _panel(
+        f"{member.agent_id} -- {member.character.name} ACTION SPACE",
+        lines or ["(none)"],
+    )
+
+
 def _render_agent_action(
     member: PartyMember, decided: dict, note: str, teammate: TickAction | None = None
 ) -> None:
@@ -1390,233 +1478,223 @@ def _render_final(ps: PartyState, world: GameWorld) -> None:
 
 
 def gameplay_node(state: GameState) -> dict:
+    """Run exactly one tick of gameplay and return.
+
+    The graph loops back here from game_master_eval_node until the game is over
+    (victory, time-up, or GM declares the run complete).
+    """
     world = state.world
     if not world or not state.party:
         return {}
 
+    is_first_tick = state.party_state is None
     ps = state.party_state or _build_initial_party_state(world)
     new_messages: list[AIMessage] = []
 
-    _render_intro(world, state.party)
-    _render_party_map(world, ps)
+    if is_first_tick:
+        _render_intro(world, state.party)
+        _render_party_map(world, ps)
 
-    # Tracks the room picture as of the end of the previous tick. When it differs
-    # at the start of a tick, the lead agent re-observes + re-plans (see below).
-    last_fingerprint: tuple | None = None
+    # Resume the fingerprint stored from the end of the previous tick.
+    last_fingerprint: str | None = ps.last_fingerprint
 
-    while not ps.game_over and ps.tick < MAX_TICKS:
-        if _check_victory(world, ps):
-            ps.game_over = True
-            ps.victory = True
-            _banner("VICTORY", char="*")
-            _stream(f"  Party achieved the win condition at tick {ps.tick}.")
-            new_messages.append(
-                AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}")
+    ps.tick += 1
+    visible = _objects_in_room(world, ps)
+    action_space = _build_action_space(world, ps, visible)
+
+    _render_tick_header(world, ps, state.party)
+
+    # Entry observation+planning: the first tick in a newly-entered room is
+    # spent (1) OBSERVING — agents enumerate the objects present — then
+    # (2) PLANNING — forming an ordered escape plan from that observation.
+    # No action is taken on this tick.
+    if ps.current_room not in ps.observed_rooms:
+        _render_observation(ps.current_room, visible, ps)
+        lead = state.party[0]
+        merged_notes: dict[str, list[str]] = {}
+        for member in state.party:
+            observation, object_notes = _agent_observe(member.agent_id, member, world, ps)
+            for obj_id, notes in object_notes.items():
+                merged_notes.setdefault(obj_id, []).extend(notes)
+            ps.log.append(
+                TickAction(
+                    tick=ps.tick,
+                    agent_id=member.agent_id,
+                    say="; ".join(observation),
+                    action="observe",
+                    note="observed room",
+                )
             )
+            _render_agent_observation(member, observation, label="OBSERVES")
+            if member.agent_id == lead.agent_id:
+                ps.room_observations[ps.current_room] = observation
+        _update_global_observations(world, ps, merged_notes)
+
+        # Planning debate: agents propose, critique/revise, then a single
+        # unified plan is synthesized as the party's shared action reference.
+        unified = _debate_plan(
+            state.party,
+            world,
+            ps,
+            ps.room_observations.get(ps.current_room, []),
+        )
+        ps.room_plans[ps.current_room] = unified
+        ps.log.append(
+            TickAction(
+                tick=ps.tick,
+                agent_id=lead.agent_id,
+                say="; ".join(unified),
+                action="plan",
+                note="unified escape plan",
+            )
+        )
+
+        ps.observed_rooms.add(ps.current_room)
+        ps.last_fingerprint = _room_fingerprint(world, ps)
+        return {"messages": new_messages, "party_state": ps}
+
+    # If last tick changed the room picture (revealed an object, took an item,
+    # opened a lock, brought power online), the entry observation/plan is stale.
+    # The lead agent re-observes + re-plans once to resync before anyone acts.
+    fingerprint = _room_fingerprint(world, ps)
+    if last_fingerprint is not None and fingerprint != last_fingerprint:
+        _agent_reobserve(state.party, world, ps)
+
+    # Most recent action per agent, seeded from prior ticks. Updated in-place
+    # as each player acts this tick so later players see what earlier players
+    # just did and avoid duplicating it.
+    last_action_by_agent: dict[str, TickAction | None] = {
+        m.agent_id: None for m in state.party
+    }
+    for entry in reversed(ps.log):
+        # Skip observation/planning entries — teammates care about each other's
+        # last *gameplay* action, not the lead's re-observe/re-plan bookkeeping.
+        if entry.action in NON_GAMEPLAY_ACTIONS:
+            continue
+        if last_action_by_agent.get(entry.agent_id) is None:
+            last_action_by_agent[entry.agent_id] = entry
+        if all(v is not None for v in last_action_by_agent.values()):
             break
 
-        ps.tick += 1
+    prev_room = ps.current_room
+    prev_inv = list(ps.inventory)
+    prev_known = list(ps.known_info)
+    prev_power = set(ps.power_active)
+
+    stalled = _party_stalled(ps, len(state.party))
+    if stalled:
+        _stream("  !! Party stalled (mutual idle) — nudging agents to act.")
+
+    tick_actions: list[TickAction] = []
+    # Pending go actions are deferred until all agents have chosen so that a
+    # single agent cannot split the party mid-tick. Only the first go vote
+    # executes; later votes are overridden to match it so every agent moves
+    # together or not at all.
+    pending_go: tuple[str, str] | None = None  # (agent_id, dest)
+    deferred_renders: list[tuple] = []  # (member, decided, teammate) for go actions
+
+    for member in state.party:
+        teammate = next(
+            (
+                last_action_by_agent[m.agent_id]
+                for m in state.party
+                if m.agent_id != member.agent_id
+            ),
+            None,
+        )
+        plan = "\n".join(f"- {b}" for b in ps.room_plans.get(ps.current_room, []))
+        _render_action_space(member, action_space)
+        decided = _agent_act(
+            member.agent_id,
+            member,
+            world,
+            ps,
+            action_space,
+            visible,
+            teammate,
+            stalled,
+            plan,
+            "",  # gm_directive injected by game_master_eval_node via log, not here
+        )
+
+        chosen_action = decided["action"]
+
+        # Defer go actions — they move ps.current_room which would split the
+        # party if a later agent picks a different destination.
+        if chosen_action.startswith("go "):
+            if pending_go is None:
+                # First go vote this tick: record it, resolve at end-of-tick.
+                pending_go = (member.agent_id, chosen_action.split()[1])
+            else:
+                # Subsequent agent: override to match the already-pending move
+                # so every agent travels to the same destination.
+                chosen_action = f"go {pending_go[1]}"
+            # Defer render until after the loop when the real note is known.
+            note, target = "", None
+            deferred_renders.append((member, decided, teammate))
+        else:
+            note, target = _resolve_action(chosen_action, world, ps)
+
+        this_action = TickAction(
+            tick=ps.tick,
+            agent_id=member.agent_id,
+            say=decided["say"],
+            action=chosen_action,
+            target_object=target,
+            note=note,
+        )
+        tick_actions.append(this_action)
+        # Publish this action immediately so the next player this tick sees it.
+        last_action_by_agent[member.agent_id] = this_action
+        if not chosen_action.startswith("go "):
+            _render_agent_action(member, decided, note, teammate)
+
         visible = _objects_in_room(world, ps)
         action_space = _build_action_space(world, ps, visible)
 
-        _render_tick_header(world, ps, state.party)
-
-        # Entry observation+planning: the first tick in a newly-entered room is
-        # spent (1) OBSERVING — agents enumerate the objects present — then
-        # (2) PLANNING — forming an ordered escape plan from that observation.
-        # No action is taken on this tick. Both the lead observation and plan are
-        # persisted on the party state so the live tick header can show them.
-        if ps.current_room not in ps.observed_rooms:
-            _render_observation(ps.current_room, visible, ps)
-            lead = state.party[0]
-            for member in state.party:
-                observation = _agent_observe(member.agent_id, member, world, ps)
-                ps.log.append(
-                    TickAction(
-                        tick=ps.tick,
-                        agent_id=member.agent_id,
-                        say="; ".join(observation),
-                        action="observe",
-                        note="observed room",
-                    )
-                )
-                _render_agent_observation(member, observation, label="OBSERVES")
-                if member.agent_id == lead.agent_id:
-                    ps.room_observations[ps.current_room] = observation
-
-            # Planning debate: agents propose, critique/revise, then a single
-            # unified plan is synthesized as the party's shared action reference.
-            unified = _debate_plan(
-                state.party,
-                world,
-                ps,
-                ps.room_observations.get(ps.current_room, []),
+    # Resolve the single deferred go action now that all agents have chosen.
+    # Pydantic models are frozen — rebuild any go entries with the real note,
+    # then render them in agent order with the correct outcome.
+    if pending_go is not None:
+        go_action = f"go {pending_go[1]}"
+        real_note, _ = _resolve_action(go_action, world, ps)
+        tick_actions = [
+            TickAction(
+                tick=ta.tick,
+                agent_id=ta.agent_id,
+                say=ta.say,
+                action=ta.action,
+                target_object=ta.target_object,
+                note=real_note if ta.action.startswith("go ") else ta.note,
             )
-            ps.room_plans[ps.current_room] = unified
-            ps.log.append(
-                TickAction(
-                    tick=ps.tick,
-                    agent_id=lead.agent_id,
-                    say="; ".join(unified),
-                    action="plan",
-                    note="unified escape plan",
-                )
-            )
+            for ta in tick_actions
+        ]
+        for member, decided, teammate in deferred_renders:
+            _render_agent_action(member, decided, real_note, teammate)
 
-            ps.observed_rooms.add(ps.current_room)
-            last_fingerprint = _room_fingerprint(world, ps)
-            continue
+    # Highlight state changes that happened this tick.
+    callouts: list[str] = []
+    if ps.current_room != prev_room:
+        callouts.append(f">> Party moved: {prev_room} -> {ps.current_room}")
+    gained = [i for i in ps.inventory if i not in prev_inv]
+    for g in gained:
+        callouts.append(f">> Picked up: {g}")
+    learned = [k for k in ps.known_info if k not in prev_known]
+    for l in learned:
+        callouts.append(f">> Learned clue: {l}")
+    new_power = ps.power_active - prev_power
+    for p in sorted(new_power):
+        callouts.append(f">> Power online: {p}")
+    if callouts:
+        _stream()
+        for c in callouts:
+            _stream(f"  {c}")
 
-        # If last tick changed the room picture (revealed an object, took an item,
-        # opened a lock, brought power online), the entry observation/plan is stale.
-        # The lead agent re-observes + re-plans once to resync before anyone acts.
-        fingerprint = _room_fingerprint(world, ps)
-        if last_fingerprint is not None and fingerprint != last_fingerprint:
-            _agent_reobserve(state.party, world, ps)
-
-        # Most recent action per agent, seeded from prior ticks. Updated in-place
-        # as each player acts this tick so later players see what earlier players
-        # just did and avoid duplicating it.
-        last_action_by_agent: dict[str, TickAction | None] = {
-            m.agent_id: None for m in state.party
-        }
-        for entry in reversed(ps.log):
-            # Skip observation/planning entries — teammates care about each other's
-            # last *gameplay* action, not the lead's re-observe/re-plan bookkeeping.
-            if entry.action in NON_GAMEPLAY_ACTIONS:
-                continue
-            if last_action_by_agent.get(entry.agent_id) is None:
-                last_action_by_agent[entry.agent_id] = entry
-            if all(v is not None for v in last_action_by_agent.values()):
-                break
-
-        prev_room = ps.current_room
-        prev_inv = list(ps.inventory)
-        prev_known = list(ps.known_info)
-        prev_power = set(ps.power_active)
-
-        stalled = _party_stalled(ps, len(state.party))
-        if stalled:
-            _stream("  !! Party stalled (mutual idle) — nudging agents to act.")
-
-        # If this room's goal is already done, the Game Master proactively steps
-        # in and directs the party to the next room (rather than waiting for a
-        # player to attempt 'go' on their own). The directive is surfaced to each
-        # agent's action prompt so they pick 'go <dest>' this tick.
-        directive = _gm_room_directive(world, ps)
-        if directive is not None:
-            _stream()
-            _render_gm_directive(ps.current_room, directive)
-            ps.log.append(
-                TickAction(
-                    tick=ps.tick,
-                    agent_id="game_master",
-                    say=directive.narration,
-                    action="gm_directive",
-                    note=f"advance to {directive.dest_room}",
-                )
-            )
-
-        # When the GM directs the party onward, narrow the action space to just
-        # the mandated move so agents can't accidentally pick a wrong exit.
-        effective_action_space = (
-            [f"go {directive.dest_room}"]
-            if directive is not None and f"go {directive.dest_room}" in action_space
-            else action_space
-        )
-
-        tick_actions: list[TickAction] = []
-        for member in state.party:
-            teammate = next(
-                (
-                    last_action_by_agent[m.agent_id]
-                    for m in state.party
-                    if m.agent_id != member.agent_id
-                ),
-                None,
-            )
-            gm_directive_str = (
-                f"GAME MASTER DIRECTIVE: This room's goal is complete. "
-                f"Move to {directive.dest_room} now via 'go {directive.dest_room}'. "
-                f"{directive.narration}"
-                if directive is not None
-                else ""
-            )
-            # When the GM has issued a directive, suppress the stale room plan so it
-            # doesn't compete with the directive — the LLM should only see "go <dest>".
-            plan_bullets = (
-                [] if directive is not None else ps.room_plans.get(ps.current_room, [])
-            )
-            plan = "\n".join(f"- {b}" for b in plan_bullets)
-            decided = _agent_act(
-                member.agent_id,
-                member,
-                world,
-                ps,
-                effective_action_space,
-                visible,
-                teammate,
-                stalled,
-                plan,
-                gm_directive_str,
-            )
-            note, target = _resolve_action(decided["action"], world, ps)
-            this_action = TickAction(
-                tick=ps.tick,
-                agent_id=member.agent_id,
-                say=decided["say"],
-                action=decided["action"],
-                target_object=target,
-                note=note,
-            )
-            tick_actions.append(this_action)
-            # Publish this action immediately so the next player this tick sees it.
-            last_action_by_agent[member.agent_id] = this_action
-            _render_agent_action(member, decided, note, teammate)
-
-            if _check_victory(world, ps):
-                break
-
-            visible = _objects_in_room(world, ps)
-            action_space = _build_action_space(world, ps, visible)
-            effective_action_space = (
-                [f"go {directive.dest_room}"]
-                if directive is not None and f"go {directive.dest_room}" in action_space
-                else action_space
-            )
-
-        # Highlight state changes that happened this tick.
-        callouts: list[str] = []
-        if ps.current_room != prev_room:
-            callouts.append(f">> Party moved: {prev_room} -> {ps.current_room}")
-        gained = [i for i in ps.inventory if i not in prev_inv]
-        for g in gained:
-            callouts.append(f">> Picked up: {g}")
-        learned = [k for k in ps.known_info if k not in prev_known]
-        for l in learned:
-            callouts.append(f">> Learned clue: {l}")
-        new_power = ps.power_active - prev_power
-        for p in sorted(new_power):
-            callouts.append(f">> Power online: {p}")
-        if callouts:
-            _stream()
-            for c in callouts:
-                _stream(f"  {c}")
-
-        ps.log.extend(tick_actions)
-        last_fingerprint = _room_fingerprint(world, ps)
-
-    if not ps.game_over:
-        ps.game_over = True
-        _banner("TIME UP", char="*")
-        _stream(
-            f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition."
-        )
-        new_messages.append(
-            AIMessage(content=f"[gameplay] Stopped at MAX_TICKS={MAX_TICKS}")
-        )
-
-    _render_final(ps, world)
+    ps.log.extend(tick_actions)
+    ps.last_fingerprint = _room_fingerprint(world, ps)
+    # Refresh global observations after every action tick so state changes
+    # (unlocked, taken, power on) are reflected without needing an observe pass.
+    _update_global_observations(world, ps)
 
     return {
         "messages": new_messages,
