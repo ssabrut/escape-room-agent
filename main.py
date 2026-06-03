@@ -245,7 +245,7 @@ if __name__ == "__main__":
         "--hard",
         action="store_true",
         help="Hard mode: generate multi-room worlds with deep puzzle chains and "
-             "decoys, validated solvable before play (default: 2-room mode).",
+        "decoys, validated solvable before play (default: 2-room mode).",
     )
     parser.add_argument(
         "--rooms",

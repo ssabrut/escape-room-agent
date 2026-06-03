@@ -448,17 +448,14 @@ def _rebind_self_clue_locks(objects: list[WorldObject]) -> list[str]:
     lock to learn its code, then enter it) — degenerate but solvable, which is the
     point: a benchmark target must be winnable. Returns a repair log.
     """
+
     def _supplied_by_other(lock: WorldObject) -> bool:
         code = lock.requires_code
         for o in objects:
             if o is lock or not o.contains_info:
                 continue
             info = o.contains_info
-            if (
-                _token_matches_code(code, info)
-                or code in info
-                or info in code
-            ):
+            if _token_matches_code(code, info) or code in info or info in code:
                 return True
         return False
 
@@ -473,7 +470,9 @@ def _rebind_self_clue_locks(objects: list[WorldObject]) -> list[str]:
         old = lock.requires_code
         lock.requires_code = lock.contains_info
         lock.interactable = True
-        repairs.append(f"{lock.id}: requires_code {old} -> self clue {lock.contains_info}")
+        repairs.append(
+            f"{lock.id}: requires_code {old} -> self clue {lock.contains_info}"
+        )
     return repairs
 
 
@@ -764,7 +763,9 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
         producible = any(
             o.fuses and any(f"sekring_{lbl}_ON" == gc.id for lbl in o.fuses)
             for o in objects
-            if o.location == room.id or by_id.get(o.location) and by_id[o.location].location == room.id
+            if o.location == room.id
+            or by_id.get(o.location)
+            and by_id[o.location].location == room.id
         )
         if producible:
             continue
@@ -785,7 +786,9 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
             None,
         )
         if host is None:
-            host = next((o for o in objects if o.location == room.id and o.fuses is None), None)
+            host = next(
+                (o for o in objects if o.location == room.id and o.fuses is None), None
+            )
         if host is None:
             continue
         host.fuses = {label: "OFF"}
@@ -1042,8 +1045,10 @@ def _generate_world(llm, theme: str) -> tuple[GameWorld, str]:
     s = Settings()
     if s.hard_mode:
         prompt = BANK_GENERATION_PROMPT.format(
-            theme=theme, num_rooms=s.num_rooms,
-            chain_depth=s.chain_depth, decoys=s.decoys,
+            theme=theme,
+            num_rooms=s.num_rooms,
+            chain_depth=s.chain_depth,
+            decoys=s.decoys,
         )
     else:
         prompt = GENERATION_PROMPT.format(theme=theme)

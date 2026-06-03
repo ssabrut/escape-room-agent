@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-03 08:51:39 WIB
+
+### What changed
+- When the Game Master issues a directive to advance rooms, the action space presented to each agent is now narrowed to only that mandated move (`go <dest>`), so agents can no longer accidentally pick a wrong exit or take an unintended action when the GM has already declared the room complete.
+- The stale room escape plan is now suppressed for the tick in which a GM directive is active, preventing the old plan from competing with the directive in the agent's prompt.
+- The effective action space is recomputed after each agent acts within a tick, so mid-tick state changes (e.g. a teammate completing the room goal) are reflected before the next agent decides.
+
+### Why
+Agents were occasionally choosing an incorrect exit or acting on a residual room plan even after the GM had issued an explicit move directive, causing the party to stall or deviate. Narrowing the action space to the directed move and clearing the competing plan text ensures the GM directive is unambiguously acted on.
+
+---
+
 ## 2026-06-03 08:16:37 WIB
 
 ### What changed

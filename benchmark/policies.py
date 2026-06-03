@@ -39,9 +39,22 @@ def _verb_of(action: str) -> str:
 # until something else changes. Mirrors gameplay_node._FAIL_KEYWORDS plus the GM
 # block phrasing.
 _DEAD_NOTE_FRAGMENTS = (
-    "blocked", "missing", "no matching", "unknown", "cannot", "not accessible",
-    "no direct", "no target", "no fuse", "dead end", "nothing new", "code unknown",
-    "still locked", "already", "needs no", "no hidden info",
+    "blocked",
+    "missing",
+    "no matching",
+    "unknown",
+    "cannot",
+    "not accessible",
+    "no direct",
+    "no target",
+    "no fuse",
+    "dead end",
+    "nothing new",
+    "code unknown",
+    "still locked",
+    "already",
+    "needs no",
+    "no hidden info",
 )
 
 

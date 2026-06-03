@@ -63,8 +63,9 @@ def _make_llm(model: str, temperature: float) -> ChatOllama:
     )
 
 
-def _generate_one(llm: ChatOllama, theme: str, rooms: int, chain_depth: int,
-                  decoys: int) -> tuple[GameWorld | None, list[str]]:
+def _generate_one(
+    llm: ChatOllama, theme: str, rooms: int, chain_depth: int, decoys: int
+) -> tuple[GameWorld | None, list[str]]:
     """One LLM generation -> (validated GameWorld | None, build-log lines).
 
     Temporarily raises gm.MAX_ROOMS so _build_world keeps all N rooms instead of
@@ -113,7 +114,11 @@ def _oracle_solve(world: GameWorld):
 
 def _action_of(trace_line: str) -> str:
     """Extract the raw action ('enter_code safe_3') from a 'tN <action> -> note' line."""
-    body = trace_line.split(" ", 1)[1] if trace_line[:1] == "t" and " " in trace_line else trace_line
+    body = (
+        trace_line.split(" ", 1)[1]
+        if trace_line[:1] == "t" and " " in trace_line
+        else trace_line
+    )
     return body.split(" -> ", 1)[0].strip()
 
 
@@ -150,7 +155,7 @@ def _minimal_actions(world: GameWorld, actions: list[str]) -> list[str]:
     kept = list(actions)
     i = 0
     while i < len(kept):
-        trial = kept[:i] + kept[i + 1:]
+        trial = kept[:i] + kept[i + 1 :]
         if _replay_wins(world, trial):
             kept = trial  # step i was unnecessary
         else:
@@ -199,10 +204,18 @@ def _print_trace(history: list[str]) -> None:
     _print_indented(history, header="oracle trace:")
 
 
-def generate_bank(count: int, rooms: int, chain_depth: int, decoys: int,
-                  model: str, temperature: float, max_attempts: int,
-                  min_chain_depth: int, debug: bool = False,
-                  fresh: bool = False) -> None:
+def generate_bank(
+    count: int,
+    rooms: int,
+    chain_depth: int,
+    decoys: int,
+    model: str,
+    temperature: float,
+    max_attempts: int,
+    min_chain_depth: int,
+    debug: bool = False,
+    fresh: bool = False,
+) -> None:
     WORLDS_DIR.mkdir(parents=True, exist_ok=True)
     if fresh:
         # Clear leftover worlds so a new bank isn't contaminated by a prior run.
@@ -262,8 +275,11 @@ def generate_bank(count: int, rooms: int, chain_depth: int, decoys: int,
         world.solution_path = _solution_from_trace(world, history)
         out = WORLDS_DIR / f"world_{kept:03d}.json"
         out.write_text(
-            json.dumps({"world": world.model_dump(mode="json", exclude_none=True)},
-                       indent=2, ensure_ascii=False),
+            json.dumps(
+                {"world": world.model_dump(mode="json", exclude_none=True)},
+                indent=2,
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         print(f" KEPT -> {out.name} ({size}, depth {depth})")
@@ -280,22 +296,40 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a hard benchmark world bank")
     parser.add_argument("--count", type=int, default=10, help="worlds to keep")
     parser.add_argument("--rooms", type=int, default=4, help="rooms per world")
-    parser.add_argument("--chain-depth", type=int, default=4,
-                        help="dependent solution steps to REQUEST in the prompt")
-    parser.add_argument("--min-chain-depth", type=int, default=0,
-                        help="reject worlds the oracle solves in fewer MEASURED "
-                             "dependency steps (default: same as --chain-depth)")
+    parser.add_argument(
+        "--chain-depth",
+        type=int,
+        default=4,
+        help="dependent solution steps to REQUEST in the prompt",
+    )
+    parser.add_argument(
+        "--min-chain-depth",
+        type=int,
+        default=0,
+        help="reject worlds the oracle solves in fewer MEASURED "
+        "dependency steps (default: same as --chain-depth)",
+    )
     parser.add_argument("--decoys", type=int, default=3, help="decoy objects per room")
     parser.add_argument("--model", default="qwen3.5:9b-mlx", help="Ollama model")
     parser.add_argument("--temperature", type=float, default=0.9)
-    parser.add_argument("--max-attempts", type=int, default=0,
-                        help="cap on generations (default: count * 4)")
-    parser.add_argument("--debug", action="store_true",
-                        help="print the oracle's tick-by-tick solve trace for "
-                             "every attempt (kept or rejected)")
-    parser.add_argument("--fresh", action="store_true",
-                        help="delete existing world_*.json before generating, so "
-                             "the bank isn't contaminated by a prior run")
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=0,
+        help="cap on generations (default: count * 4)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="print the oracle's tick-by-tick solve trace for "
+        "every attempt (kept or rejected)",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="delete existing world_*.json before generating, so "
+        "the bank isn't contaminated by a prior run",
+    )
     args = parser.parse_args()
 
     max_attempts = args.max_attempts or args.count * 4

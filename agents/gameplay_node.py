@@ -14,12 +14,15 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agents.game_master_eval import (GMDirective, GMVerdict,
-                                     announce_room_cleared, evaluate_room_exit)
+from agents.game_master_eval import (
+    GMDirective,
+    GMVerdict,
+    announce_room_cleared,
+    evaluate_room_exit,
+)
 from config.settings import get_llm
 from prompts import load_prompt
-from state import (GameState, GameWorld, PartyMember, PartyState, TickAction,
-                   WorldObject)
+from state import GameState, GameWorld, PartyMember, PartyState, TickAction, WorldObject
 from state.game_state import Ability
 from visualization import render_room_layout
 
@@ -1535,6 +1538,14 @@ def gameplay_node(state: GameState) -> dict:
                 )
             )
 
+        # When the GM directs the party onward, narrow the action space to just
+        # the mandated move so agents can't accidentally pick a wrong exit.
+        effective_action_space = (
+            [f"go {directive.dest_room}"]
+            if directive is not None and f"go {directive.dest_room}" in action_space
+            else action_space
+        )
+
         tick_actions: list[TickAction] = []
         for member in state.party:
             teammate = next(
@@ -1545,10 +1556,6 @@ def gameplay_node(state: GameState) -> dict:
                 ),
                 None,
             )
-            # Act FROM the room's escape plan formed on entry, so each action
-            # stays grounded in the agreed strategy rather than re-deriving it.
-            plan_bullets = ps.room_plans.get(ps.current_room, [])
-            plan = "\n".join(f"- {b}" for b in plan_bullets)
             gm_directive_str = (
                 f"GAME MASTER DIRECTIVE: This room's goal is complete. "
                 f"Move to {directive.dest_room} now via 'go {directive.dest_room}'. "
@@ -1556,12 +1563,18 @@ def gameplay_node(state: GameState) -> dict:
                 if directive is not None
                 else ""
             )
+            # When the GM has issued a directive, suppress the stale room plan so it
+            # doesn't compete with the directive — the LLM should only see "go <dest>".
+            plan_bullets = (
+                [] if directive is not None else ps.room_plans.get(ps.current_room, [])
+            )
+            plan = "\n".join(f"- {b}" for b in plan_bullets)
             decided = _agent_act(
                 member.agent_id,
                 member,
                 world,
                 ps,
-                action_space,
+                effective_action_space,
                 visible,
                 teammate,
                 stalled,
@@ -1587,6 +1600,11 @@ def gameplay_node(state: GameState) -> dict:
 
             visible = _objects_in_room(world, ps)
             action_space = _build_action_space(world, ps, visible)
+            effective_action_space = (
+                [f"go {directive.dest_room}"]
+                if directive is not None and f"go {directive.dest_room}" in action_space
+                else action_space
+            )
 
         # Highlight state changes that happened this tick.
         callouts: list[str] = []
