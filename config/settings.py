@@ -7,6 +7,10 @@ from langchain_ollama import ChatOllama
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     game_master_model: str = os.getenv("GAME_MASTER_MODEL", "llama3.2")
@@ -15,6 +19,20 @@ class Settings:
     )
     game_master_temperature: float = float(os.getenv("GAME_MASTER_TEMPERATURE", "0.8"))
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
+
+    def __init__(self) -> None:
+        # Hard-mode world generation: multi-room worlds with deep puzzle chains
+        # and decoys (the bank-quality generator), validated solvable before play.
+        # When off, the live game keeps its original 2-room behavior. Read in
+        # __init__ (not as class attrs) so main.py can set these env vars at
+        # runtime via --hard and a freshly-built Settings() picks them up.
+        self.hard_mode = _env_bool("HARD_MODE", False)
+        self.num_rooms = int(os.getenv("NUM_ROOMS", "4"))
+        self.chain_depth = int(os.getenv("CHAIN_DEPTH", "5"))
+        self.decoys = int(os.getenv("DECOYS", "3"))
+        # Regenerate up to this many times until the oracle confirms the world is
+        # winnable (0 = no validation, accept the first build).
+        self.gen_max_attempts = int(os.getenv("GEN_MAX_ATTEMPTS", "6"))
 
 
 _ROLE_CONFIG = {

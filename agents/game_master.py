@@ -8,12 +8,14 @@ import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.settings import get_llm
+from config.settings import Settings, get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, Prerequisite, Room, WorldObject
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
+# Hard-mode prompt: N-room worlds with deep chains + decoys (see settings.hard_mode).
+BANK_GENERATION_PROMPT = load_prompt("game_master", "generation_bank")
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
@@ -1013,31 +1015,86 @@ def _build_world(data: dict) -> GameWorld:
     )
 
 
+def _world_is_solvable(world: GameWorld) -> bool:
+    """True if the heuristic oracle can win the world (i.e. it is winnable).
+
+    Lazy-imports the benchmark harness so the agents package doesn't take an
+    import-time dependency on benchmark/ (which itself imports gameplay_node).
+    Used only in hard mode to reject the occasional unwinnable generation.
+    """
+    try:
+        from benchmark.engine import HeadlessEpisode
+        from benchmark.policies import heuristic_policy
+    except Exception:
+        return True  # harness unavailable — don't block generation
+    if not world.win_condition.object_id or not world.rooms:
+        return False
+    return HeadlessEpisode(world).run(heuristic_policy).victory
+
+
+def _generate_world(llm, theme: str) -> tuple[GameWorld, str]:
+    """One LLM generation -> (validated GameWorld, raw response).
+
+    In hard mode, uses the N-room deep-chain prompt and raises MAX_ROOMS for the
+    build so all rooms survive; otherwise the original 2-room prompt/behavior.
+    """
+    global MAX_ROOMS
+    s = Settings()
+    if s.hard_mode:
+        prompt = BANK_GENERATION_PROMPT.format(
+            theme=theme, num_rooms=s.num_rooms,
+            chain_depth=s.chain_depth, decoys=s.decoys,
+        )
+    else:
+        prompt = GENERATION_PROMPT.format(theme=theme)
+
+    response = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    )
+    data = _parse_json(response.content) or {}
+
+    orig_cap = MAX_ROOMS
+    if s.hard_mode:
+        MAX_ROOMS = s.num_rooms
+    try:
+        world = _build_world(data)
+    finally:
+        MAX_ROOMS = orig_cap
+    return world, response.content
+
+
 def game_master_node(state: GameState) -> dict:
+    s = Settings()
     llm = get_llm("game_master")
-    prompt = GENERATION_PROMPT.format(theme=state.theme)
 
     storyline_start = time.perf_counter()
-    response = llm.invoke(
-        [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
+    world, raw = _generate_world(llm, state.theme)
+    elapsed = time.perf_counter() - storyline_start
+
+    # Hard mode: regenerate until the oracle confirms the world is winnable, so
+    # the live game never starts an unsolvable world.
+    attempts = 1
+    if s.hard_mode and s.gen_max_attempts > 0:
+        while not _world_is_solvable(world) and attempts < s.gen_max_attempts:
+            print(
+                f"[game_master] world unsolvable — regenerating "
+                f"(attempt {attempts + 1}/{s.gen_max_attempts})",
+                flush=True,
+            )
+            world, raw = _generate_world(llm, state.theme)
+            attempts += 1
+
+    mode = (
+        f"HARD ({len(world.rooms)} rooms, {attempts} attempt(s))"
+        if s.hard_mode
+        else "standard"
     )
-    storyline_elapsed = time.perf_counter() - storyline_start
-
-    map_start = time.perf_counter()
-    data = _parse_json(response.content) or {}
-    world = _build_world(data)
-    map_elapsed = time.perf_counter() - map_start
-
     print(
-        f"[game_master] storyline (LLM): {storyline_elapsed:.2f}s | "
-        f"map (parse+build): {map_elapsed:.2f}s",
+        f"[game_master] generated {mode} world in {elapsed:.2f}s",
         flush=True,
     )
 
     return {
-        "messages": [AIMessage(content=response.content)],
+        "messages": [AIMessage(content=raw)],
         "world": world,
     }

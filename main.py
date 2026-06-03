@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -240,7 +241,34 @@ if __name__ == "__main__":
             "Choices: " + ", ".join((*NODE_NAMES, "all"))
         ),
     )
+    parser.add_argument(
+        "--hard",
+        action="store_true",
+        help="Hard mode: generate multi-room worlds with deep puzzle chains and "
+             "decoys, validated solvable before play (default: 2-room mode).",
+    )
+    parser.add_argument(
+        "--rooms",
+        type=int,
+        metavar="N",
+        help="Number of rooms in hard mode (implies --hard). Default: 4.",
+    )
+    parser.add_argument(
+        "--decoys",
+        type=int,
+        metavar="N",
+        help="Decoy objects per room in hard mode (implies --hard). Default: 3.",
+    )
     args = parser.parse_args()
+
+    # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
+    # is constructed fresh inside game_master_node and reads these.
+    if args.hard or args.rooms is not None or args.decoys is not None:
+        os.environ["HARD_MODE"] = "true"
+        if args.rooms is not None:
+            os.environ["NUM_ROOMS"] = str(args.rooms)
+        if args.decoys is not None:
+            os.environ["DECOYS"] = str(args.decoys)
 
     log_nodes = args.log
     if log_nodes and "all" in log_nodes:

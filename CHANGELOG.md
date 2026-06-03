@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-03 08:16:37 WIB
+
+### What changed
+- Live game mode now supports hard-mode world generation: multi-room worlds with deep puzzle chains (configurable room count, chain depth, and decoys per room) are generated using a dedicated `generation_bank` prompt and validated solvable by the heuristic oracle before the live game starts, regenerating up to a configured max attempts until the world is winnable.
+- Hard mode is opt-in via CLI flags (`--hard`, `--rooms N`, `--decoys N`) or environment variables (`HARD_MODE`, `NUM_ROOMS`, `CHAIN_DEPTH`, `DECOYS`, `GEN_MAX_ATTEMPTS`), defaulting to the original 2-room standard mode when not set.
+- The Game Master now exposes regeneration progress and mode info in its startup log, reporting whether a world was generated in standard or hard mode and how many generation attempts were needed to find a solvable world.
+
+### Why
+The benchmark had revealed that the original single/two-room generator could produce unwinnable worlds that the oracle would reject, blocking gameplay. Hard mode enables the live game to use the same bank-quality multi-room generator and oracle validation that the benchmark uses, guaranteeing every world the party encounters is actually solvable while keeping the standard 2-room experience available as a baseline.
+
+---
+
 ## 2026-06-02 16:52:41 WIB
 
 ### What changed
