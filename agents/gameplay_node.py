@@ -912,6 +912,36 @@ def _format_global_observations(ps: PartyState) -> str:
     return "\n".join(lines)
 
 
+def _global_observation_panel_lines(ps: PartyState) -> list[str]:
+    """Global observations as panel body lines, grouped by room (current first).
+
+    Unlike the per-room OBSERVED RESULT snapshot (frozen at room entry), this is
+    rebuilt every tick from ``global_object_observations`` so states stay live and
+    objects from every visited room — plus carried inventory — remain in view.
+    """
+    obs = ps.global_object_observations
+    if not obs:
+        return ["(nothing observed yet)"]
+
+    by_room: dict[str, list[ObjectObservation]] = {}
+    for o in obs.values():
+        by_room.setdefault(o.location, []).append(o)
+
+    # Current room first, then the rest alphabetically, so the acting view leads
+    # with where the party is.
+    room_order = sorted(
+        by_room, key=lambda r: (r != ps.current_room, r)
+    )
+    lines: list[str] = []
+    for room in room_order:
+        marker = " (here)" if room == ps.current_room else ""
+        lines.append(f"### {room}{marker}")
+        for o in sorted(by_room[room], key=lambda x: x.object_id):
+            notes_str = "; ".join(o.notes) if o.notes else "-"
+            lines.append(f"- {o.object_id} [{o.state}] — {notes_str}")
+    return lines
+
+
 def _agent_observe(
     agent_id: str,
     member: PartyMember,
@@ -1329,6 +1359,7 @@ def _render_tick_header(
     world: GameWorld,
     ps: PartyState,
     party: list[PartyMember],
+    directive: GMDirective | None = None,
 ) -> None:
     _stream()
     _rule(f"TICK {ps.tick} / {MAX_TICKS}")
@@ -1377,17 +1408,23 @@ def _render_tick_header(
     state_lines.append(f"* known info: {known}")
     _panel("CURRENT STATE", state_lines)
 
-    # Observation + escape plan formed when the party first entered this room.
-    observation = ps.room_observations.get(ps.current_room, [])
-    plan = ps.room_plans.get(ps.current_room, [])
-    _panel(
-        "OBSERVED RESULT",
-        [f"### {ps.current_room}"] + _bullet_lines(observation, "(not yet observed)"),
-    )
-    _panel(
-        "ESCAPE PLAN",
-        [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)"),
-    )
+    # OBSERVED RESULT is the party's GLOBAL view — every object seen across all
+    # visited rooms (plus inventory), rebuilt each tick so states never go stale.
+    # Refresh first so a lock opened last tick shows as unlocked here, then render.
+    _update_global_observations(world, ps)
+    _panel("OBSERVED RESULT", _global_observation_panel_lines(ps))
+    # When this room's goal is already done, the room plan is stale (every step is
+    # solved). Show the GM's advance directive instead so the agents are steered to
+    # the next room at the moment they choose, not the room they just finished.
+    if directive is not None:
+        plan_lines = [
+            f"### {ps.current_room} — GOAL COMPLETE",
+            f"- ADVANCE: go {directive.dest_room} (nothing left to do here)",
+        ]
+    else:
+        plan = ps.room_plans.get(ps.current_room, [])
+        plan_lines = [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)")
+    _panel("ESCAPE PLAN", plan_lines)
 
     # Cumulative log of actions already performed by the party (most recent last).
     # Observation/planning passes are shown in their own panels, not here.
@@ -1502,7 +1539,18 @@ def gameplay_node(state: GameState) -> dict:
     visible = _objects_in_room(world, ps)
     action_space = _build_action_space(world, ps, visible)
 
-    _render_tick_header(world, ps, state.party)
+    # If this room's goal is already satisfied (from a prior tick), the GM speaks
+    # up NOW — before the agents choose — so they advance this tick instead of
+    # re-working the finished room and drifting back. Returns None on entry ticks
+    # (goal not yet met) and in the final room. The directive is also stashed on
+    # ps so game_master_eval_node can reuse it without a second LLM call.
+    directive = _gm_room_directive(world, ps)
+    if directive is not None:
+        ps.pending_directive = (directive.dest_room, directive.narration)
+
+    _render_tick_header(world, ps, state.party, directive)
+    if directive is not None:
+        _render_gm_directive(ps.current_room, directive)
 
     # Entry observation+planning: the first tick in a newly-entered room is
     # spent (1) OBSERVING — agents enumerate the objects present — then
@@ -1602,7 +1650,17 @@ def gameplay_node(state: GameState) -> dict:
             ),
             None,
         )
-        plan = "\n".join(f"- {b}" for b in ps.room_plans.get(ps.current_room, []))
+        # When the room goal is done, steer with the GM directive and a plan that
+        # points at the next room; otherwise use this room's escape plan.
+        if directive is not None:
+            plan = f"- ADVANCE: go {directive.dest_room} (this room's goal is done)"
+            gm_directive_text = (
+                f"The goal of {ps.current_room} is COMPLETE. "
+                f"{directive.narration} Choose 'go {directive.dest_room}' this tick."
+            )
+        else:
+            plan = "\n".join(f"- {b}" for b in ps.room_plans.get(ps.current_room, []))
+            gm_directive_text = ""
         _render_action_space(member, action_space)
         decided = _agent_act(
             member.agent_id,
@@ -1614,7 +1672,7 @@ def gameplay_node(state: GameState) -> dict:
             teammate,
             stalled,
             plan,
-            "",  # gm_directive injected by game_master_eval_node via log, not here
+            gm_directive_text,
         )
 
         chosen_action = decided["action"]

@@ -29,7 +29,10 @@ class Settings:
         self.hard_mode = _env_bool("HARD_MODE", False)
         self.num_rooms = int(os.getenv("NUM_ROOMS", "4"))
         self.chain_depth = int(os.getenv("CHAIN_DEPTH", "5"))
-        self.decoys = int(os.getenv("DECOYS", "3"))
+        # Decoys default to 0: orphan objects are pruned post-generation so every
+        # object is load-bearing. Set DECOYS>0 only if the generation prompt is
+        # changed to make red-herrings coherent (the pruner drops inert ones).
+        self.decoys = int(os.getenv("DECOYS", "0"))
         # Regenerate up to this many times until the oracle confirms the world is
         # winnable (0 = no validation, accept the first build).
         self.gen_max_attempts = int(os.getenv("GEN_MAX_ATTEMPTS", "6"))

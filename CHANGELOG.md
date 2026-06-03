@@ -2,6 +2,22 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-03 16:22:51 WIB
+
+### What changed
+- World generation now prunes orphan objects after building: any object that no solution path touches (computed by backward closure from each room's goal subject through tool/code/liquid/power/container dependencies) is dropped so every remaining object is load-bearing and the action space carries no inert decoys.
+- Decoys now default to 0 (`DECOYS=0`), since the pruner removes inert red-herrings anyway; raising it only matters if the generation prompt is changed to make decoys coherent.
+- Solvability regeneration now runs in every mode, not just hard mode — a standard world can be just as unwinnable, so generation retries until the oracle confirms the world is winnable.
+- Hard mode additionally rejects shallow worlds: a generated world must clear a minimum oracle-measured dependency chain depth (`CHAIN_DEPTH`) or it is regenerated, so a technically-winnable-but-trivial puzzle isn't shipped.
+- The live game now prints a per-world policy benchmark (win%, ticks-to-win, objects resolved for random/first/heuristic baselines) when a world is generated, mirroring the aggregate benchmark output; the smoke runner writes the same numbers to a `run_NNN.benchmark.json` file per run.
+- When a room's goal is already complete at tick start, the Game Master now issues its "advance to next room" directive in-tick — before agents choose — so the party moves on immediately instead of re-working the finished room and drifting back. The directive is computed once and reused by the eval node, avoiding a duplicate LLM call and a duplicate panel.
+- The OBSERVED RESULT panel is now a live global view rebuilt every tick from observations across all visited rooms (plus inventory), grouped by room with the current room first, so object states never go stale; when a room's goal is done the ESCAPE PLAN panel shows the GM advance directive instead of the now-solved room plan.
+
+### Why
+The puzzle quality and pacing needed tightening: inert decoy objects bloated the action space without adding difficulty, unsolvable or shallow worlds were reaching live play, and per-world baseline numbers were hard to see. The in-tick GM directive and live observation panels fix agents wasting ticks on finished rooms and reasoning from stale state.
+
+---
+
 ## 2026-06-03 14:42:10 WIB
 
 ### What changed

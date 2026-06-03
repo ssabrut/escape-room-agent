@@ -165,8 +165,15 @@ def run(log_nodes: list[str] | None = None) -> None:
     _render(result)
 
 
-def _run_once_captured(log_nodes: list[str] | None, log_root: Path | None) -> str:
-    """Run the graph once with stdout captured. If log_nodes is set, write per-node logs under log_root."""
+def _run_once_captured(
+    log_nodes: list[str] | None, log_root: Path | None
+) -> tuple[str, dict]:
+    """Run the graph once with stdout captured.
+
+    If log_nodes is set, write per-node logs under log_root. Returns the captured
+    text plus the merged result dict (so the caller can inspect the world, e.g.
+    for the policy benchmark).
+    """
     log_set = set(log_nodes or [])
     buf = io.StringIO()
     orig_stdout = sys.stdout
@@ -184,7 +191,28 @@ def _run_once_captured(log_nodes: list[str] | None, log_root: Path | None) -> st
         _render(result)
     finally:
         sys.stdout = orig_stdout
-    return buf.getvalue()
+    return buf.getvalue(), result
+
+
+def _write_benchmark(world, path: Path) -> str:
+    """Write the LLM-free policy benchmark for `world` to `path` as JSON.
+
+    Returns a short suffix for the per-run console line (e.g. " + benchmark.json")
+    or "" if there was no usable world to benchmark. Diagnostic only, so failures
+    are swallowed rather than aborting the smoke run.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        from benchmark.run import compute_policy_benchmark
+
+        rows = compute_policy_benchmark(world)
+        path.write_text(
+            json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        return ""
+    return f" + {path.name}"
 
 
 def smoke(n: int, log_nodes: list[str] | None = None) -> None:
@@ -202,11 +230,12 @@ def smoke(n: int, log_nodes: list[str] | None = None) -> None:
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
             log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
-            output = _run_once_captured(log_nodes, log_root)
+            output, result = _run_once_captured(log_nodes, log_root)
             out_file = run_dir / f"run_{i:03d}.txt"
             out_file.write_text(output, encoding="utf-8")
+            bench_note = _write_benchmark(result.get("world"), run_dir / f"run_{i:03d}.benchmark.json")
             rooms_count = output.count("┌" + "─")
-            print(f"done ({rooms_count} room(s)) → {out_file.name}")
+            print(f"done ({rooms_count} room(s)) → {out_file.name}{bench_note}")
         except Exception as e:
             errors += 1
             err_file = run_dir / f"run_{i:03d}.error.txt"

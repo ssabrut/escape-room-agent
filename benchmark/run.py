@@ -73,6 +73,30 @@ def _summarize(results: list[EpisodeResult]) -> dict:
     }
 
 
+# Episodes per policy for a single-world benchmark: stochastic policies are
+# averaged so win% is meaningful; deterministic ones take one exact path.
+_SINGLE_WORLD_EPISODES = {"random": 20, "first": 1, "heuristic": 1}
+
+
+def compute_policy_benchmark(world) -> list[dict]:
+    """Run every baseline policy on one world and return their summary rows.
+
+    Shared by the live game_master print path and the smoke runner's JSON dump
+    so both report identical numbers. Seeded for reproducibility.
+    """
+    rng = random.Random(0)
+    policies = [
+        ("random", random_policy(rng)),
+        ("first", first_policy),
+        ("heuristic", heuristic_policy),
+    ]
+    rows: list[dict] = []
+    for name, policy in policies:
+        eps = _SINGLE_WORLD_EPISODES.get(name, 1)
+        rows.append(run_policy(name, policy, [("live", world)], episodes=eps))
+    return rows
+
+
 def run_policy(name, policy, worlds, episodes: int) -> dict:
     results: list[EpisodeResult] = []
     for _label, world in worlds:

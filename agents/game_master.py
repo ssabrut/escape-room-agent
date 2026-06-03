@@ -935,6 +935,106 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
 HIDDEN_STATES_ROOM = {"locked", "locked_bolt", "locked_room", "hidden"}
 
 
+def _prune_orphan_objects(
+    rooms: list[Room], objects: list[WorldObject]
+) -> tuple[list[WorldObject], list[str]]:
+    """Drop objects that no solution path touches, so every object is load-bearing.
+
+    Computes the set of "used" objects by backward closure from each room's
+    goal_completion subject (every room exit is gated on its goal, so each goal
+    object and everything it transitively depends on is on-path). An object is
+    pulled into the closure when a kept object needs it:
+
+      * ``requires_tool`` -> the tool object
+      * ``requires_code`` -> whatever object's ``contains_info`` produces that code
+      * ``requires_liquid`` / ``requires_power`` -> the producing object
+      * ``location`` -> its container parent (a clue nested inside a chest is used
+        iff the chest is used)
+
+    Anything never reached is a pure decoy / orphan and is removed. References to
+    dropped ids cannot survive because dropped objects are, by construction, named
+    by nothing that is kept. Returns (kept_objects, dropped_ids) for logging.
+    """
+    by_id = {o.id: o for o in objects}
+
+    # contains_info token -> object ids that produce it (a code's clue source).
+    producers: dict[str, list[str]] = {}
+    for o in objects:
+        if o.contains_info:
+            producers.setdefault(o.contains_info, []).append(o.id)
+
+    def _producers_of_code(code: str) -> list[str]:
+        ids: list[str] = []
+        for info, carriers in producers.items():
+            if _token_matches_code(code, info) or info in code or code in info:
+                ids.extend(carriers)
+        return ids
+
+    keep: set[str] = set()
+    frontier: list[str] = []
+
+    def _enqueue(obj_id: str | None) -> None:
+        if obj_id and obj_id in by_id and obj_id not in keep:
+            keep.add(obj_id)
+            frontier.append(obj_id)
+
+    # Seed ONLY from goal_completion subjects, not key_objects: the LLM routinely
+    # dumps every object (decoys included) into key_objects, so it is not a
+    # reliable on-path signal. The backward closure pulls in the real chain.
+    for room in rooms:
+        gc = room.goal_completion
+        if gc is None:
+            continue
+        subj = _goal_completion_subject(gc)
+        if not subj:
+            continue
+        # object_state / has_item goals name an object id directly. known_info /
+        # power goals name a *token*; resolve to every object that produces it
+        # (there can be several — keep them all, even if one happens to share the
+        # token's name as its id).
+        if gc.type in {"object_state", "has_item"}:
+            _enqueue(subj)
+        else:
+            for pid in _producers_of_code(subj):
+                _enqueue(pid)
+
+    # Objects that emit a given liquid/power token (the producer of a requirement).
+    def _liquid_producers(token: str) -> list[str]:
+        return [o.id for o in objects if o.contains_info == token]
+
+    def _power_producers(token: str) -> list[str]:
+        # A power gate needs `sekring_<label>_ON`; the producer is the fuse panel
+        # carrying that label (the engine emits the token when the fuse flips).
+        ids: list[str] = []
+        for o in objects:
+            if not o.fuses:
+                continue
+            if any(f"sekring_{label}_" in token for label in o.fuses):
+                ids.append(o.id)
+        return ids
+
+    # Backward closure over dependency edges.
+    while frontier:
+        o = by_id[frontier.pop()]
+        _enqueue(o.requires_tool)
+        if o.location in by_id:  # nested inside a container object
+            _enqueue(o.location)
+        if o.requires_code:
+            for pid in _producers_of_code(o.requires_code):
+                _enqueue(pid)
+        if o.requires_liquid:
+            _enqueue(o.requires_liquid)
+            for pid in _liquid_producers(o.requires_liquid):
+                _enqueue(pid)
+        if o.requires_power:
+            for pid in _power_producers(o.requires_power):
+                _enqueue(pid)
+
+    dropped = [o.id for o in objects if o.id not in keep]
+    kept = [o for o in objects if o.id in keep]
+    return kept, dropped
+
+
 def _token_matches_code(code: str, info: str | None) -> bool:
     if not info:
         return False
@@ -1066,6 +1166,18 @@ def _build_world(data: dict) -> GameWorld:
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
 
+    # With every dependency now repaired and goals bound, drop any object no
+    # solution path touches so every remaining object is load-bearing (no inert
+    # decoys inflating the action space). Runs last among the structural passes.
+    objects, orphans = _prune_orphan_objects(rooms, objects)
+    if orphans:
+        print(
+            f"[game_master] pruned orphan objects: {', '.join(orphans)}",
+            flush=True,
+        )
+        # key_objects may now name a dropped id — scrub again.
+        rooms = _scrub_room_refs(rooms, {o.id for o in objects})
+
     secrets = _secret_tokens(objects)
     redactions, solution_path = _scrub_spoilers(solution_path, secrets)
     if redactions:
@@ -1102,6 +1214,60 @@ def _world_is_solvable(world: GameWorld) -> bool:
     if not world.win_condition.object_id or not world.rooms:
         return False
     return HeadlessEpisode(world).run(heuristic_policy).victory
+
+
+def _world_meets_chain_depth(world: GameWorld, target: int) -> bool:
+    """True if the oracle clears at least ``target`` ordered dependency links.
+
+    ``chain_depth`` (measured by the heuristic oracle) is the number of gated
+    interactions the winning path had to clear in order — our proxy for how
+    deep/sequential the puzzle chain is. Used in hard mode to reject shallow
+    worlds. Fails open (returns True) when the harness is unavailable or the
+    target is non-positive so it can never block generation spuriously.
+    """
+    if target <= 0:
+        return True
+    try:
+        from benchmark.engine import HeadlessEpisode
+        from benchmark.policies import heuristic_policy
+    except Exception:
+        return True
+    if not world.win_condition.object_id or not world.rooms:
+        return False
+    return HeadlessEpisode(world).run(heuristic_policy).chain_depth >= target
+
+
+def _print_policy_benchmark(world: GameWorld) -> None:
+    """Run the LLM-free policies on the live world and print a benchmark table.
+
+    Mirrors ``benchmark/run.py``'s aggregate output (win%, ticks-to-win, …) but
+    for the single world about to be played, so the live run shows how the
+    baseline policies fare against it. Lazy-imports the harness and fails silently
+    if it (or the world's win condition) is unavailable — this is diagnostic only.
+    """
+    try:
+        from benchmark.run import _fmt, compute_policy_benchmark
+    except Exception:
+        return
+    if not world.win_condition.object_id or not world.rooms:
+        return
+
+    rows = compute_policy_benchmark(world)
+
+    header = f"{'policy':<12} {'win%':>6} {'t2win':>7} {'t_all':>7} {'objs':>6}"
+    print("\n[game_master] policy benchmark (this world):", flush=True)
+    print("  " + header, flush=True)
+    print("  " + "-" * len(header), flush=True)
+    for s in rows:
+        print(
+            "  "
+            f"{s['policy']:<12} "
+            f"{s['win_rate'] * 100:>5.0f}% "
+            f"{_fmt(s['mean_ticks_to_win']):>7} "
+            f"{_fmt(s['mean_ticks_all']):>7} "
+            f"{_fmt(s['mean_objects_resolved'], '.1f'):>6}",
+            flush=True,
+        )
 
 
 def _generate_world(llm, theme: str) -> tuple[GameWorld, str]:
@@ -1145,28 +1311,44 @@ def game_master_node(state: GameState) -> dict:
     world, raw = _generate_world(llm, state.theme)
     elapsed = time.perf_counter() - storyline_start
 
-    # Hard mode: regenerate until the oracle confirms the world is winnable, so
-    # the live game never starts an unsolvable world.
+    # Regenerate until the oracle confirms the world is winnable, so the live
+    # game never starts an unsolvable world. Runs in every mode now — a
+    # standard 2-room world can be just as unwinnable as a hard one. In hard mode
+    # the world must also clear a minimum oracle-measured chain depth, so we don't
+    # ship a technically-winnable-but-shallow puzzle.
+    chain_target = s.chain_depth if s.hard_mode else 0
+
+    def _world_ok(w: GameWorld) -> tuple[bool, str]:
+        if not _world_is_solvable(w):
+            return False, "unsolvable"
+        if not _world_meets_chain_depth(w, chain_target):
+            return False, f"chain depth < {chain_target}"
+        return True, ""
+
     attempts = 1
-    if s.hard_mode and s.gen_max_attempts > 0:
-        while not _world_is_solvable(world) and attempts < s.gen_max_attempts:
+    if s.gen_max_attempts > 0:
+        ok, why = _world_ok(world)
+        while not ok and attempts < s.gen_max_attempts:
             print(
-                f"[game_master] world unsolvable — regenerating "
+                f"[game_master] world rejected ({why}) — regenerating "
                 f"(attempt {attempts + 1}/{s.gen_max_attempts})",
                 flush=True,
             )
             world, raw = _generate_world(llm, state.theme)
             attempts += 1
+            ok, why = _world_ok(world)
 
     mode = (
         f"HARD ({len(world.rooms)} rooms, {attempts} attempt(s))"
         if s.hard_mode
-        else "standard"
+        else f"standard ({attempts} attempt(s))"
     )
     print(
         f"[game_master] generated {mode} world in {elapsed:.2f}s",
         flush=True,
     )
+
+    _print_policy_benchmark(world)
 
     return {
         "messages": [AIMessage(content=raw)],

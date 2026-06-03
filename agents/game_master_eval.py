@@ -322,11 +322,33 @@ def game_master_eval_node(state: GameState) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     if room is not None and room.goal_completion is not None:
         if _goal_completion_satisfied_eval(room.goal_completion, ps):
-            dest = _next_room_from_world(world, ps.current_room)
+            # If the goal was already done at this tick's START, gameplay_node
+            # already computed + rendered the directive (steering the agents
+            # in-tick) and stashed it here, using the graph-correct destination.
+            # Reuse it — no second LLM call, no duplicate panel. Only when the goal
+            # became done DURING this tick (no pending directive) do we narrate it
+            # fresh, falling back to world-order for the destination.
+            pending = ps.pending_directive
+            if pending is not None:
+                directive = GMDirective(dest_room=pending[0], narration=pending[1])
+                dest = directive.dest_room
+                rendered_in_tick = True
+            else:
+                dest = _next_room_from_world(world, ps.current_room)
+                directive = None
+                rendered_in_tick = False
+
             if dest is not None:
-                completion_str = str(room.goal_completion.model_dump(exclude_none=True))
-                directive = announce_room_cleared(world, ps, room, dest, completion_str)
-                _render_eval_directive(ps.current_room, directive)
+                if directive is None:
+                    completion_str = str(
+                        room.goal_completion.model_dump(exclude_none=True)
+                    )
+                    directive = announce_room_cleared(
+                        world, ps, room, dest, completion_str
+                    )
+
+                if not rendered_in_tick:
+                    _render_eval_directive(ps.current_room, directive)
                 ps.log.append(
                     TickAction(
                         tick=ps.tick,
@@ -341,6 +363,9 @@ def game_master_eval_node(state: GameState) -> dict:
                         content=f"[game_master_eval] room {ps.current_room} cleared — advance to {dest}"
                     )
                 )
+
+    # Consume the in-tick directive so a later tick can't reuse a stale one.
+    ps.pending_directive = None
 
     return {"messages": new_messages, "party_state": ps}
 
