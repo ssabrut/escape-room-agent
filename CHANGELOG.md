@@ -2,6 +2,21 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 09:44:13 WIB
+
+### What changed
+- The pipeline now supports a `--mode` flag with two options: `generate` (world generation only, skipping characters and gameplay) and `full` (the complete pipeline, default). This replaces the previous hardcoded full-pipeline behavior.
+- An interactive theme picker is now presented at startup: the user chooses from a curated list of 10 themes (Haunted House, Murder Mystery, Prison Break, etc.) via arrow-key selection before any generation runs. The `"pirate"` hardcoded theme is gone from all code paths.
+- The LLM is now capped at 4096 output tokens (`num_predict=4096`) and thinking mode is explicitly disabled (`extra_body={"think": False}`), preventing runaway or reasoning-heavy responses from the model.
+- A `--eval` flag is available to evaluate world narrative quality using the LLM-as-judge + oracle pipeline. Supply a saved `output.json` path to evaluate an existing world, or omit the path to evaluate the world produced by the current run. Works in both single-run and smoke modes.
+- An `--eval-trace` flag prints the oracle's tick-by-tick solve trace alongside the narrative evaluation report.
+- Smoke runs now accept `--mode`, `--eval`, and `--eval-trace` so each smoke iteration can be generated in either mode and optionally evaluated, with the evaluation result written to `run_NNN.eval.json` per run.
+
+### Why
+Benchmarking world generation in isolation was slow because the full pipeline (characters, gameplay) ran every time. A dedicated `generate` mode lets the team rapidly iterate on world quality without running agents. The theme picker replaces the hardcoded `"pirate"` string so test runs reflect diverse settings. The token cap and thinking-disable prevent the model from stalling on long reasoning chains during generation. The `--eval` flag wires the narrative evaluator (added in the prior session) into the main CLI so quality scores are a first-class output rather than a separate script.
+
+---
+
 ## 2026-06-04 08:38:37 WIB
 
 ### What changed

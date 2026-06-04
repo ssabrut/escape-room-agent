@@ -57,5 +57,7 @@ def get_llm(role: str = "game_master") -> ChatOllama:
         model=model,
         base_url=s.ollama_base_url,
         temperature=temperature,
+        num_predict=4096,
         reasoning=False,
+        extra_body={"think": False},
     )
