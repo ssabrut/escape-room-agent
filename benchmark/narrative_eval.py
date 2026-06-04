@@ -814,7 +814,7 @@ class QuickEvalResult:
     Contains only the dimensions that are fast enough to run inside the
     generation retry loop without adding significant latency:
       - required_tool_present  (deterministic)
-      - solvability            (oracle, already runs in game_master_node)
+      - solvability            (oracle, already runs in world_builder_node)
       - prompt_compliance      (LLM judge — included because violations are
                                  the most actionable feedback for the GM)
 

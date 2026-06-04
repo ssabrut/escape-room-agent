@@ -58,7 +58,7 @@ def _pick_theme() -> str:
 SMOKE_DIR = Path("smoke_runs")
 LOG_DIR = Path("logs")
 NODE_NAMES = (
-    "game_master",
+    "world_builder",
     "character_master",
     "player_agent_1",
     "player_agent_2",
@@ -189,13 +189,13 @@ def _run_generate_only(
     log_nodes: list[str] | None = None,
     log_root: Path = LOG_DIR,
 ) -> dict:
-    """Invoke the game_master node directly and return its result dict."""
-    from agents.game_master import game_master_node
+    """Invoke the world_builder node directly and return its result dict."""
+    from agents.game_master import world_builder_node
 
     state = GameState(theme=theme)
-    update = game_master_node(state)
-    if log_nodes and "game_master" in log_nodes:
-        node_dir = _write_node_log("game_master", update, root=log_root)
+    update = world_builder_node(state)
+    if log_nodes and "world_builder" in log_nodes:
+        node_dir = _write_node_log("world_builder", update, root=log_root)
         print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
     return update
 
@@ -429,7 +429,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
-    # is constructed fresh inside game_master_node and reads these.
+    # is constructed fresh inside world_builder_node and reads these.
     if args.hard or args.rooms is not None:
         os.environ["HARD_MODE"] = "true"
         if args.rooms is not None:

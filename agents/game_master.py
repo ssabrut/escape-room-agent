@@ -1451,7 +1451,7 @@ def _generate_world_with_feedback(
     return _build_world_from_response(response.content), response.content
 
 
-def game_master_node(state: GameState) -> dict:
+def world_builder_node(state: GameState) -> dict:
     s = Settings()
     llm = get_llm("game_master")
 

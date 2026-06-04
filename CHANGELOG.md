@@ -2,6 +2,16 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 14:13:13 WIB
+
+### What changed
+- The world-building node has been renamed from `game_master` to `world_builder` throughout the system — the graph entry point, all edges, log-node lists, direct invocation paths, and internal documentation now use the new name.
+
+### Why
+The `game_master` name was ambiguous given the separate `game_master_eval` node that also exists in the graph. Renaming to `world_builder` makes the node's role — generating the escape room world — explicit and distinguishable from the eval node that judges whether the generated world is acceptable.
+
+---
+
 ## 2026-06-04 11:54:10 WIB
 
 ### What changed
