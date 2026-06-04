@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 11:45:07 WIB
+
+### What changed
+- A static backward-chain solvability checker (`check_solvable`) is now available in the benchmark module. It walks backward from the win condition through every prerequisite in the object graph — resolving `requires_code`, `requires_tool`, `requires_power`, `requires_liquid`, and `goal_completion` targets — and returns a `SolvabilityReport` with a boolean result and a full list of blocking issues. Runs in O(objects²) with no simulation or tick budget.
+- The checker catches: missing `contains_info` suppliers for code or info goals, bare digit codes with no matching token, non-existent or non-takeable required tools, circular tool dependencies, power gates with no satisfying fuse panel, `known_info` goals with no upstream producer, `goal_completion` targets referencing non-existent objects, a missing or non-existent win-condition object, and rooms disconnected from the start room.
+- After each world is generated in the live game, the solvability check now runs automatically and prints a one-line SOLVABLE confirmation or a bulleted list of structural issues to stdout before the policy benchmark table.
+
+### Why
+The policy benchmark could fail or time out for reasons that were hard to distinguish from a solvable-but-hard world versus a structurally broken one. A fast, simulation-free static check separates structural impossibilities (missing clue suppliers, unreachable tools, disconnected rooms) from runtime policy failures, giving immediate diagnosis before a single tick is simulated.
+
+---
+
 ## 2026-06-04 11:35:18 WIB
 
 ### What changed

@@ -1330,6 +1330,30 @@ def _world_meets_chain_depth(world: GameWorld, target: int) -> bool:
     return HeadlessEpisode(world).run(heuristic_policy).chain_depth >= target
 
 
+def _print_solvability_check(world: GameWorld) -> None:
+    """Run the static backward-chain solvability check and print the result.
+
+    Fails silently when the benchmark harness is unavailable so it never
+    blocks the live game.
+    """
+    try:
+        from benchmark.policies import check_solvable
+    except Exception:
+        return
+    if not world.rooms:
+        return
+    report = check_solvable(world)
+    if report.solvable:
+        print("[game_master] static check: SOLVABLE — no structural issues", flush=True)
+    else:
+        print(
+            f"[game_master] static check: {len(report.issues)} structural issue(s):",
+            flush=True,
+        )
+        for issue in report.issues:
+            print(f"  • {issue}", flush=True)
+
+
 def _print_policy_benchmark(world: GameWorld) -> None:
     """Run the LLM-free policies on the live world and print a benchmark table.
 
@@ -1489,6 +1513,7 @@ def game_master_node(state: GameState) -> dict:
         flush=True,
     )
 
+    _print_solvability_check(world)
     _print_policy_benchmark(world)
 
     return {
