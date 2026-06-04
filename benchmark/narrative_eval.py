@@ -549,7 +549,7 @@ HARD (multi-room) MODE RULES:
 - Each non-final room's goal_completion gates passage to the next room.
 - Final room's goal_completion equals the win_condition.
 - Every open/unlock goal_completion must use state exactly "unlocked".
-- Each room has 5–10 objects (puzzle pieces + decoys + scenic props).
+- Each room has 5–10 objects (puzzle pieces + scenic props).
 - Scenic objects: scenic=true, interactable=false, takeable=false, no contains_info.
 - Decoy notes/items must NOT carry contains_info tokens nothing uses.
 - Every requires_code produced by a contains_info token; every requires_tool is takeable + reachable.
@@ -799,6 +799,65 @@ def _eval_solution_path_llm(
         label=_grade(score),
         verdict=verdict,
         notes=feedback_notes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fast feedback eval (used by game_master retry loop — no extra LLM calls)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class QuickEvalResult:
+    """Lightweight result from the deterministic-only eval pass.
+
+    Contains only the dimensions that are fast enough to run inside the
+    generation retry loop without adding significant latency:
+      - required_tool_present  (deterministic)
+      - solvability            (oracle, already runs in game_master_node)
+      - prompt_compliance      (LLM judge — included because violations are
+                                 the most actionable feedback for the GM)
+
+    ``violations`` is a flat list of human-readable strings extracted from
+    whichever dimensions flagged issues.  ``score`` is the mean of the three
+    dimension scores.
+    """
+    score: float
+    solvable: bool
+    violations: list[str]
+
+
+def quick_eval_for_feedback(world: "GameWorld") -> QuickEvalResult:
+    """Run the three dimensions most useful as GM retry feedback.
+
+    Intentionally skips narrative_quality, plot_twist, and tool_coherence
+    (subjective LLM judges) to stay fast inside the generation loop.
+    Returns a QuickEvalResult with a ``violations`` list ready to paste
+    into a correction prompt.
+    """
+    violations: list[str] = []
+
+    tool = _eval_required_tool_present(world)
+    for note in tool.notes:
+        if not note.startswith("All requires"):
+            violations.append(f"[tool] {note}")
+
+    solvability, _, _ = _eval_solvability(world)
+    solvable = solvability.score >= 0.8
+    if not solvable:
+        violations.append(f"[solvability] {solvability.verdict}")
+
+    compliance = _eval_prompt_compliance(world)
+    if compliance.label != "PASS":
+        for note in compliance.notes:
+            if note.startswith("Rule"):
+                violations.append(f"[compliance] {note}")
+
+    scores = [tool.score, solvability.score, compliance.score]
+    return QuickEvalResult(
+        score=round(sum(scores) / len(scores), 3),
+        solvable=solvable,
+        violations=violations,
     )
 
 

@@ -1,7 +1,7 @@
 """Generate a bank of HARD, solvable worlds for the benchmark — LLM-backed.
 
-Uses the local Ollama model to author N-room worlds with deep puzzle chains and
-decoys (prompt: ``game_master/generation_bank.txt``), runs each through the live
+Uses the local Ollama model to author N-room worlds with deep puzzle chains
+(prompt: ``game_master/generation_bank.txt``), runs each through the live
 ``_build_world`` repair/validation pipeline so it is structurally sound, then
 keeps only worlds that the heuristic oracle can actually SOLVE (so the bank is
 hard but winnable). Passing worlds are saved as JSON under ``benchmark/worlds/``.
@@ -64,7 +64,7 @@ def _make_llm(model: str, temperature: float) -> ChatOllama:
 
 
 def _generate_one(
-    llm: ChatOllama, theme: str, rooms: int, chain_depth: int, decoys: int
+    llm: ChatOllama, theme: str, rooms: int, chain_depth: int
 ) -> tuple[GameWorld | None, list[str]]:
     """One LLM generation -> (validated GameWorld | None, build-log lines).
 
@@ -74,7 +74,7 @@ def _generate_one(
     can show them inline per attempt under --debug.
     """
     prompt = BANK_PROMPT.format(
-        theme=theme, num_rooms=rooms, chain_depth=chain_depth, decoys=decoys
+        theme=theme, num_rooms=rooms, chain_depth=chain_depth
     )
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
@@ -148,8 +148,8 @@ def _minimal_actions(world: GameWorld, actions: list[str]) -> list[str]:
     """Greedy leave-one-out minimization of a winning action sequence.
 
     A step is necessary iff dropping it makes the remaining sequence fail to win.
-    Iterating once in order removes every individually-droppable step (decoy takes,
-    dead-end drawer opens, redundant examines) while preserving a still-winning
+    Iterating once in order removes every individually-droppable step (dead-end
+    drawer opens, redundant examines) while preserving a still-winning
     path. O(n) replays — cheap for ~15-step traces.
     """
     kept = list(actions)
@@ -168,10 +168,9 @@ def _solution_from_trace(world: GameWorld, history: list[str]) -> list[str]:
 
     The oracle's history is a guaranteed-valid walk over the ACTUAL (post-repair)
     object graph, so deriving the path from it eliminates the LLM-hallucinated /
-    repair-drifted object refs the model's own solution_path carried. We then strip
-    the oracle's decoy detours via leave-one-out minimization, leaving only the
-    steps actually required to win — the optimal path (and the target a trained
-    policy should converge to).
+    repair-drifted object refs the model's own solution_path carried. We then
+    minimise via leave-one-out, leaving only steps actually required to win —
+    the optimal path (and the target a trained policy should converge to).
     """
     actions = [_action_of(line) for line in history if line.strip()]
     minimal = _minimal_actions(world, actions)
@@ -208,7 +207,6 @@ def generate_bank(
     count: int,
     rooms: int,
     chain_depth: int,
-    decoys: int,
     model: str,
     temperature: float,
     max_attempts: int,
@@ -230,8 +228,7 @@ def generate_bank(
 
     print(
         f"Generating {count} world(s): {rooms} rooms, request chain>={chain_depth}, "
-        f"ACCEPT measured depth>={min_chain_depth}, {decoys} decoys/room, "
-        f"model={model}\n"
+        f"ACCEPT measured depth>={min_chain_depth}, model={model}\n"
     )
 
     kept = 0
@@ -241,7 +238,7 @@ def generate_bank(
         attempts += 1
         theme = THEMES[attempts % len(THEMES)]
         print(f"  attempt {attempts:>3} [{theme}] ...", end="", flush=True)
-        world, build_log = _generate_one(llm, theme, rooms, chain_depth, decoys)
+        world, build_log = _generate_one(llm, theme, rooms, chain_depth)
         if world is None:
             print(" parse/build failed")
             if debug:
@@ -309,7 +306,6 @@ def main() -> None:
         help="reject worlds the oracle solves in fewer MEASURED "
         "dependency steps (default: same as --chain-depth)",
     )
-    parser.add_argument("--decoys", type=int, default=3, help="decoy objects per room")
     parser.add_argument("--model", default="qwen3.5:9b-mlx", help="Ollama model")
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument(
@@ -338,7 +334,6 @@ def main() -> None:
         count=args.count,
         rooms=args.rooms,
         chain_depth=args.chain_depth,
-        decoys=args.decoys,
         model=args.model,
         temperature=args.temperature,
         max_attempts=max_attempts,

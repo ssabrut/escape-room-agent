@@ -2,6 +2,20 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 11:35:18 WIB
+
+### What changed
+- The "decoy" concept has been removed from the system: the `--decoys` CLI flag, `DECOYS` env var, and `settings.decoys` field are gone; the generation prompt no longer instructs the LLM to scatter red-herring objects, and internal filters that excluded objects with `"decoy"` in their ID have been dropped.
+- The generation retry loop now collects structured violation lists from a fast deterministic + compliance eval (`quick_eval_for_feedback`) before regenerating, and injects those violations as a correction message to the LLM so it can fix specific issues rather than starting from scratch blindly.
+- A new `quick_eval_for_feedback` function has been added to the narrative evaluator, running only the three fastest dimensions (required-tool presence, solvability, prompt compliance) and returning a flat `violations` list suitable for pasting into a correction prompt.
+- The `_generate_world` logic has been refactored into `_generation_prompt` and `_build_world_from_response` helpers, with a new `_generate_world_with_feedback` variant that sends a multi-turn correction message when violations are known.
+- The bank generation script (`generate_bank.py`) has had the `--decoys` argument and `decoys` parameter removed end-to-end.
+
+### Why
+Decoy objects were conceptually at odds with the pruner, which already drops any object not on the solution path — making authored decoys inert noise the pruner would silently remove anyway. Removing the concept cleans up the API surface and aligns the prompt with actual runtime behavior. The feedback-driven retry loop replaces blind regeneration with targeted correction, giving the LLM judge violations concrete instructions rather than hoping a fresh attempt accidentally avoids the same problems.
+
+---
+
 ## 2026-06-04 11:11:45 WIB
 
 ### What changed

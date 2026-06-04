@@ -5,14 +5,13 @@ Number of rooms: {num_rooms} (a linear chain: room 1 is the start, room {num_roo
 
 Difficulty targets (make this genuinely hard to solve efficiently):
 * DEEP CHAINS: the solution must require at least {chain_depth} dependent steps in sequence — e.g. examine clue -> enter code -> reveals a tool -> use tool on a door -> reveals next clue -> ... Each step must depend on the previous one's result.
-* DECOYS: scatter {decoys} extra objects per room that look interactable (examinable notes, takeable items, locked drawers) but are NOT on the solution path. They must be harmless dead-ends, never required.
 * ROUTING: the rooms form a linear chain (room i connects to room i+1). Each room except the last GATES passage to the next via its goal_completion. The win object lives in the final room.
 
 Include:
 * scenario (one short paragraph)
 * objective (one sentence)
 * rooms: exactly {num_rooms}, each with id, description, adjacency (linear chain), goal, key_objects, goal_completion
-* objects placed across the rooms (real puzzle pieces + decoys + scenic props). Each room MUST contain 5–10 objects total. Scenic props (furniture, fixtures, ambient details) MUST have `"scenic": true`, `"interactable": false`, `"takeable": false`, and NO `contains_info` — they are flavor only and immune to the "no dangling clue" rule.
+* objects placed across the rooms (real puzzle pieces + scenic props). Each room MUST contain 5–10 objects total. Scenic props (furniture, fixtures, ambient details) MUST have `"scenic": true`, `"interactable": false`, `"takeable": false`, and NO `contains_info` — they are flavor only and immune to the "no dangling clue" rule.
 * rules, win_condition, solution_path
 
 Room goal & goal_completion rules:
@@ -35,7 +34,7 @@ Solvability rules (CRITICAL — the runtime ignores solution_path entirely):
 - Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
 - Every `requires_tool` MUST reference a `takeable: true` object that starts reachable (state "visible", not locked behind the very lock it opens). No circular tool deps (no A needs B while B needs A). Each tool chain must terminate at an immediately-takeable tool.
 - A `requires_tool` target that starts "hidden" MUST be revealed by an upstream object (its contains_info names the tool).
-- NO DANGLING CLUES: every contains_info token is consumed downstream by a requires_code or a known_info goal. DECOY notes must NOT carry a contains_info token that nothing uses — give decoys plain descriptions with NO contains_info, or make them takeable junk with no requirement.
+- NO DANGLING CLUES: every contains_info token is consumed downstream by a requires_code or a known_info goal. Every object must either be on the solution path or be a scenic prop — no inert interactive objects that carry information nobody uses.
 - NO DUPLICATE CLUES: each info token carried by exactly one object.
 - Self-check before responding and fix failures: for every requirement point to its supplier, for every real contains_info point to its consumer, confirm tools are takeable+reachable, confirm chains terminate, confirm every open/unlock goal uses state exactly "unlocked".
 

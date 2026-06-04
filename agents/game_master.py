@@ -14,7 +14,7 @@ from state import GameState, GameWorld, Prerequisite, Room, WorldObject
 
 SYSTEM_PROMPT = load_prompt("game_master", "system")
 GENERATION_PROMPT = load_prompt("game_master", "generation")
-# Hard-mode prompt: N-room worlds with deep chains + decoys (see settings.hard_mode).
+# Hard-mode prompt: N-room worlds with deep chains (see settings.hard_mode).
 BANK_GENERATION_PROMPT = load_prompt("game_master", "generation_bank")
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
@@ -826,10 +826,8 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
         orig_id = gc.id
         label = _fuse_label_for(gc.id)
         token = f"sekring_{label}_ON"
-        # Prefer an existing reachable, non-takeable, non-decoy object in the room to
-        # host the panel (a panel is fixed scenery); else the gate object itself; else skip.
-        # Never assign a fuse panel to a decoy — it would force the player to interact
-        # with a red-herring object as if it were a real puzzle element.
+        # Prefer an existing reachable, non-takeable object in the room to host the
+        # panel (a panel is fixed scenery); else any non-fused object in the room.
         host = next(
             (
                 o
@@ -838,7 +836,6 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
                 and not o.takeable
                 and o.state not in _LLM_LOCKED_STATES
                 and o.fuses is None
-                and "decoy" not in o.id
             ),
             None,
         )
@@ -847,7 +844,7 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
                 (
                     o
                     for o in objects
-                    if o.location == room.id and o.fuses is None and "decoy" not in o.id
+                    if o.location == room.id and o.fuses is None
                 ),
                 None,
             )
@@ -889,7 +886,6 @@ def _repair_missing_win_condition(
         o
         for o in objects
         if o.location == final_room_id
-        and "decoy" not in o.id
         and o.state in _LLM_LOCKED_STATES
     ]
     # Prefer key_objects that are locked; fall back to any locked object in the room.
@@ -898,10 +894,10 @@ def _repair_missing_win_condition(
     pick = (keyed[0] if keyed else candidates[0]) if candidates else None
 
     if pick is None:
-        # No locked object — try any non-decoy key_object in the final room.
+        # No locked object — try any key_object in the final room.
         for kid in final_room.key_objects:
             obj = by_id.get(kid)
-            if obj and obj.location == final_room_id and "decoy" not in obj.id:
+            if obj and obj.location == final_room_id:
                 pick = obj
                 break
 
@@ -1005,7 +1001,7 @@ def _prune_orphan_objects(
       * ``location`` -> its container parent (a clue nested inside a chest is used
         iff the chest is used)
 
-    Anything never reached is a pure decoy / orphan and is removed. References to
+    Anything never reached is an orphan and is removed. References to
     dropped ids cannot survive because dropped objects are, by construction, named
     by nothing that is kept. Returns (kept_objects, dropped_ids) for logging.
     """
@@ -1033,8 +1029,8 @@ def _prune_orphan_objects(
             frontier.append(obj_id)
 
     # Seed ONLY from goal_completion subjects, not key_objects: the LLM routinely
-    # dumps every object (decoys included) into key_objects, so it is not a
-    # reliable on-path signal. The backward closure pulls in the real chain.
+    # dumps every object into key_objects so it is not a reliable on-path signal.
+    # The backward closure pulls in the real chain.
     for room in rooms:
         gc = room.goal_completion
         if gc is None:
@@ -1087,8 +1083,7 @@ def _prune_orphan_objects(
     # Scenic objects are pure atmosphere — always keep them regardless of solution path.
     # Also keep enough non-scenic objects per room so each room has at least
     # MIN_OBJECTS_PER_ROOM total, satisfying the prompt-compliance rule (5–10 per room).
-    # We fill up to the floor with the cheapest non-scenic orphans (no preconditions)
-    # so they act as benign decoys rather than puzzle-blockers.
+    # Fill the gap with simple orphans (no preconditions, no clues) as neutral filler.
     MIN_OBJECTS_PER_ROOM = 5
     room_ids_list = [r.id for r in rooms]
     # Count how many kept + scenic objects already land in each room.
@@ -1256,8 +1251,8 @@ def _build_world(data: dict) -> GameWorld:
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
 
     # With every dependency now repaired and goals bound, drop any object no
-    # solution path touches so every remaining object is load-bearing (no inert
-    # decoys inflating the action space). Runs last among the structural passes.
+    # solution path touches so every remaining object is load-bearing.
+    # Runs last among the structural passes.
     objects, orphans = _prune_orphan_objects(rooms, objects)
     if orphans:
         print(
@@ -1368,37 +1363,68 @@ def _print_policy_benchmark(world: GameWorld) -> None:
         )
 
 
-def _generate_world(llm, theme: str) -> tuple[GameWorld, str]:
-    """One LLM generation -> (validated GameWorld, raw response).
-
-    In hard mode, uses the N-room deep-chain prompt and raises MAX_ROOMS for the
-    build so all rooms survive; otherwise the original 2-room prompt/behavior.
-    """
-    global MAX_ROOMS
+def _generation_prompt(theme: str) -> str:
     s = Settings()
     if s.hard_mode:
-        prompt = BANK_GENERATION_PROMPT.format(
+        return BANK_GENERATION_PROMPT.format(
             theme=theme,
             num_rooms=s.num_rooms,
             chain_depth=s.chain_depth,
-            decoys=s.decoys,
         )
-    else:
-        prompt = GENERATION_PROMPT.format(theme=theme)
+    return GENERATION_PROMPT.format(theme=theme)
 
-    response = llm.invoke(
-        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
-    )
-    data = _parse_json(response.content) or {}
 
+def _build_world_from_response(response_content: str) -> GameWorld:
+    s = Settings()
+    data = _parse_json(response_content) or {}
+    global MAX_ROOMS
     orig_cap = MAX_ROOMS
     if s.hard_mode:
         MAX_ROOMS = s.num_rooms
     try:
-        world = _build_world(data)
+        return _build_world(data)
     finally:
         MAX_ROOMS = orig_cap
-    return world, response.content
+
+
+def _generate_world(llm, theme: str) -> tuple[GameWorld, str]:
+    """One LLM generation -> (validated GameWorld, raw response)."""
+    prompt = _generation_prompt(theme)
+    response = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    )
+    return _build_world_from_response(response.content), response.content
+
+
+def _generate_world_with_feedback(
+    llm, theme: str, violations: list[str]
+) -> tuple[GameWorld, str]:
+    """Re-generation with judge violations injected as a correction message.
+
+    Sends the original generation prompt, then the model's prior output
+    (implicitly remembered via the violations list), then a follow-up
+    HumanMessage asking the GM to fix the specific issues the eval found.
+    This keeps the world structure and theme intact while targeting only
+    the flagged problems.
+    """
+    violation_block = "\n".join(f"  - {v}" for v in violations)
+    correction = (
+        "Your previous world had the following issues detected by an automated judge. "
+        "Please generate a NEW, corrected world for the same theme that fixes ALL of them. "
+        "Return only the JSON object — no prose.\n\n"
+        f"Issues to fix:\n{violation_block}"
+    )
+    prompt = _generation_prompt(theme)
+    response = llm.invoke(
+        [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+            # Inject the correction as a follow-up turn so the model treats it
+            # as self-critique guidance before regenerating.
+            HumanMessage(content=correction),
+        ]
+    )
+    return _build_world_from_response(response.content), response.content
 
 
 def game_master_node(state: GameState) -> dict:
@@ -1409,11 +1435,6 @@ def game_master_node(state: GameState) -> dict:
     world, raw = _generate_world(llm, state.theme)
     elapsed = time.perf_counter() - storyline_start
 
-    # Regenerate until the oracle confirms the world is winnable, so the live
-    # game never starts an unsolvable world. Runs in every mode now — a
-    # standard 2-room world can be just as unwinnable as a hard one. In hard mode
-    # the world must also clear a minimum oracle-measured chain depth, so we don't
-    # ship a technically-winnable-but-shallow puzzle.
     chain_target = s.chain_depth if s.hard_mode else 0
 
     def _world_ok(w: GameWorld) -> tuple[bool, str]:
@@ -1427,12 +1448,34 @@ def game_master_node(state: GameState) -> dict:
     if s.gen_max_attempts > 0:
         ok, why = _world_ok(world)
         while not ok and attempts < s.gen_max_attempts:
-            print(
-                f"[game_master] world rejected ({why}) — regenerating "
-                f"(attempt {attempts + 1}/{s.gen_max_attempts})",
-                flush=True,
-            )
-            world, raw = _generate_world(llm, state.theme)
+            # Run a fast deterministic + compliance eval to collect violations
+            # the LLM judge can act on. Only import when actually retrying so
+            # the happy path (solvable on first try) pays no eval overhead.
+            try:
+                from benchmark.narrative_eval import quick_eval_for_feedback
+                qr = quick_eval_for_feedback(world)
+                violations = qr.violations
+            except Exception:
+                violations = []
+
+            if violations:
+                print(
+                    f"[game_master] world rejected ({why}), "
+                    f"{len(violations)} violation(s) — regenerating with feedback "
+                    f"(attempt {attempts + 1}/{s.gen_max_attempts})",
+                    flush=True,
+                )
+                for v in violations:
+                    print(f"  {v}", flush=True)
+                world, raw = _generate_world_with_feedback(llm, state.theme, violations)
+            else:
+                print(
+                    f"[game_master] world rejected ({why}) — regenerating "
+                    f"(attempt {attempts + 1}/{s.gen_max_attempts})",
+                    flush=True,
+                )
+                world, raw = _generate_world(llm, state.theme)
+
             attempts += 1
             ok, why = _world_ok(world)
 

@@ -21,18 +21,14 @@ class Settings:
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
 
     def __init__(self) -> None:
-        # Hard-mode world generation: multi-room worlds with deep puzzle chains
-        # and decoys (the bank-quality generator), validated solvable before play.
-        # When off, the live game keeps its original 2-room behavior. Read in
+        # Hard-mode world generation: multi-room worlds with deep puzzle chains,
+        # validated solvable before play. When off, the live game uses 2-room mode.
+        # Read in
         # __init__ (not as class attrs) so main.py can set these env vars at
         # runtime via --hard and a freshly-built Settings() picks them up.
         self.hard_mode = _env_bool("HARD_MODE", False)
         self.num_rooms = int(os.getenv("NUM_ROOMS", "4"))
         self.chain_depth = int(os.getenv("CHAIN_DEPTH", "5"))
-        # Decoys default to 0: orphan objects are pruned post-generation so every
-        # object is load-bearing. Set DECOYS>0 only if the generation prompt is
-        # changed to make red-herrings coherent (the pruner drops inert ones).
-        self.decoys = int(os.getenv("DECOYS", "0"))
         # Regenerate up to this many times until the oracle confirms the world is
         # winnable (0 = no validation, accept the first build).
         self.gen_max_attempts = int(os.getenv("GEN_MAX_ATTEMPTS", "6"))
