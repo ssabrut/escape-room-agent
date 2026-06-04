@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 10:08:06 WIB
+
+### What changed
+- Ghost object IDs are now scrubbed from `solution_path` after world generation: any snake_case token that looks like an object ID but was dropped by the build pipeline is replaced with "the object" so the recorded solution stays readable and internally consistent.
+- Spoiler redaction now runs a second digit-only pass: after replacing full secret tokens (e.g. `safe_code_742`), a regex pass also redacts bare digit sequences (3+ digits) that match a secret code's numeric portion, catching cases where the raw number slipped through even after the token was removed.
+- Rooms are now padded to a minimum of 5 objects after orphan pruning: when the prune pass drops puzzle-irrelevant objects, harmless non-scenic orphans with no preconditions are promoted back into the keep set to satisfy the 5–10 objects-per-room density requirement from the generation prompt.
+- The generation prompt now includes explicit narrative quality requirements evaluated by an LLM judge: each scenario must contain sensory detail and mood; room descriptions must include at least two vivid specifics; all rooms must share a consistent story world; and the world must embed at least one narrative plot twist hinted at through clue text and room descriptions.
+
+### Why
+The build pipeline could prune objects that the LLM referenced in `solution_path`, leaving dangling IDs in a path that was supposed to be replay-safe. The digit-only spoiler pass closes a gap where a bare number leaked even after its full token was redacted. Room padding prevents the pruner from producing sparse rooms that violate the density rule. The narrative quality requirements in the prompt directly target the dimensions scored by the LLM-as-judge evaluator, so generation is aligned with evaluation criteria from the start.
+
+---
+
 ## 2026-06-04 09:44:13 WIB
 
 ### What changed

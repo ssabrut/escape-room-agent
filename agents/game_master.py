@@ -234,6 +234,38 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
     return rooms
 
 
+def _scrub_ghost_ids(
+    solution_path: list[str],
+    valid_ids: set[str],
+) -> tuple[list[str], list[str]]:
+    """Replace id-like tokens in solution_path that don't exist in the final world.
+
+    After _prune_orphan_objects the object list is settled. The LLM sometimes
+    writes solution steps that reference objects it invented but the repair
+    pipeline dropped (e.g. 'barrel_2'). We find snake_case tokens that look
+    like ids (contain an underscore, length > 4) and replace any that aren't
+    in valid_ids with 'the object' so the step stays readable. Returns
+    (cleaned_path, list_of_replacements) for logging.
+    """
+    replacements: list[str] = []
+    # Tokens to never flag as ghosts even if not in object/room ids.
+    _SAFE = {"the_hidden", "hidden_code", "solution_path", "the_object"}
+
+    def _replace_ghosts(text: str) -> str:
+        def _sub(m: re.Match) -> str:
+            tok = m.group(0)
+            if tok in valid_ids or tok in _SAFE:
+                return tok
+            if len(tok) <= 4 or "_" not in tok:
+                return tok
+            replacements.append(tok)
+            return "the object"
+        return re.sub(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", _sub, text)
+
+    cleaned = [_replace_ghosts(step) for step in solution_path]
+    return cleaned, replacements
+
+
 def _secret_tokens(objects: list[WorldObject]) -> set[str]:
     """Codes the player must DISCOVER — these must never be spelled out in hints.
 
@@ -256,18 +288,37 @@ def _scrub_spoilers(
 ) -> tuple[list[str], list[str]]:
     """Redact literal codes from the player-facing solution_path.
 
+    Two passes:
+    1. Token pass — replace any secret token (e.g. 'safe_code_742') verbatim.
+    2. Digit pass — replace any bare digit sequence (3+ digits) whose digits
+       match a secret code's digit string, catching cases like "code 314" where
+       the full token was already redacted but the raw number slipped through.
+
     Returns (redactions, cleaned_solution_path) for logging.
     """
     redactions: list[str] = []
     # longest-first so '1942' inside 'safe_code_1942' is handled by the token pass
     ordered = sorted(secrets, key=len, reverse=True)
+    # digit-only forms of every secret code (e.g. '742' from 'safe_code_742')
+    secret_digits: set[str] = {
+        d for tok in secrets if (d := re.sub(r"[^0-9]", "", tok)) and len(d) >= 3
+    }
 
     def _redact(text: str, where: str) -> str:
         out = text
+        # Pass 1: full token replacement
         for tok in ordered:
             if tok and tok in out:
                 out = out.replace(tok, "the hidden code")
                 redactions.append(f"{where}: '{tok}'")
+        # Pass 2: bare digit sequences that match a secret code
+        def _digit_sub(m: re.Match) -> str:
+            digits = m.group(0)
+            if digits in secret_digits:
+                redactions.append(f"{where}: bare digits '{digits}'")
+                return "the hidden code"
+            return digits
+        out = re.sub(r"\b\d{3,}\b", _digit_sub, out)
         return out
 
     cleaned_path = [_redact(step, "solution_path") for step in solution_path]
@@ -1034,6 +1085,40 @@ def _prune_orphan_objects(
                 _enqueue(pid)
 
     # Scenic objects are pure atmosphere — always keep them regardless of solution path.
+    # Also keep enough non-scenic objects per room so each room has at least
+    # MIN_OBJECTS_PER_ROOM total, satisfying the prompt-compliance rule (5–10 per room).
+    # We fill up to the floor with the cheapest non-scenic orphans (no preconditions)
+    # so they act as benign decoys rather than puzzle-blockers.
+    MIN_OBJECTS_PER_ROOM = 5
+    room_ids_list = [r.id for r in rooms]
+    # Count how many kept + scenic objects already land in each room.
+    room_object_count: dict[str, int] = {rid: 0 for rid in room_ids_list}
+    for o in objects:
+        if o.id in keep or o.scenic:
+            if o.location in room_object_count:
+                room_object_count[o.location] += 1
+
+    for rid in room_ids_list:
+        deficit = MIN_OBJECTS_PER_ROOM - room_object_count[rid]
+        if deficit <= 0:
+            continue
+        # Candidates: non-scenic orphans in this room with no preconditions.
+        fillers = [
+            o for o in objects
+            if o.id not in keep
+            and not o.scenic
+            and o.location == rid
+            and not o.requires_tool
+            and not o.requires_code
+            and not o.requires_liquid
+            and not o.requires_power
+            and not o.fuses
+            and not o.contains_info
+        ]
+        for filler in fillers[:deficit]:
+            keep.add(filler.id)
+            room_object_count[rid] += 1
+
     dropped = [o.id for o in objects if o.id not in keep and not o.scenic]
     kept = [o for o in objects if o.id in keep or o.scenic]
     return kept, dropped
@@ -1181,6 +1266,15 @@ def _build_world(data: dict) -> GameWorld:
         )
         # key_objects may now name a dropped id — scrub again.
         rooms = _scrub_room_refs(rooms, {o.id for o in objects})
+
+    # Drop solution_path references to ids the build pipeline pruned/dropped.
+    valid_ids = {o.id for o in objects} | {r.id for r in rooms}
+    solution_path, ghost_replacements = _scrub_ghost_ids(solution_path, valid_ids)
+    if ghost_replacements:
+        print(
+            f"[game_master] scrubbed ghost ids from solution_path: {', '.join(set(ghost_replacements))}",
+            flush=True,
+        )
 
     secrets = _secret_tokens(objects)
     redactions, solution_path = _scrub_spoilers(solution_path, secrets)

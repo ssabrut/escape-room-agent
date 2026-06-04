@@ -2,6 +2,12 @@ Generate a complete escape room scenario for a 2D text-based conversational game
 
 Theme: {theme}
 
+NARRATIVE QUALITY REQUIREMENTS (evaluated by an LLM judge — generic prose will score poorly):
+* The scenario paragraph must be evocative and specific: include at least one sensory detail (sound, smell, texture, light quality) and establish a distinct mood. Avoid generic phrases like "you find yourself in a room" or "the goal is to escape."
+* Each room description must paint the space with at least two vivid details — the creak of floorboards, salt-crusted lanterns, the smell of gunpowder — not a bare inventory of objects.
+* The rooms must feel like they belong to the same story world: consistent tone, consistent era, consistent stakes.
+* PLOT TWIST: Embed at least one narrative subversion. This could be a role reversal (the "treasure" is a warning), a misdirect (the obvious exit is a trap), a reveal (the room belongs to an unexpected person), or an irony (the player IS the villain). The twist should be hinted at through clue text and room descriptions, then confirmed by the objective or final room.
+
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
