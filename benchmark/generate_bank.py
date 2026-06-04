@@ -2,7 +2,7 @@
 
 Uses the local Ollama model to author N-room worlds with deep puzzle chains
 (prompt: ``game_master/generation_bank.txt``), runs each through the live
-``_build_world`` repair/validation pipeline so it is structurally sound, then
+``world_builder`` + ``puzzle_builder`` pipeline so it is structurally sound, then
 keeps only worlds that the heuristic oracle can actually SOLVE (so the bank is
 hard but winnable). Passing worlds are saved as JSON under ``benchmark/worlds/``.
 
@@ -31,6 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
 from agents import game_master as gm
+from agents import puzzle_builder_node as pb
 from benchmark.engine import HeadlessEpisode
 from benchmark.policies import heuristic_policy
 from config.settings import Settings
@@ -68,9 +69,8 @@ def _generate_one(
 ) -> tuple[GameWorld | None, list[str]]:
     """One LLM generation -> (validated GameWorld | None, build-log lines).
 
-    Temporarily raises gm.MAX_ROOMS so _build_world keeps all N rooms instead of
-    truncating to the production cap of 2. The repair/coherence warnings that
-    _build_world prints are captured (not swallowed) and returned so the caller
+    Generates rooms via world_builder then populates objects via puzzle_builder.
+    The repair/coherence warnings are captured (not swallowed) and returned so the caller
     can show them inline per attempt under --debug.
     """
     prompt = BANK_PROMPT.format(
@@ -79,19 +79,16 @@ def _generate_one(
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
-    data = gm._parse_json(response.content)
-    if not data:
+    room_data = gm._parse_json(response.content)
+    if not room_data:
         return None, []
-    orig_cap = gm.MAX_ROOMS
-    gm.MAX_ROOMS = rooms
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            world = gm._build_world(data)
+            room_world = gm._build_world(room_data, max_rooms=rooms)
+            world, _ = pb._generate_puzzle(llm, room_world, chain_depth)
     except Exception:
         world = None
-    finally:
-        gm.MAX_ROOMS = orig_cap
     build_log = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
     return world, build_log
 

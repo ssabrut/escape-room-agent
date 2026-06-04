@@ -45,11 +45,15 @@ if str(ROOT) not in sys.path:
 
 from agents.game_master import (
     _generate_world,
-    _generate_world_with_feedback,
-    _world_is_solvable,
-    _world_meets_chain_depth,
     _generation_prompt,
     SYSTEM_PROMPT,
+)
+from agents.puzzle_builder_node import (
+    _generate_puzzle,
+    _generate_puzzle_with_feedback,
+    _world_is_solvable,
+    _world_meets_chain_depth,
+    _default_chain_depth,
 )
 from config.settings import Settings, get_llm
 from state import GameWorld
@@ -184,6 +188,8 @@ def generate_theme(
     dpo_dir.mkdir(parents=True, exist_ok=True)
 
     llm = get_llm("game_master")
+    s = Settings()
+    chain_depth = _default_chain_depth(s)
     seen: set[tuple] = set()
     sft_kept = resume_from
     dpo_kept = _count_existing(dpo_dir)
@@ -198,7 +204,8 @@ def generate_theme(
         print(f"  [{theme}] attempt {total_attempts} ...", end="", flush=True)
 
         try:
-            world, _ = _silent(_generate_world, llm, theme)
+            room_world, _ = _silent(_generate_world, llm, theme, 2)
+            world, _ = _silent(_generate_puzzle, llm, room_world, chain_depth)
         except Exception as exc:
             print(f" generation error: {exc}")
             continue
@@ -225,14 +232,14 @@ def generate_theme(
                     for v in violations:
                         print(f"      {v}")
                 try:
-                    world, _ = _silent(_generate_world_with_feedback, llm, theme, violations)
+                    world, _ = _silent(_generate_puzzle_with_feedback, llm, room_world, chain_depth, violations)
                 except Exception as exc:
                     print(f"      feedback regen error: {exc}")
                     break
             else:
                 print(" — retrying (no violations captured)", flush=True)
                 try:
-                    world, _ = _silent(_generate_world, llm, theme)
+                    world, _ = _silent(_generate_puzzle, llm, room_world, chain_depth)
                 except Exception as exc:
                     print(f"      regen error: {exc}")
                     break

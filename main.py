@@ -59,6 +59,7 @@ SMOKE_DIR = Path("smoke_runs")
 LOG_DIR = Path("logs")
 NODE_NAMES = (
     "world_builder",
+    "puzzle_builder",
     "character_master",
     "player_agent_1",
     "player_agent_2",
@@ -189,15 +190,26 @@ def _run_generate_only(
     log_nodes: list[str] | None = None,
     log_root: Path = LOG_DIR,
 ) -> dict:
-    """Invoke the world_builder node directly and return its result dict."""
+    """Invoke world_builder then puzzle_builder and return the merged result dict."""
     from agents.game_master import world_builder_node
+    from agents.puzzle_builder_node import puzzle_builder_node
+    from state import GameState as _GS
 
-    state = GameState(theme=theme)
-    update = world_builder_node(state)
+    state = _GS(theme=theme)
+
+    wb_update = world_builder_node(state)
     if log_nodes and "world_builder" in log_nodes:
-        node_dir = _write_node_log("world_builder", update, root=log_root)
+        node_dir = _write_node_log("world_builder", wb_update, root=log_root)
         print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
-    return update
+
+    # Feed world_builder output into puzzle_builder
+    state = state.model_copy(update={"world": wb_update.get("world")})
+    pb_update = puzzle_builder_node(state)
+    if log_nodes and "puzzle_builder" in log_nodes:
+        node_dir = _write_node_log("puzzle_builder", pb_update, root=log_root)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+    return {**wb_update, **pb_update}
 
 
 def run(mode: str = MODE_FULL, log_nodes: list[str] | None = None, theme: str = "") -> None:
@@ -365,7 +377,7 @@ if __name__ == "__main__":
             "  python main.py --mode generate          # world generation only\n"
             "  python main.py --mode full              # full pipeline (default)\n"
             "  python main.py --mode generate --smoke 5\n"
-            "  python main.py --mode generate --log game_master\n"
+            "  python main.py --mode generate --log world_builder --log puzzle_builder\n"
             "  python main.py --eval path/to/output.json   # evaluate a saved world\n"
             "  python main.py --mode generate --eval        # generate then evaluate\n"
             "  python main.py --mode generate --smoke 3 --eval  # smoke + eval each run\n"
@@ -376,7 +388,7 @@ if __name__ == "__main__":
         choices=[MODE_GENERATE, MODE_FULL],
         default=MODE_FULL,
         help=(
-            f"'{MODE_GENERATE}': run world generation only (game_master node); "
+            f"'{MODE_GENERATE}': run world_builder + puzzle_builder only; "
             f"'{MODE_FULL}': run the complete pipeline including characters and gameplay "
             f"(default: {MODE_FULL})"
         ),

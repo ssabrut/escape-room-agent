@@ -2,6 +2,20 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 14:26:51 WIB
+
+### What changed
+- A new `puzzle_builder_node` graph step has been introduced. The world-builder now produces only the room layout and goals; all puzzle objects and the solution path are constructed by the separate puzzle builder in the next pipeline step. This splits world generation into two focused phases.
+- The `game_master` agent no longer generates `WorldObject` entries directly — the `WorldObject` import and the `_OPTIONAL_OBJECT_FIELDS` allow-list it relied on have been removed, and object construction responsibility is fully delegated downstream.
+- A fine-tuning dataset generator (`benchmark/generate_dataset.py`) has been added. It drives the same generation + solvability-check + LLM-judge retry loop used in the live pipeline, iterating per story theme until a target count of validated worlds is reached. Each run produces SFT examples (instruction-tuning pairs) and DPO preference pairs (chosen = accepted world, rejected = a world that had violations corrected into the accepted one), with per-theme JSONL files, merged flat files, and a manifest.
+- Generation prompts (`prompts/game_master/generation.txt` and `generation_bank.txt`) have been updated to reflect the narrowed scope of the world-builder (rooms and goals only, no objects).
+- The graph wiring and `main.py` entry point have been updated to include the new `puzzle_builder_node` in the execution sequence.
+
+### Why
+Generating rooms, objects, and puzzle logic in a single LLM call produced worlds where the solution chain and object graph were often inconsistent. Splitting into world-builder (rooms + goals) and puzzle-builder (objects + solution path) allows each phase to be validated, retried, and fine-tuned independently — which also enables the DPO dataset to capture clean before/after correction pairs for training.
+
+---
+
 ## 2026-06-04 14:13:13 WIB
 
 ### What changed

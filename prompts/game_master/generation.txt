@@ -1,4 +1,4 @@
-Generate a complete escape room scenario for a 2D text-based conversational game.
+Generate the setting for a 2D text-based conversational escape room game.
 
 Theme: {theme}
 
@@ -6,84 +6,33 @@ NARRATIVE QUALITY REQUIREMENTS (evaluated by an LLM judge — generic prose will
 * The scenario paragraph must be evocative and specific: include at least one sensory detail (sound, smell, texture, light quality) and establish a distinct mood. Avoid generic phrases like "you find yourself in a room" or "the goal is to escape."
 * Each room description must paint the space with at least two vivid details — the creak of floorboards, salt-crusted lanterns, the smell of gunpowder — not a bare inventory of objects.
 * The rooms must feel like they belong to the same story world: consistent tone, consistent era, consistent stakes.
-* PLOT TWIST: Embed at least one narrative subversion. This could be a role reversal (the "treasure" is a warning), a misdirect (the obvious exit is a trap), a reveal (the room belongs to an unexpected person), or an irony (the player IS the villain). The twist should be hinted at through clue text and room descriptions, then confirmed by the objective or final room.
+* PLOT TWIST: Embed at least one narrative subversion. This could be a role reversal (the "treasure" is a warning), a misdirect (the obvious exit is a trap), a reveal (the room belongs to an unexpected person), or an irony (the player IS the villain). The twist should be hinted at through room descriptions, then confirmed by the objective or final room.
 
 Include:
 * The scenario (one paragraph setting the scene + atmosphere)
-* Main objective
-* Exactly TWO rooms, connected by a single doorway. The FIRST room is the starting room; the SECOND room is the final room. Each room has an id, description, an adjacency object (linking the two rooms), a local goal, key objects, and a goal_completion condition. The win_condition MUST live in the SECOND room and equal the second room's `goal_completion`.
-* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Each room MUST contain 5–10 objects total: the puzzle-critical pieces (clues, tools, locked containers, gates) PLUS 2–4 atmospheric/scenic props (furniture, decorations, ambient details) that make the space feel real. Scenic objects MUST have `"scenic": true`, `"interactable": false`, `"takeable": false`, and NO `contains_info` — they are flavor only.
-* Rules the game enforces
-* Win condition (a target object_id reaching a target state)
-* Solution path (numbered steps from start to win)
+* Main objective (one sentence)
+* Exactly TWO rooms, connected by a single doorway. The FIRST room is the starting room; the SECOND room is the final room.
 
-Room goal & goal_completion rules (two-room mode):
-- Each room has a one-sentence `goal` describing what the party must accomplish there. A room's `goal` MUST name the SAME object or outcome that its `goal_completion` checks — do not describe a step the condition does not actually require. (E.g. if `goal_completion` is `known_info`, the goal is "discover the hidden clue", NOT "open the safe" unless the completion also requires the safe open.)
-- Each room has a `goal_completion`: a structured condition that is TRUE exactly when that room's goal is done. It must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
-- The FIRST room's `goal_completion` GATES passage to the second room: the party cannot leave the first room until its goal_completion is satisfied. Make completing it the prerequisite for entering the second room (e.g. unlock the connecting door, find the keycard, or learn the clue needed next door).
-- The SECOND room's `goal_completion` MUST equal the `win_condition` — satisfying it ends the game.
-- SPOILER RULE: `solution_path` is shown to players. NEVER write a literal code, combination, or password in it (no "the code is 1942", no "enter 1942"). Refer to it as "the hidden code" or "the clue you found". Codes live only in objects' `contains_info` / `requires_code`, never in hints.
-- The puzzle chain must flow across the two rooms: the first room's chain (clue -> code/tool -> gate) is solvable inside the first room, and the second room's chain is solvable once the party has entered it (it may rely on items/clues carried over from the first room).
-- `key_objects` is a list of object ids in that room that matter for its goal — used to focus the party's attention. Only list ids of objects located in that same room.
-- Goal_completion shapes:
-    - {{"type": "object_state", "object_id": "<existing_id>", "state": "<target_state>"}} — e.g., a door must be unlocked
-    - STATE VOCABULARY: when the goal is to open/unlock a container, door, or lock, the target `state` MUST be the literal string `"unlocked"`. The engine writes `"unlocked"` whenever a lock is cleared (via tool, code, liquid, or power) — so a goal that asks for `"open"`, `"opened"`, `"dissolved"`, `"unsealed"`, etc. will NEVER be satisfied and the game becomes unwinnable. Use `"unlocked"`, not a synonym.
-    - {{"type": "known_info", "info": "<info_token>"}} — e.g., a clue must be discovered
-    - {{"type": "has_item", "object_id": "<existing_id>"}} — e.g., the party must carry a keycard
-    - {{"type": "power_active", "id": "<power_token>"}} — e.g., a power line must be on
+Each room must have:
+- id (unique snake_case)
+- description (vivid, at least two sensory details)
+- adjacency: a single mirrored direction pair connecting the two rooms (valid: north/south, east/west). If room 1 reaches room 2 via "east", room 2 MUST reach room 1 via "west".
+- goal: one sentence describing what the party must accomplish here. The FIRST room's goal gates passage to the second room. The SECOND room's goal ends the game when satisfied.
+- goal_completion: a structured condition that is TRUE exactly when the room's goal is done. Must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
+  Shapes:
+    - {{"type": "object_state", "object_id": "<id>", "state": "unlocked"}}  ← use literal "unlocked" for any open/unlock goal, never a synonym
+    - {{"type": "known_info", "info": "<token>"}}
+    - {{"type": "has_item", "object_id": "<id>"}}
+    - {{"type": "power_active", "id": "<token>"}}
+- key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects you expect in this room (e.g. "room1_safe", "room1_clue_note"). These will be concretely placed during puzzle generation.
+
+The SECOND room's goal_completion will become the win condition.
 
 Adjacency rules:
-- The two rooms MUST be connected with a single mirrored direction pair. Valid directions: north, south, east, west.
-- If the first room reaches the second via "east", the second room MUST reach the first via "west" (the opposites are: north<->south, east<->west).
-- Each room's `adjacency` maps a direction to the OTHER room's id. Example: first room `{{"east": "<second_room_id>"}}`, second room `{{"west": "<first_room_id>"}}`.
-- Reference only the two real room ids in adjacency.
+- Connect the two rooms with exactly one mirrored direction pair (north<->south or east<->west).
+- Each room's adjacency maps one direction to the other room's id only.
 
-Solvability rule (CRITICAL — the runtime ignores `solution_path` entirely):
-- Every code (`requires_code`) MUST be produced by some object's `contains_info` field. The token string in `contains_info` must contain the code substring (e.g., `contains_info: "safe_code_742"` produces the code `742`).
-- Every `known_info` prerequisite token MUST appear verbatim as some upstream object's `contains_info`.
-- Every `requires_tool` MUST reference an object that is `takeable: true` AND starts in a reachable state (`visible`, not `locked`/`hidden`/nested behind the very lock it opens) so the party can actually pick it up before using it. A tool that is `takeable: false`, or locked behind the door it unlocks, makes the puzzle UNSOLVABLE.
-- NO CIRCULAR TOOL DEPENDENCIES: if object A's `requires_tool` is B, then B (and anything B depends on) MUST NOT depend on A — directly or transitively. Two objects requiring each other (A needs B, B needs A) can never be solved. Each tool chain must terminate at a tool that is immediately takeable with no prerequisite.
-- WRONG (unsolvable — the code 742 only appears in the prose description, not in contains_info):
-    {{"id": "hidden_note", "location": "first_room_id", "description": "A note that reads 'The captain's safe code is 742'", "takeable": true}}
-- RIGHT (solvable — examining the note produces the info token, which satisfies a known_info prerequisite or unlocks a requires_code: "742"):
-    {{"id": "hidden_note", "location": "first_room_id", "description": "A folded note", "takeable": true, "interactable": true, "contains_info": "safe_code_742"}}
-- NO DANGLING CLUES: every `contains_info` token MUST be consumed by something downstream — either a `requires_code` on a locked object, or a `known_info` goal_completion. Do not place a clue that nothing uses. If a door opens with a `requires_tool` key, the puzzle is the KEY, not a code: do NOT also invent a `contains_info` code for it.
-- NO DUPLICATE CLUES: a given info token must be carried by exactly ONE object. Do not scatter the same code across multiple notes.
-- NO REDUNDANT OBJECTS: model each puzzle element once. Do not emit both a container and a separate "lock"/"panel" object that share the same location and the same requirement (e.g. a chest AND a chest_lock both locked by the same key) — fold the requirement onto the one object the goal_completion checks.
-- REVEALABLE TOOLS: if a `requires_tool` target starts `hidden`, an upstream object must reveal it (its `contains_info` names the tool, or its description makes inspecting it produce the tool). A hidden key nothing uncovers is unsolvable.
-- Self-check before responding, fix any failure BEFORE you output:
-    1. For every `requires_code`, `known_info` prereq, `requires_tool`, `requires_liquid`, `requires_power` — point to the specific `objects[]` entry that supplies it; and for every `contains_info` token — point to the specific consumer that needs it. If either direction has no match, fix it.
-    2. For every `requires_tool`, confirm the referenced object has `takeable: true` and a non-locked starting state, and that it is NOT gated behind the very lock it opens.
-    3. Walk each tool chain to its end and confirm it terminates (no A↔B cycle, no chain that loops back on itself).
-    4. For every `goal_completion`/`win_condition` of type `object_state` whose intent is "opened/unlocked", confirm `state` is exactly `"unlocked"` (no synonym).
-
-Object rules:
-- Every object has a unique snake_case id
-- An object id MUST NOT equal the room id. Do not emit an object that represents the room itself.
-- location must be either an existing room id OR another existing object id (for nesting, e.g. a key inside a safe)
-- state examples: "visible", "fixed", "hidden", "locked", "locked_bolt", "locked_room", "unlocked"
-- interactable: true if the player can act on it; takeable: true only for portable items
-- Optional precondition fields (include only when relevant):
-    - requires_code (string) and code_digits (int) — for keypads/safes
-    - requires_tool (object id) — must reference an existing object
-    - requires_liquid (string identifier, e.g. "pH_7") — for chemical slots
-    - requires_power (string identifier, e.g. "sekring_C_ON") — for powered doors/sensors
-    - fuses (object mapping fuse label to "ON"/"OFF") — for electrical panels
-    - contains_info (string identifier) — for objects whose inspection reveals a fact
-    - slot_description (string) — extra detail for insertion slots
-    - note (string) — meta hint about access constraints
-    - scenic (boolean, default false) — set to `true` for pure atmosphere props (furniture, art, fixtures) that carry no puzzle logic; scenic objects must have no `contains_info`, `requires_*`, or `fuses`
-
-Win condition rules:
-- object_id must reference an existing object
-- state is the target state that object must reach to win
-- It MUST be identical to the SECOND room's `goal_completion` (same object_id + state). The engine derives the win target from that room goal, so any mismatch is ignored — keep them equal to avoid confusion.
-
-Solution path rules:
-- Ordered numbered steps from initial state to win
-- Only reference room ids and object ids that exist in your output
-
-Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explanation before or after the JSON.
+Respond ONLY with raw JSON. No prose, no markdown fences.
 
 {{
     "scenario": "one paragraph setting + atmosphere",
@@ -91,62 +40,19 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
     "rooms": [
         {{
             "id": "first_room_id",
-            "description": "first room description",
+            "description": "vivid room description",
             "adjacency": {{"east": "second_room_id"}},
             "goal": "one-sentence goal that gates passage to the second room",
             "goal_completion": {{"type": "object_state", "object_id": "connecting_door_id", "state": "unlocked"}},
-            "key_objects": ["object_id_one", "object_id_two"]
+            "key_objects": ["room1_safe", "room1_clue_note"]
         }},
         {{
             "id": "second_room_id",
-            "description": "second room description",
+            "description": "vivid room description",
             "adjacency": {{"west": "first_room_id"}},
             "goal": "one-sentence goal for the final room",
-            "goal_completion": {{"type": "object_state", "object_id": "target_object_id", "state": "unlocked"}},
-            "key_objects": ["object_id_three", "object_id_four"]
+            "goal_completion": {{"type": "object_state", "object_id": "final_target_id", "state": "unlocked"}},
+            "key_objects": ["room2_target", "room2_clue"]
         }}
-    ],
-    "objects": [
-        {{
-            "id": "object_id_here",
-            "location": "room_id_or_object_id",
-            "description": "object description",
-            "state": "visible",
-            "interactable": true,
-            "takeable": false
-        }},
-        {{
-            "id": "locked_container_example",
-            "location": "room_id_here",
-            "description": "a wall safe with a 3-digit keypad",
-            "state": "locked",
-            "interactable": true,
-            "requires_code": "327",
-            "code_digits": 3
-        }},
-        {{
-            "id": "scenic_prop_example",
-            "location": "room_id_here",
-            "description": "a worn wooden chair pushed against the wall",
-            "state": "visible",
-            "interactable": false,
-            "takeable": false,
-            "scenic": true
-        }}
-    ],
-    "rules": [
-        "Agent only reveals information already discovered in the game state.",
-        "Codes and numbers must come from the game state, never invented.",
-        "If information is not yet found, agent must say 'not yet known' instead of guessing.",
-        "Actions are only valid if the object is visible and within reach."
-    ],
-    "win_condition": {{
-        "object_id": "target_object_id",
-        "state": "unlocked"
-    }},
-    "solution_path": [
-        "1. First step referencing real object ids",
-        "2. Second step",
-        "3. Final step that satisfies the win_condition"
     ]
 }}
