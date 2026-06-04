@@ -29,6 +29,7 @@ _OPTIONAL_OBJECT_FIELDS = (
     "contains_info",
     "slot_description",
     "note",
+    "scenic",
 )
 
 
@@ -201,11 +202,13 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
             value = raw.get(field)
             if value in (None, ""):
                 continue
-            # fuses is a dict; everything else must be a scalar (str/int). Drop
-            # malformed nested structures the LLM occasionally emits.
+            # fuses is a dict; scenic is a bool; everything else must be a scalar (str/int).
+            # Drop malformed nested structures the LLM occasionally emits.
             if field == "fuses":
                 if isinstance(value, dict):
                     kwargs[field] = value
+            elif field == "scenic":
+                kwargs[field] = bool(value)
             elif isinstance(value, (str, int)):
                 kwargs[field] = value
 
@@ -1030,8 +1033,9 @@ def _prune_orphan_objects(
             for pid in _power_producers(o.requires_power):
                 _enqueue(pid)
 
-    dropped = [o.id for o in objects if o.id not in keep]
-    kept = [o for o in objects if o.id in keep]
+    # Scenic objects are pure atmosphere — always keep them regardless of solution path.
+    dropped = [o.id for o in objects if o.id not in keep and not o.scenic]
+    kept = [o for o in objects if o.id in keep or o.scenic]
     return kept, dropped
 
 

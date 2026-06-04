@@ -12,7 +12,7 @@ Include:
 * scenario (one short paragraph)
 * objective (one sentence)
 * rooms: exactly {num_rooms}, each with id, description, adjacency (linear chain), goal, key_objects, goal_completion
-* objects placed across the rooms (real puzzle pieces + decoys)
+* objects placed across the rooms (real puzzle pieces + decoys + scenic props). Each room MUST contain 5–10 objects total. Scenic props (furniture, fixtures, ambient details) MUST have `"scenic": true`, `"interactable": false`, `"takeable": false`, and NO `contains_info` — they are flavor only and immune to the "no dangling clue" rule.
 * rules, win_condition, solution_path
 
 Room goal & goal_completion rules:
@@ -44,6 +44,7 @@ Object rules:
 - location is an existing room id OR another existing object id (for nesting)
 - states: "visible", "fixed", "hidden", "locked", "locked_bolt", "unlocked"
 - Optional precondition fields (only when relevant): requires_code (+code_digits int), requires_tool (object id), requires_liquid (e.g. "pH_7"), requires_power (e.g. "sekring_C_ON"), fuses (label->"ON"/"OFF"), contains_info (string), slot_description, note
+- scenic (boolean, default false): set `true` for pure atmosphere props (a bookshelf, a painting, a dusty crate) — must have no `contains_info`, `requires_*`, or `fuses`
 
 Respond ONLY with raw JSON — no prose, no markdown fences.
 
@@ -55,7 +56,8 @@ Respond ONLY with raw JSON — no prose, no markdown fences.
     ],
     "objects": [
         {{"id": "clue_note", "location": "room_1", "description": "a folded note", "state": "visible", "interactable": true, "takeable": true, "contains_info": "safe_code_742"}},
-        {{"id": "wall_safe", "location": "room_1", "description": "a keypad safe", "state": "locked", "interactable": true, "requires_code": "742", "code_digits": 3}}
+        {{"id": "wall_safe", "location": "room_1", "description": "a keypad safe", "state": "locked", "interactable": true, "requires_code": "742", "code_digits": 3}},
+        {{"id": "dusty_shelf", "location": "room_1", "description": "a sagging wooden shelf lined with forgotten paperbacks", "state": "visible", "interactable": false, "takeable": false, "scenic": true}}
     ],
     "rules": ["..."],
     "win_condition": {{"object_id": "final_target", "state": "unlocked"}},

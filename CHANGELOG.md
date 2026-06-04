@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 08:38:37 WIB
+
+### What changed
+- Rooms now include scenic (atmosphere-only) props: the world model, generation prompts, and object builder all support a `scenic` boolean flag that marks furniture, decorations, and ambient details as pure flavor with no puzzle logic.
+- Each room is now required to contain 5–10 objects total — puzzle-critical pieces plus 2–4 scenic props — so generated spaces feel populated and real.
+- Scenic objects are permanently exempt from orphan pruning: the post-generation prune pass that removes objects with no path to the solution now keeps any object flagged `scenic: true`, so atmosphere props are never silently dropped.
+- The action prompt now shows a type-level hint next to any locked/hidden object (e.g. "needs a 3-digit code", "needs a tool + power") so agents understand what is required to open an object without being told the answer, reducing blind fumbling while preserving discovery.
+
+### Why
+Generated rooms felt sparse and puzzle-mechanical with no environmental texture, and agents were wasting ticks attempting actions they had no means to satisfy because the object listing gave no signal about what an object needed. Adding scenic props (with an exemption from pruning so they survive) fills rooms with atmosphere, while the requirement hint gives agents just enough type information to direct their search without leaking the solution.
+
+---
+
 ## 2026-06-03 16:22:51 WIB
 
 ### What changed

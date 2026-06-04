@@ -6,7 +6,7 @@ Include:
 * The scenario (one paragraph setting the scene + atmosphere)
 * Main objective
 * Exactly TWO rooms, connected by a single doorway. The FIRST room is the starting room; the SECOND room is the final room. Each room has an id, description, an adjacency object (linking the two rooms), a local goal, key objects, and a goal_completion condition. The win_condition MUST live in the SECOND room and equal the second room's `goal_completion`.
-* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Rooms should feel populated — scatter several useful items per room so the party has meaningful choices
+* Objects placed in the world (fixed scenery, interactable items, takeable items, locked containers, panels, doors). Each room MUST contain 5–10 objects total: the puzzle-critical pieces (clues, tools, locked containers, gates) PLUS 2–4 atmospheric/scenic props (furniture, decorations, ambient details) that make the space feel real. Scenic objects MUST have `"scenic": true`, `"interactable": false`, `"takeable": false`, and NO `contains_info` — they are flavor only.
 * Rules the game enforces
 * Win condition (a target object_id reaching a target state)
 * Solution path (numbered steps from start to win)
@@ -66,6 +66,7 @@ Object rules:
     - contains_info (string identifier) — for objects whose inspection reveals a fact
     - slot_description (string) — extra detail for insertion slots
     - note (string) — meta hint about access constraints
+    - scenic (boolean, default false) — set to `true` for pure atmosphere props (furniture, art, fixtures) that carry no puzzle logic; scenic objects must have no `contains_info`, `requires_*`, or `fuses`
 
 Win condition rules:
 - object_id must reference an existing object
@@ -116,6 +117,15 @@ Respond ONLY with raw JSON. Do not include any prose, markdown fences, or explan
             "interactable": true,
             "requires_code": "327",
             "code_digits": 3
+        }},
+        {{
+            "id": "scenic_prop_example",
+            "location": "room_id_here",
+            "description": "a worn wooden chair pushed against the wall",
+            "state": "visible",
+            "interactable": false,
+            "takeable": false,
+            "scenic": true
         }}
     ],
     "rules": [

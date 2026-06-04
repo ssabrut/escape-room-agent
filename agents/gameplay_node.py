@@ -659,13 +659,40 @@ def _resolve_choice(response: str, space: list[str]) -> str:
     return space[0] if space else IDLE_ACTION
 
 
+def _requirement_hint(obj: WorldObject) -> str:
+    """A type-only hint of what an object needs to open — never names the answer.
+
+    Tells the agent an object needs *a* tool / code / liquid / power so it stops
+    fumbling blindly, while preserving discovery (it must still find the right
+    tool/code itself). Empty string when the object gates on nothing.
+    """
+    needs: list[str] = []
+    if obj.requires_code:
+        if obj.code_digits:
+            needs.append(f"a {obj.code_digits}-digit code")
+        else:
+            needs.append("a code")
+    if obj.requires_tool:
+        needs.append("a tool")
+    if obj.requires_liquid:
+        needs.append("a liquid")
+    if obj.requires_power:
+        needs.append("power")
+    if not needs:
+        return ""
+    return " (needs " + " + ".join(needs) + ")"
+
+
 def _format_objects(visible: list[WorldObject], ps: PartyState) -> str:
     if not visible:
         return "  (none visible)"
     lines = []
     for o in visible:
         state = ps.object_states.get(o.id, o.state)
-        lines.append(f"  - {o.id} [{state}]: {o.description}")
+        # Only hint requirements while the object is still locked/hidden — once
+        # open there is nothing left to gate on.
+        hint = _requirement_hint(o) if state in HIDDEN_STATES else ""
+        lines.append(f"  - {o.id} [{state}]: {o.description}{hint}")
     return "\n".join(lines)
 
 
