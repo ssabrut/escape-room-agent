@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
@@ -292,6 +293,7 @@ def game_master_eval_node(state: GameState) -> dict:
     The routing decision is encoded in ``party_state.game_over`` so the
     conditional edge in graph.py can branch without extra state fields.
     """
+    _eval_start = time.perf_counter()
     world = state.world
     if not world or not state.party_state:
         return {}
@@ -307,6 +309,7 @@ def game_master_eval_node(state: GameState) -> dict:
         _gm_stream(f"  Party achieved the win condition at tick {ps.tick}.")
         new_messages.append(AIMessage(content=f"[game_master_eval] VICTORY at tick {ps.tick}"))
         _render_eval_final(ps, world, MAX_TICKS)
+        print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
         return {"messages": new_messages, "party_state": ps}
 
     # --- Time-up check ---
@@ -316,6 +319,7 @@ def game_master_eval_node(state: GameState) -> dict:
         _gm_stream(f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition.")
         new_messages.append(AIMessage(content=f"[game_master_eval] Stopped at MAX_TICKS={MAX_TICKS}"))
         _render_eval_final(ps, world, MAX_TICKS)
+        print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
         return {"messages": new_messages, "party_state": ps}
 
     # --- Local room goal check ---
@@ -367,6 +371,7 @@ def game_master_eval_node(state: GameState) -> dict:
     # Consume the in-tick directive so a later tick can't reuse a stale one.
     ps.pending_directive = None
 
+    print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
     return {"messages": new_messages, "party_state": ps}
 
 

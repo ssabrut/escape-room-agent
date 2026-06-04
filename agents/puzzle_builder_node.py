@@ -972,10 +972,15 @@ def puzzle_builder_node(state: GameState) -> dict:
     if not state.world or not state.world.rooms:
         return {}
 
+    import time
     s = Settings()
     llm = get_llm("game_master")
     chain_depth = _default_chain_depth(s)
 
+    # Each entry: {"attempt": N, "why": str, "violations": [...], "raw": str}
+    attempt_log: list[dict] = []
+
+    start = time.perf_counter()
     world, raw = _generate_puzzle(llm, state.world, chain_depth)
 
     def _world_ok(w: GameWorld) -> tuple[bool, str]:
@@ -995,6 +1000,13 @@ def puzzle_builder_node(state: GameState) -> dict:
                 violations = qr.violations
             except Exception:
                 violations = []
+
+            attempt_log.append({
+                "attempt": attempts,
+                "why": why,
+                "violations": violations,
+                "raw": raw,
+            })
 
             if violations:
                 print(
@@ -1017,12 +1029,25 @@ def puzzle_builder_node(state: GameState) -> dict:
             attempts += 1
             ok, why = _world_ok(world)
 
-    print(f"[puzzle_builder] built puzzle in {attempts} attempt(s)", flush=True)
+    elapsed = time.perf_counter() - start
+    print(f"[puzzle_builder] built puzzle in {attempts} attempt(s) in {elapsed:.2f}s", flush=True)
 
     _print_solvability_check(world)
     _print_policy_benchmark(world)
 
+    # Build one AIMessage per attempt so _write_node_log captures the full retry trail.
+    # Rejected attempts include a header with why they failed and what feedback was given.
+    messages: list[AIMessage] = []
+    for entry in attempt_log:
+        header_lines = [f"=== ATTEMPT {entry['attempt']} (rejected: {entry['why']}) ==="]
+        if entry["violations"]:
+            header_lines.append("Violations / feedback sent to next attempt:")
+            header_lines.extend(f"  - {v}" for v in entry["violations"])
+        header = "\n".join(header_lines)
+        messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
+    messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))
+
     return {
-        "messages": [AIMessage(content=raw)],
+        "messages": messages,
         "world": world,
     }

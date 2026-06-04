@@ -62,6 +62,7 @@ def _format_teammate_context(party: list[PartyMember]) -> str:
 
 
 def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
+    import time
     world = state.world
 
     taken_names = {member.character.name for member in state.party}
@@ -78,12 +79,14 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
         teammate_context=_format_teammate_context(state.party),
     )
 
+    start = time.perf_counter()
     response = llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]
     )
+    elapsed = time.perf_counter() - start
 
     data = _parse_json(response.content) or {}
     chosen_name = data.get("chosen_character_name", "")
@@ -93,6 +96,8 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
     if chosen is None:
         chosen = available[0]
         reasoning = reasoning or "(fallback) selected first available character"
+
+    print(f"[{agent_id}] selected character in {elapsed:.2f}s", flush=True)
 
     return PartyMember(
         agent_id=agent_id,

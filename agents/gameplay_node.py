@@ -1547,10 +1547,12 @@ def gameplay_node(state: GameState) -> dict:
     The graph loops back here from game_master_eval_node until the game is over
     (victory, time-up, or GM declares the run complete).
     """
+    import time
     world = state.world
     if not world or not state.party:
         return {}
 
+    _tick_start = time.perf_counter()
     is_first_tick = state.party_state is None
     ps = state.party_state or _build_initial_party_state(world)
     new_messages: list[AIMessage] = []
@@ -1626,6 +1628,8 @@ def gameplay_node(state: GameState) -> dict:
 
         ps.observed_rooms.add(ps.current_room)
         ps.last_fingerprint = _room_fingerprint(world, ps)
+        elapsed = time.perf_counter() - _tick_start
+        print(f"[gameplay] tick {ps.tick} (observe+plan) elapsed {elapsed:.2f}s", flush=True)
         return {"messages": new_messages, "party_state": ps}
 
     # If last tick changed the room picture (revealed an object, took an item,
@@ -1780,6 +1784,9 @@ def gameplay_node(state: GameState) -> dict:
     # Refresh global observations after every action tick so state changes
     # (unlocked, taken, power on) are reflected without needing an observe pass.
     _update_global_observations(world, ps)
+
+    elapsed = time.perf_counter() - _tick_start
+    print(f"[gameplay] tick {ps.tick} elapsed {elapsed:.2f}s", flush=True)
 
     return {
         "messages": new_messages,

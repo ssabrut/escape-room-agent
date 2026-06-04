@@ -8,7 +8,7 @@ Seven evaluation dimensions:
   4. required_tool_present (deterministic) — every requires_tool target exists, is takeable,
                               is reachable, and every requires_code has a clue producer
   5. solvability           (oracle) — heuristic policy reaches victory; measures chain depth
-  6. prompt_compliance     (LLM judge) — game master output follows the generation prompt rules
+  6. prompt_compliance     (LLM judge) — world builder + puzzle builder output follows the generation prompt rules
   7. solution_path_validity (deterministic) — solution path references real ids; replay wins
 
 All scores are floats in [0.0, 1.0].  The ``overall`` score is the unweighted mean.
@@ -566,7 +566,7 @@ def _instructions_for_world(world: "GameWorld") -> str:
 
 
 def _eval_prompt_compliance(world: "GameWorld") -> DimensionResult:
-    """Judge how well the game master output follows its generation instructions."""
+    """Judge how well the world_builder + puzzle_builder output follows the generation instructions."""
     from prompts import load_prompt
     instructions = _instructions_for_world(world)
     world_json = _world_json_compact(world)
@@ -814,7 +814,7 @@ class QuickEvalResult:
     Contains only the dimensions that are fast enough to run inside the
     generation retry loop without adding significant latency:
       - required_tool_present  (deterministic)
-      - solvability            (oracle, already runs in world_builder_node)
+      - solvability            (oracle, already runs in puzzle_builder_node)
       - prompt_compliance      (LLM judge — included because violations are
                                  the most actionable feedback for the GM)
 

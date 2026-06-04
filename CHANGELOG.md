@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 15:08:33 WIB
+
+### What changed
+- Per-node timing is now printed to stdout for all major pipeline stages: `character_master` logs how long character generation took and how many characters were produced; `player_agent` logs how long character selection took per agent; `gameplay_node` logs elapsed time at the end of each tick (both the observe+plan path and the full action path); `game_master_eval` logs elapsed time at every exit point (victory, time-up, and normal tick completion); `puzzle_builder` logs total time and attempt count together instead of just attempt count.
+- The puzzle builder now records a structured retry trail: each rejected attempt is captured with its attempt number, rejection reason, and violation list, then emitted as a sequence of `AIMessage` entries (one per attempt) so node logs contain the full retry history including why each attempt failed. The final accepted world is emitted as a separate message labelled `(final)`.
+- The `prompt_compliance` evaluation dimension description was updated to clarify it judges both world-builder and puzzle-builder output (not just game master output), matching the split-phase architecture introduced in the prior session.
+
+### Why
+The pipeline was opaque about where time was being spent — a slow run could be caused by LLM latency in any of several nodes and there was no way to diagnose which. Adding per-node timing to stdout gives immediate visibility during live runs and smoke tests. The retry trail in puzzle builder messages was added so the fine-tuning dataset pipeline can capture rejected attempts as DPO negative examples rather than silently discarding them.
+
+---
+
 ## 2026-06-04 14:26:51 WIB
 
 ### What changed
