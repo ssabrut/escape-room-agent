@@ -6,3 +6,4 @@ dist/
 *.egg-info/
 smoke_runs/
 logs/
+benchmark/worlds/

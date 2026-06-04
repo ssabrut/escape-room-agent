@@ -4,11 +4,21 @@ from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class Prerequisite(BaseModel):
-    """A structured condition — used by Room.goal_completion to mark when a room's goal is done."""
+    """A structured condition — used by Room.goal_completion to mark when a room's goal is done.
+
+    A Prerequisite has exactly one `type`; only the fields meaningful for that
+    type carry a value. The always-null sibling fields are dropped at dump time
+    (see ``main._jsonable`` / ``GameWorld`` serialization with ``exclude_none``),
+    so emitted JSON shows only the keys that matter for each condition shape:
+      - object_state -> object_id, state
+      - has_item     -> object_id
+      - known_info   -> info
+      - power_active  -> id
+    """
 
     type: str  # "object_state" | "known_info" | "has_item" | "power_active"
     object_id: str | None = None
@@ -46,10 +56,16 @@ class WorldObject(BaseModel):
     contains_info: str | None = None
     slot_description: str | None = None
     note: str | None = None
+    scenic: bool = False  # pure atmosphere; never on solution path, exempt from orphan pruning
 
 
 class WinCondition(BaseModel):
-    """The target object state that ends the game in victory."""
+    """The target object state that ends the game in victory.
+
+    Not stored on its own anymore — :attr:`GameWorld.win_condition` derives this
+    from the final room's ``goal_completion`` so the win target lives in exactly
+    one place and cannot drift from the room it belongs to.
+    """
 
     object_id: str = ""
     state: str = ""
@@ -63,30 +79,23 @@ class GameWorld(BaseModel):
     rooms: list[Room] = Field(default_factory=list)
     objects: list[WorldObject] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
-    win_condition: WinCondition = Field(default_factory=WinCondition)
     solution_path: list[str] = Field(default_factory=list)
 
-ABILITY_EFFECTS = {
-    "extra_action",
-    "auto_succeed_persuasion",
-    "reveal_hidden_action",
-    "negate_hazard",
-    "spot_clue",
-}
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def win_condition(self) -> WinCondition:
+        """The game-ending target, derived from the final room's goal_completion.
 
-ABILITY_TRIGGERS = {"on_action", "passive", "on_room_enter"}
-
-
-class Ability(BaseModel):
-    """A mechanical ability tied to a character — resolved by the gameplay loop."""
-
-    name: str
-    description: str
-    trigger: str
-    effect: str
-    target: str | None = None
-    max_uses: int = 1
-    uses_remaining: int = 1
+        The win condition is, by construction (see the generation prompt), the
+        last room's ``object_state`` goal. Deriving it here keeps a single source
+        of truth instead of storing the same object_id/state twice. Falls back to
+        an empty WinCondition when there is no usable final ``object_state`` goal.
+        """
+        for room in reversed(self.rooms):
+            gc = room.goal_completion
+            if gc is not None and gc.type == "object_state" and gc.object_id:
+                return WinCondition(object_id=gc.object_id, state=gc.state or "")
+        return WinCondition()
 
 
 class Character(BaseModel):
@@ -95,7 +104,6 @@ class Character(BaseModel):
     name: str
     role: str
     backstory: str
-    ability: Ability
 
 
 class PartyMember(BaseModel):
@@ -104,6 +112,16 @@ class PartyMember(BaseModel):
     agent_id: str  # e.g., "agent_1", "agent_2"
     character: Character  # the character this agent chose
     reasoning: str  # why this agent chose this character
+
+
+class ObjectObservation(BaseModel):
+    """A structured cross-room observation entry for a single world object."""
+
+    object_id: str
+    state: str
+    location: str  # room id where this object lives
+    notes: list[str] = Field(default_factory=list)  # agent-produced bullet notes
+    last_seen_tick: int = 0
 
 
 class TickAction(BaseModel):
@@ -123,21 +141,42 @@ class PartyState(BaseModel):
     current_room: str = ""
     inventory: list[str] = Field(default_factory=list)  # object ids the party carries
     visited: set[str] = Field(default_factory=set)
-    object_states: dict[str, str] = Field(default_factory=dict)  # object_id -> current state
-    known_info: list[str] = Field(default_factory=list)  # contains_info tokens discovered
+    object_states: dict[str, str] = Field(
+        default_factory=dict
+    )  # object_id -> current state
+    known_info: list[str] = Field(
+        default_factory=list
+    )  # contains_info tokens discovered
     fuse_states: dict[str, dict[str, str]] = Field(
         default_factory=dict
     )  # panel_id -> {fuse_label: "ON"|"OFF"}
-    power_active: set[str] = Field(default_factory=set)  # power identifiers currently on
+    power_active: set[str] = Field(
+        default_factory=set
+    )  # power identifiers currently on
     tick: int = 0
     game_over: bool = False
     victory: bool = False
     log: list[TickAction] = Field(default_factory=list)
-    ability_rooms_triggered: dict[str, list[str]] = Field(default_factory=dict)
     spotted_clues: list[str] = Field(default_factory=list)
-    observed_rooms: set[str] = Field(default_factory=set)  # rooms whose entry observation pass is done
-    room_observations: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> observed-object bullets
-    room_plans: dict[str, list[str]] = Field(default_factory=dict)  # room_id -> escape-plan bullets
+    observed_rooms: set[str] = Field(
+        default_factory=set
+    )  # rooms whose entry observation pass is done
+    room_observations: dict[str, list[str]] = Field(
+        default_factory=dict
+    )  # room_id -> observed-object bullets
+    room_plans: dict[str, list[str]] = Field(
+        default_factory=dict
+    )  # room_id -> escape-plan bullets
+    last_fingerprint: str | None = None  # room snapshot from end of previous tick
+    # When the current room's goal is already satisfied at tick start, the GM
+    # computes its "advance to <dest>" directive once, in-tick, so the agents see
+    # it while choosing (not one tick late). Stored here as (dest_room, narration)
+    # so game_master_eval_node can reuse it instead of re-calling the LLM. Cleared
+    # once consumed. Plain tuple to avoid a state->agents import dependency.
+    pending_directive: tuple[str, str] | None = None
+    global_object_observations: dict[str, ObjectObservation] = Field(
+        default_factory=dict
+    )  # object_id -> latest structured observation across all rooms
 
 
 class GameState(BaseModel):

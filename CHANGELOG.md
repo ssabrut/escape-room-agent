@@ -2,6 +2,304 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 11:54:10 WIB
+
+### What changed
+- A BFS-based policy (`bfs_policy`) is now available in the benchmark module. Given a world, it explores the full reachable state space from the initial party state and returns a closure that replays the shortest winning action sequence found — or falls back to `heuristic_policy` if no solution is found within the node budget (`max_states=50_000`).
+- The benchmark's single-world episode counts have been raised: `first` and `heuristic` now run 20 episodes each (previously 1) to produce statistically meaningful win percentages; `bfs` runs once (it is deterministic and stateful — the pending list drains).
+- `bfs_policy` is registered as a fourth baseline in both `compute_policy_benchmark` and the `main()` multi-world runner, so every benchmark table now includes a BFS column alongside random, first, and heuristic.
+- `run_policy` now supports *factory* policies — callables that take a world and return a policy closure — detected via signature inspection rather than a test call. This allows BFS (whose closure is stateful) to be regenerated fresh for each episode without special-casing it in the call site.
+
+### Why
+The existing random/first/heuristic baselines couldn't distinguish between a world that is hard and one that is structurally unsolvable because none of them are guaranteed to find the optimal path. A BFS policy, when it succeeds, proves the world is solvable and provides an optimal lower-bound on ticks-to-win, making it a ground-truth reference for evaluating the heuristic and LLM-driven policies. Raising the episode counts for the other deterministic policies provides richer aggregate statistics for comparison.
+
+---
+
+## 2026-06-04 11:45:07 WIB
+
+### What changed
+- A static backward-chain solvability checker (`check_solvable`) is now available in the benchmark module. It walks backward from the win condition through every prerequisite in the object graph — resolving `requires_code`, `requires_tool`, `requires_power`, `requires_liquid`, and `goal_completion` targets — and returns a `SolvabilityReport` with a boolean result and a full list of blocking issues. Runs in O(objects²) with no simulation or tick budget.
+- The checker catches: missing `contains_info` suppliers for code or info goals, bare digit codes with no matching token, non-existent or non-takeable required tools, circular tool dependencies, power gates with no satisfying fuse panel, `known_info` goals with no upstream producer, `goal_completion` targets referencing non-existent objects, a missing or non-existent win-condition object, and rooms disconnected from the start room.
+- After each world is generated in the live game, the solvability check now runs automatically and prints a one-line SOLVABLE confirmation or a bulleted list of structural issues to stdout before the policy benchmark table.
+
+### Why
+The policy benchmark could fail or time out for reasons that were hard to distinguish from a solvable-but-hard world versus a structurally broken one. A fast, simulation-free static check separates structural impossibilities (missing clue suppliers, unreachable tools, disconnected rooms) from runtime policy failures, giving immediate diagnosis before a single tick is simulated.
+
+---
+
+## 2026-06-04 11:35:18 WIB
+
+### What changed
+- The "decoy" concept has been removed from the system: the `--decoys` CLI flag, `DECOYS` env var, and `settings.decoys` field are gone; the generation prompt no longer instructs the LLM to scatter red-herring objects, and internal filters that excluded objects with `"decoy"` in their ID have been dropped.
+- The generation retry loop now collects structured violation lists from a fast deterministic + compliance eval (`quick_eval_for_feedback`) before regenerating, and injects those violations as a correction message to the LLM so it can fix specific issues rather than starting from scratch blindly.
+- A new `quick_eval_for_feedback` function has been added to the narrative evaluator, running only the three fastest dimensions (required-tool presence, solvability, prompt compliance) and returning a flat `violations` list suitable for pasting into a correction prompt.
+- The `_generate_world` logic has been refactored into `_generation_prompt` and `_build_world_from_response` helpers, with a new `_generate_world_with_feedback` variant that sends a multi-turn correction message when violations are known.
+- The bank generation script (`generate_bank.py`) has had the `--decoys` argument and `decoys` parameter removed end-to-end.
+
+### Why
+Decoy objects were conceptually at odds with the pruner, which already drops any object not on the solution path — making authored decoys inert noise the pruner would silently remove anyway. Removing the concept cleans up the API surface and aligns the prompt with actual runtime behavior. The feedback-driven retry loop replaces blind regeneration with targeted correction, giving the LLM judge violations concrete instructions rather than hoping a fresh attempt accidentally avoids the same problems.
+
+---
+
+## 2026-06-04 11:11:45 WIB
+
+### What changed
+- When the deterministic `solution_path` checks fail (ghost object IDs or no parseable engine actions), an LLM judge is now invoked with the oracle's winning trace as ground truth to produce specific, actionable feedback for the GM on how to fix the path.
+- Unparseable solution paths (steps with no recognized engine verbs) are now scored as a failure (`-0.4`) and flagged with an explicit issue message listing the required engine verbs, rather than being silently skipped with a neutral note.
+- The oracle trace is now threaded from `evaluate_world` into `_eval_solution_path`, making it available as ground truth for the LLM judge when issues are detected.
+
+### Why
+The deterministic checks could identify *that* a solution path was broken but not *how* to fix it — the GM was left with a score and no concrete guidance. Feeding the oracle's verified winning trace to an LLM judge when issues arise closes that gap with actionable repair instructions. Treating unparseable paths as scoring failures (rather than neutral skips) aligns the score with the real quality of the authored path.
+
+---
+
+## 2026-06-04 10:08:06 WIB
+
+### What changed
+- Ghost object IDs are now scrubbed from `solution_path` after world generation: any snake_case token that looks like an object ID but was dropped by the build pipeline is replaced with "the object" so the recorded solution stays readable and internally consistent.
+- Spoiler redaction now runs a second digit-only pass: after replacing full secret tokens (e.g. `safe_code_742`), a regex pass also redacts bare digit sequences (3+ digits) that match a secret code's numeric portion, catching cases where the raw number slipped through even after the token was removed.
+- Rooms are now padded to a minimum of 5 objects after orphan pruning: when the prune pass drops puzzle-irrelevant objects, harmless non-scenic orphans with no preconditions are promoted back into the keep set to satisfy the 5–10 objects-per-room density requirement from the generation prompt.
+- The generation prompt now includes explicit narrative quality requirements evaluated by an LLM judge: each scenario must contain sensory detail and mood; room descriptions must include at least two vivid specifics; all rooms must share a consistent story world; and the world must embed at least one narrative plot twist hinted at through clue text and room descriptions.
+
+### Why
+The build pipeline could prune objects that the LLM referenced in `solution_path`, leaving dangling IDs in a path that was supposed to be replay-safe. The digit-only spoiler pass closes a gap where a bare number leaked even after its full token was redacted. Room padding prevents the pruner from producing sparse rooms that violate the density rule. The narrative quality requirements in the prompt directly target the dimensions scored by the LLM-as-judge evaluator, so generation is aligned with evaluation criteria from the start.
+
+---
+
+## 2026-06-04 09:44:13 WIB
+
+### What changed
+- The pipeline now supports a `--mode` flag with two options: `generate` (world generation only, skipping characters and gameplay) and `full` (the complete pipeline, default). This replaces the previous hardcoded full-pipeline behavior.
+- An interactive theme picker is now presented at startup: the user chooses from a curated list of 10 themes (Haunted House, Murder Mystery, Prison Break, etc.) via arrow-key selection before any generation runs. The `"pirate"` hardcoded theme is gone from all code paths.
+- The LLM is now capped at 4096 output tokens (`num_predict=4096`) and thinking mode is explicitly disabled (`extra_body={"think": False}`), preventing runaway or reasoning-heavy responses from the model.
+- A `--eval` flag is available to evaluate world narrative quality using the LLM-as-judge + oracle pipeline. Supply a saved `output.json` path to evaluate an existing world, or omit the path to evaluate the world produced by the current run. Works in both single-run and smoke modes.
+- An `--eval-trace` flag prints the oracle's tick-by-tick solve trace alongside the narrative evaluation report.
+- Smoke runs now accept `--mode`, `--eval`, and `--eval-trace` so each smoke iteration can be generated in either mode and optionally evaluated, with the evaluation result written to `run_NNN.eval.json` per run.
+
+### Why
+Benchmarking world generation in isolation was slow because the full pipeline (characters, gameplay) ran every time. A dedicated `generate` mode lets the team rapidly iterate on world quality without running agents. The theme picker replaces the hardcoded `"pirate"` string so test runs reflect diverse settings. The token cap and thinking-disable prevent the model from stalling on long reasoning chains during generation. The `--eval` flag wires the narrative evaluator (added in the prior session) into the main CLI so quality scores are a first-class output rather than a separate script.
+
+---
+
+## 2026-06-04 08:38:37 WIB
+
+### What changed
+- Rooms now include scenic (atmosphere-only) props: the world model, generation prompts, and object builder all support a `scenic` boolean flag that marks furniture, decorations, and ambient details as pure flavor with no puzzle logic.
+- Each room is now required to contain 5–10 objects total — puzzle-critical pieces plus 2–4 scenic props — so generated spaces feel populated and real.
+- Scenic objects are permanently exempt from orphan pruning: the post-generation prune pass that removes objects with no path to the solution now keeps any object flagged `scenic: true`, so atmosphere props are never silently dropped.
+- The action prompt now shows a type-level hint next to any locked/hidden object (e.g. "needs a 3-digit code", "needs a tool + power") so agents understand what is required to open an object without being told the answer, reducing blind fumbling while preserving discovery.
+
+### Why
+Generated rooms felt sparse and puzzle-mechanical with no environmental texture, and agents were wasting ticks attempting actions they had no means to satisfy because the object listing gave no signal about what an object needed. Adding scenic props (with an exemption from pruning so they survive) fills rooms with atmosphere, while the requirement hint gives agents just enough type information to direct their search without leaking the solution.
+
+---
+
+## 2026-06-03 16:22:51 WIB
+
+### What changed
+- World generation now prunes orphan objects after building: any object that no solution path touches (computed by backward closure from each room's goal subject through tool/code/liquid/power/container dependencies) is dropped so every remaining object is load-bearing and the action space carries no inert decoys.
+- Decoys now default to 0 (`DECOYS=0`), since the pruner removes inert red-herrings anyway; raising it only matters if the generation prompt is changed to make decoys coherent.
+- Solvability regeneration now runs in every mode, not just hard mode — a standard world can be just as unwinnable, so generation retries until the oracle confirms the world is winnable.
+- Hard mode additionally rejects shallow worlds: a generated world must clear a minimum oracle-measured dependency chain depth (`CHAIN_DEPTH`) or it is regenerated, so a technically-winnable-but-trivial puzzle isn't shipped.
+- The live game now prints a per-world policy benchmark (win%, ticks-to-win, objects resolved for random/first/heuristic baselines) when a world is generated, mirroring the aggregate benchmark output; the smoke runner writes the same numbers to a `run_NNN.benchmark.json` file per run.
+- When a room's goal is already complete at tick start, the Game Master now issues its "advance to next room" directive in-tick — before agents choose — so the party moves on immediately instead of re-working the finished room and drifting back. The directive is computed once and reused by the eval node, avoiding a duplicate LLM call and a duplicate panel.
+- The OBSERVED RESULT panel is now a live global view rebuilt every tick from observations across all visited rooms (plus inventory), grouped by room with the current room first, so object states never go stale; when a room's goal is done the ESCAPE PLAN panel shows the GM advance directive instead of the now-solved room plan.
+
+### Why
+The puzzle quality and pacing needed tightening: inert decoy objects bloated the action space without adding difficulty, unsolvable or shallow worlds were reaching live play, and per-world baseline numbers were hard to see. The in-tick GM directive and live observation panels fix agents wasting ticks on finished rooms and reasoning from stale state.
+
+---
+
+## 2026-06-03 14:42:10 WIB
+
+### What changed
+- The gameplay loop is now headless and tick-driven: `gameplay_node` runs exactly one tick per graph invocation and returns, and a new `game_master_eval_node` checks for victory, time-up, or a local room-goal completion after each tick — looping back to gameplay or terminating accordingly. Victory and time-up rendering have moved into the eval node.
+- The LangGraph graph is wired with a conditional edge from `game_master_eval` back to `gameplay` (or to END), replacing the old single terminal edge from `gameplay` to END.
+- Party room-movement is now atomic: all `go` actions within a tick are deferred and resolved together, so a later agent cannot pick a different exit mid-tick and split the party. A single departure destination is agreed on and all agents move as one.
+- Each agent now receives a cross-room global object table when observing: every object the party has seen across all rooms (state, location, agent notes) is injected into the observe prompt, enabling agents to cross-reference clues and tools from earlier rooms when planning.
+- Agents collect per-object notes during observation (a structured `object_notes` map alongside the bullet list), which are stored in a new `global_object_observations` table on `PartyState` and refreshed after every action tick.
+- The action-space `examine` verb is now suppressed for takeable objects that haven't been picked up yet, surfacing `take` first so agents grab items in one tick rather than examining then taking on separate ticks.
+- The room fingerprint (used to decide whether the lead agent should re-observe) is now stored as a string on `PartyState` (`last_fingerprint`) so it survives across graph node boundaries between ticks.
+- World generation now repairs missing win conditions: if the final room's `goal_completion` is absent or not an `object_state` type, a valid win condition is synthesised from the room's locked key objects so the game can terminate correctly.
+- Fuse panels can no longer be assigned to decoy objects during power-gate repair; decoys are excluded from host selection in both the primary and fallback candidate passes.
+
+### Why
+The gameplay loop was a single monolithic `while` loop inside one graph node, making it impossible to inspect or benchmark individual ticks and preventing the graph from checkpointing or branching mid-run. Splitting into a per-tick `gameplay_node` + `game_master_eval_node` pair with a conditional back-edge makes the loop observable and headless-benchmark-friendly. The cross-room observation table and global notes were added to reduce the information asymmetry agents faced when a clue from room one was needed to unlock something in room two.
+
+---
+
+## 2026-06-03 09:03:28 WIB
+
+### What changed
+- Characters no longer have mechanical abilities — the `Ability` model, all ability-related constants (`ABILITY_EFFECTS`, `ABILITY_TRIGGERS`), and the per-party `ability_rooms_triggered` tracking field have been removed from the data model entirely.
+- Character generation no longer asks the LLM to assign or describe abilities; the generation prompt and JSON schema no longer include the `ability` block.
+- Agent action and plan-proposal prompts no longer reference a character's ability; agents reason only from their role when proposing and executing plans.
+- Character display in the player-selection screen and the live game startup no longer shows ability name, effect, or uses.
+
+### Why
+The ability system added complexity (effect resolution, use-tracking, per-room trigger state) without being reliably exercised or benchmarked in the current headless evaluation loop. Removing it simplifies the state model and prompts so the benchmark can focus on core puzzle-solving behavior driven by role alone.
+
+---
+
+## 2026-06-03 08:51:39 WIB
+
+### What changed
+- When the Game Master issues a directive to advance rooms, the action space presented to each agent is now narrowed to only that mandated move (`go <dest>`), so agents can no longer accidentally pick a wrong exit or take an unintended action when the GM has already declared the room complete.
+- The stale room escape plan is now suppressed for the tick in which a GM directive is active, preventing the old plan from competing with the directive in the agent's prompt.
+- The effective action space is recomputed after each agent acts within a tick, so mid-tick state changes (e.g. a teammate completing the room goal) are reflected before the next agent decides.
+
+### Why
+Agents were occasionally choosing an incorrect exit or acting on a residual room plan even after the GM had issued an explicit move directive, causing the party to stall or deviate. Narrowing the action space to the directed move and clearing the competing plan text ensures the GM directive is unambiguously acted on.
+
+---
+
+## 2026-06-03 08:16:37 WIB
+
+### What changed
+- Live game mode now supports hard-mode world generation: multi-room worlds with deep puzzle chains (configurable room count, chain depth, and decoys per room) are generated using a dedicated `generation_bank` prompt and validated solvable by the heuristic oracle before the live game starts, regenerating up to a configured max attempts until the world is winnable.
+- Hard mode is opt-in via CLI flags (`--hard`, `--rooms N`, `--decoys N`) or environment variables (`HARD_MODE`, `NUM_ROOMS`, `CHAIN_DEPTH`, `DECOYS`, `GEN_MAX_ATTEMPTS`), defaulting to the original 2-room standard mode when not set.
+- The Game Master now exposes regeneration progress and mode info in its startup log, reporting whether a world was generated in standard or hard mode and how many generation attempts were needed to find a solvable world.
+
+### Why
+The benchmark had revealed that the original single/two-room generator could produce unwinnable worlds that the oracle would reject, blocking gameplay. Hard mode enables the live game to use the same bank-quality multi-room generator and oracle validation that the benchmark uses, guaranteeing every world the party encounters is actually solvable while keeping the standard 2-room experience available as a baseline.
+
+---
+
+## 2026-06-02 16:52:41 WIB
+
+### What changed
+- Each kept benchmark world's `solution_path` is now rebuilt from the oracle's actual winning trace over the final (post-repair) object graph, replacing the LLM-authored path. This eliminates hallucinated or repair-drifted object references and guarantees the recorded solution is one the engine can actually replay to victory.
+- The recorded solution is now the MINIMAL winning path: a greedy leave-one-out pass replays subsets of the trace through the engine and drops any step (decoy takes, dead-end drawer opens, redundant examines) that isn't required to win, leaving only the steps needed for an optimal solve.
+- The oracle now always records its solve history (the trace is needed to derive the solution path), so the prior `trace`/`debug`-gated history recording was removed.
+
+### Why
+The LLM-generated `solution_path` referenced object ids that no longer matched the world after generation-time repairs drifted the object graph, so the stored solution couldn't be trusted or replayed. Deriving the path from the oracle's guaranteed-valid winning trace and then minimizing it produces a consistent, optimal solution — the target a trained policy should converge to.
+
+---
+
+## 2026-06-02 16:08:08 WIB
+
+### What changed
+- A clue token's required-info source room is now resolved to the room that actually holds the locked object consuming it (walking the container chain up to its room), instead of always blaming the start room. A second-room safe's clue is no longer stranded back in room one, and a `known_info` goal sources to its own room.
+- The missing-clue patcher no longer buries a code clue on an object that is used as someone else's tool, and only credits a takeable object as a good clue carrier when it also reads like something you examine (a note/journal), so codes the party must READ land on readable objects.
+- World generation now repairs locks whose required code is supplied by nothing but the lock's own `contains_info` (the answer written onto the lock while `requires_code` names a different, unproduced token): `requires_code` is repointed to that self-carried clue so the lock is at least solvable. Runs after the patch pass so a genuine upstream clue is preferred.
+- `requires_tool` targets that name a real but non-takeable object (e.g. a fixed terminal), or a tool locked/hidden behind the very gate it opens, are now forced grabbable — made takeable and relaxed to a visible state — instead of only warned about, so the lock is no longer dead.
+- `power_active` goal gates are now made satisfiable: since the engine only brings power online via a fuse flip producing a `sekring_<label>_ON` token, any power gate whose id isn't such a producible token gets a fuse panel attached to a same-room object and its goal id rewritten to the matching token.
+- The headless benchmark now records each episode's `chain_depth` — the count of ordered dependency links the oracle actually cleared (unlocks, power-on, room moves) — as a truer puzzle-depth measure than raw ticks, for rejecting shallow worlds from the bank.
+- The benchmark oracle policy now deprioritizes actions that failed with no state change since (so it stops head-banging a GM-blocked exit or an unsatisfiable tool), revives them once the world advances, and avoids re-flipping a fuse that's already ON (which would toggle power back off and oscillate forever).
+
+### Why
+The benchmark surfaced worlds that were unwinnable or that the oracle could never solve: clues stranded in the wrong room, codes buried on tools, locks gated only by their own answer, non-takeable required tools, and `power_active` gates with no producible fuse token (the `emergency_relay_power` spin-forever case). These generation-time repairs make benchmark target worlds reliably winnable, while the oracle's dead-action and fuse-toggle guards plus the `chain_depth` metric keep the headless solver from looping to timeout and give a real measure of puzzle depth.
+
+---
+
+## 2026-06-02 14:32:02 WIB
+
+### What changed
+- A cleared lock now actually satisfies a goal/win that named a "solved" synonym: goal_completion and the win condition of type `object_state` are matched with state equivalence, so an object the engine marked `"unlocked"` also satisfies a target written as `"open"`, `"opened"`, `"unsealed"`, `"dissolved"`, or `"deactivated"` (the `"visible"` state is excluded — merely visible is not a solved lock). Previously such a goal could never be met and the game became unwinnable.
+- The generation prompt now constrains the open/unlock state vocabulary (target `state` MUST be the literal `"unlocked"`, not a synonym) and forbids unsolvable tool setups: a `requires_tool` target must be takeable and start in a reachable (non-locked/hidden) state and must not be gated behind the very lock it opens, and tool chains must not be circular (no A↔B cycles) — each chain must terminate at an immediately takeable tool. The self-check was expanded into a numbered checklist covering these cases.
+
+### Why
+The resolvers always write `"unlocked"` when a lock is cleared, but the generator named matching goal/win targets with synonyms like `"open"` or `"dissolved"`, so a correctly-solved puzzle never registered and the world was unwinnable. Treating the "opened" synonym family as equivalent fixes existing worlds, while the tightened prompt rules (canonical state vocabulary, no circular or self-gated tool dependencies) prevent the generator from authoring these unsolvable worlds in the first place.
+
+---
+
+## 2026-06-02 14:21:45 WIB
+
+### What changed
+- Code-locked doors now unlock from clues that embed the answer in a decorated token: a clue like `captain_combination_8429` now satisfies a door requiring `captain_combination`. Matching accepts equal tokens, a stem that is an underscore-boundary prefix of the other (either direction), a shared underscore-separated segment, or equal non-empty digit sequences — so the bare-stem requirement and its answer-bearing clue are recognized as the same code.
+- Both the action-availability check (whether to offer `enter_code`) and the actual `enter_code` resolution now share this single code-matching rule, keeping the offered verb and its success test in sync.
+
+### Why
+The generator named a door's `requires_code` with a bare stem (e.g. `captain_combination`) but carried the matching clue as a decorated token embedding the answer (e.g. `captain_combination_8429`). The old test only matched exact equality or the clue's last segment, so this prefix case was missed and a solvable door stayed permanently locked.
+
+---
+
+## 2026-06-02 13:27:15 WIB
+
+### What changed
+- World generation now repairs goal-gating objects that the LLM locked with no way to unlock them: if a room's goal_completion (or the win condition) targets a locked/hidden object that carries no requires_* mechanism, it's given a `requires_tool` pointing at a same-room takeable that reads like an unlocker (wheel, key, lever, etc.), or — if no takeable exists — its initial state is relaxed to the target so the goal is reachable.
+- Room exits are now held back while the room's goal is unmet and other productive work remains: since the Game Master blocks every exit until the goal is satisfied, offering `go` would be a dead end the party spins on. Exits are still offered as a last resort when nothing else is productive, so the GM's block narration can surface what the room still needs.
+
+### Why
+The party could get permanently stranded on a Game Master-blocked exit whose goal was either unwinnable (a locked gate with no unlock mechanism) or simply not worth attempting yet. Repairing unsolvable gates and withholding pointless `go` actions keep the party making progress instead of looping on guaranteed failures.
+
+---
+
+## 2026-06-02 12:45:00 WIB
+
+### What changed
+- Dangling `requires_tool` references are now repaired by fuzzy-matching to a takeable object rather than being nulled outright: when a lock names a near-miss id (e.g. `brg_key` vs the real `brg_key_revealed`), it's repointed to the matching object by stripping common qualifier suffixes, so the lock keeps its tool requirement instead of opening for free. Refs with no plausible match are still nulled.
+- The action space now hides unlock verbs whose precondition is not currently satisfiable: `enter_code`, `use_tool`, `insert_liquid`, and power-`open` only appear once the party actually has the code, tool, liquid, or active power. The verbs reappear when the prerequisite is met.
+- The `examine` verb is dropped from the action space once an object has already been examined, since re-examining can never reveal new information.
+
+### Why
+Agents were burning ticks on guaranteed dead-end actions — re-examining exhausted objects and retrying unlocks they couldn't satisfy — and a dangling tool reference could strand a door or make it open with no tool at all. Pruning impossible verbs and repairing near-miss tool ids keeps the action space honest and the world solvable.
+
+---
+
+## 2026-06-02 10:58:36 WIB
+
+### What changed
+- The Game Master now proactively directs the party onward: once the current room's goal is satisfied and a route to the win room exists, it announces (with LLM-generated narration, plus a templated fallback) the order to advance to the next room — rather than waiting for a player to attempt `go` on their own.
+- The deterministic next hop toward the win room is computed by the engine, and that destination is surfaced into each agent's action prompt as a Game Master directive that overrides their other priorities for that tick, so the party reliably picks `go <dest>`.
+- The GM directive is recorded in the tick log as a non-gameplay action (`gm_directive`), so it's excluded from teammate "last action" context and stall detection, and is rendered in its own Game Master panel.
+
+### Why
+Once a room was cleared, the party could linger instead of moving on. Having the Game Master actively call the advance — with a computed destination injected as an overriding directive — keeps the party progressing toward the win room without relying on agents to independently decide to leave.
+
+---
+
+## 2026-06-02 10:38:54 WIB
+
+### What changed
+- Objects are now marked "handled" (checkmark) once examined, in addition to being taken or having their state changed. Previously a mere examine never counted as resolved, so the party could keep re-examining the same objects needlessly.
+
+### Why
+Treating an examined object as handled stops the party from wasting turns re-examining objects that have already been inspected, focusing attention on objects whose puzzles are still open.
+
+---
+
+## 2026-06-02 10:30:44 WIB
+
+### What changed
+- The win condition is now derived automatically from the final room's `goal_completion` instead of being stored as a separate field, so the win target lives in exactly one place and can no longer drift from the room it belongs to.
+- World generation now collapses redundant container/lock pairs: when the LLM emits both a container and a separate "lock"/"panel" object sharing the same location and requirement, they are merged into the single object the goal checks, with tool references repointed to the survivor.
+- World generation now emits warn-only coherence checks that flag dangling puzzle pieces — clues that nothing consumes, duplicated clue tokens, and tools that are required but unreachable (not takeable, or hidden with no reveal path).
+- The generation prompt now forbids dangling clues, duplicate clues, and redundant objects, requires hidden tools to be revealable, and requires the win condition to equal the second room's goal_completion.
+- Logged world JSON now omits always-null fields (e.g. unused Prerequisite/WorldObject slots), showing only the keys meaningful for each record.
+
+### Why
+Generated worlds suffered from redundant and incoherent puzzle pieces (duplicate locks, orphan clues, unreachable tools) and from the win target being duplicated across two places where it could drift. Deriving the win condition from the room goal, deduping objects, and adding coherence warnings plus tighter prompt rules make generated worlds cleaner and more reliably solvable.
+
+---
+
+## 2026-06-02 09:59:16 WIB
+
+### What changed
+- Generated worlds now contain TWO connected rooms instead of one: a starting room and a final room joined by a single doorway (mirrored adjacency, e.g. east<->west). The win condition lives in the second room.
+- The first room's goal now gates passage to the second: the party cannot reach the final room until the first room's goal_completion (e.g. unlocking the connecting door) is satisfied, and the puzzle chain flows across both rooms.
+- Room truncation now anchors on BOTH the starting room and the win-object room when the LLM over-produces rooms, preserving the playable start->win chain (previously it only kept the win-object room).
+
+### Why
+Expanding from single-room to two-room worlds makes the escape rooms richer and multi-stage, with a gated progression between rooms. The selection logic was updated in lockstep so that over-generation can't drop either endpoint of the start-to-win path.
+
+---
+
+## 2026-06-02 09:43:25 WIB
+
+### What changed
+- Escape planning is now a multi-agent debate instead of a single per-agent plan: each party member first PROPOSES a plan (colored by their role/ability), then runs critique/revise rounds where they read every teammate's plan and improve their own, and finally a facilitator SYNTHESIZES one unified plan the whole party acts on. The number of critique rounds is tunable (`DEBATE_ROUNDS`, default 1).
+- A lone agent skips the debate — its proposal becomes the plan directly with no synthesis call.
+- Each planning step now surfaces a one-line "why" reasoning in its panel, and the agreed plan is shown in a dedicated "UNIFIED PLAN" panel.
+- The mid-room re-plan (triggered when the room state changes) now rebuilds the plan through the same debate rather than a single lead-agent plan.
+- The single `plan` prompt was split into three specialized prompts (`plan_propose`, `plan_critique`, `plan_synthesize`) driving the respective debate phases.
+
+### Why
+A single agent's escape plan didn't make use of the party's distinct roles and abilities and could lock in a flawed strategy. Having agents propose, critique each other, and converge on a synthesized plan produces a stronger, role-informed strategy that the whole party agrees on, while keeping the debate cheap (bounded rounds, skipped entirely for solo play).
+
+---
+
 ## 2026-06-02 09:18:07 WIB
 
 ### What changed
