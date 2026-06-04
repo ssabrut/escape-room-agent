@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 11:54:10 WIB
+
+### What changed
+- A BFS-based policy (`bfs_policy`) is now available in the benchmark module. Given a world, it explores the full reachable state space from the initial party state and returns a closure that replays the shortest winning action sequence found — or falls back to `heuristic_policy` if no solution is found within the node budget (`max_states=50_000`).
+- The benchmark's single-world episode counts have been raised: `first` and `heuristic` now run 20 episodes each (previously 1) to produce statistically meaningful win percentages; `bfs` runs once (it is deterministic and stateful — the pending list drains).
+- `bfs_policy` is registered as a fourth baseline in both `compute_policy_benchmark` and the `main()` multi-world runner, so every benchmark table now includes a BFS column alongside random, first, and heuristic.
+- `run_policy` now supports *factory* policies — callables that take a world and return a policy closure — detected via signature inspection rather than a test call. This allows BFS (whose closure is stateful) to be regenerated fresh for each episode without special-casing it in the call site.
+
+### Why
+The existing random/first/heuristic baselines couldn't distinguish between a world that is hard and one that is structurally unsolvable because none of them are guaranteed to find the optimal path. A BFS policy, when it succeeds, proves the world is solvable and provides an optimal lower-bound on ticks-to-win, making it a ground-truth reference for evaluating the heuristic and LLM-driven policies. Raising the episode counts for the other deterministic policies provides richer aggregate statistics for comparison.
+
+---
+
 ## 2026-06-04 11:45:07 WIB
 
 ### What changed

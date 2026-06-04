@@ -160,6 +160,150 @@ def heuristic_policy(world, ps, action_space):
 
 
 # ---------------------------------------------------------------------------
+# BFS policy
+# ---------------------------------------------------------------------------
+
+def bfs_policy(world: "GameWorld", max_states: int = 50_000):
+    """Return a policy that replays the shortest winning action sequence found by BFS.
+
+    BFS explores the full reachable state space from the initial party state,
+    expanding one action per node. When the win condition is reached, the path
+    is traced back and returned as a callable policy that emits the pre-computed
+    actions in order, then idles.
+
+    Returns ``None`` if no winning state is found within ``max_states`` nodes
+    (world is provably unsolvable under the engine's rules, or the state space
+    is too large). In that case, fall back to ``heuristic_policy``.
+
+    The returned policy is a plain function ``(world, ps, action_space) -> str``
+    compatible with ``HeadlessEpisode.run()``.
+
+    State representation: a frozenset-based snapshot of the fields that gate
+    progress — room, inventory, known_info, object_states, power_active. Log
+    and tick are excluded (they don't affect what actions are possible).
+    """
+    from collections import deque
+
+    from agents import gameplay_node as _gp
+    from state import PartyState as _PartyState
+
+    def _snapshot(ps: _PartyState) -> tuple:
+        return (
+            ps.current_room,
+            tuple(sorted(ps.inventory)),
+            tuple(sorted(ps.known_info)),
+            tuple(sorted(ps.object_states.items())),
+            tuple(sorted(ps.power_active)),
+            # fuse_states affects power_active, but power_active already captures
+            # what matters for precondition checks — skip the redundant nested dict
+        )
+
+    def _copy_ps(ps: _PartyState) -> _PartyState:
+        # Shallow-copy the mutable containers; log stays empty (not needed for BFS)
+        return ps.model_copy(
+            update={
+                "inventory": list(ps.inventory),
+                "known_info": list(ps.known_info),
+                "object_states": dict(ps.object_states),
+                "power_active": set(ps.power_active),
+                "fuse_states": {k: dict(v) for k, v in ps.fuse_states.items()},
+                "visited": set(ps.visited),
+                "log": [],
+                "spotted_clues": [],
+                "observed_rooms": set(ps.observed_rooms),
+                "room_observations": dict(ps.room_observations),
+                "room_plans": dict(ps.room_plans),
+                "global_object_observations": dict(ps.global_object_observations),
+                "pending_directive": None,
+                "last_fingerprint": None,
+            }
+        )
+
+    # Patch the GM gate to the deterministic headless verdict for the duration.
+    from benchmark.engine import _deterministic_exit_gate
+
+    orig_gate = _gp._gm_gate_exit
+    orig_stream = _gp._stream
+
+    def _patched_gate(w, p, room, dest):
+        completion = room.goal_completion
+        satisfied = completion is None or _gp._goal_completion_satisfied(completion, p)
+        return _deterministic_exit_gate(
+            w, p, room, dest, satisfied, _gp._format_goal_completion(completion)
+        )
+
+    _gp._gm_gate_exit = _patched_gate
+    _gp._stream = lambda line="": None
+
+    plan: list[str] = []
+
+    try:
+        initial_ps = _gp._build_initial_party_state(world)
+        start_snap = _snapshot(initial_ps)
+
+        # BFS: each node is (snapshot, ps_copy, actions_so_far)
+        # We store only the snapshot->parent_action map to reconstruct the path.
+        parent: dict[tuple, tuple[tuple, str] | None] = {start_snap: None}
+        queue: deque[tuple] = deque([(start_snap, initial_ps)])
+        found: tuple | None = None
+
+        while queue and len(parent) < max_states:
+            snap, ps = queue.popleft()
+
+            if _gp._check_victory(world, ps):
+                found = snap
+                break
+
+            visible = _gp._objects_in_room(world, ps)
+            action_space = _gp._build_action_space(world, ps, visible)
+
+            for action in action_space:
+                if action == _gp.IDLE_ACTION:
+                    continue  # idle never advances state — prune to avoid explosion
+                child_ps = _copy_ps(ps)
+                child_ps.tick += 1
+                _gp._resolve_action(action, world, child_ps)
+                child_snap = _snapshot(child_ps)
+                if child_snap in parent:
+                    continue
+                parent[child_snap] = (snap, action)
+                queue.append((child_snap, child_ps))
+
+        # Reconstruct action sequence by tracing back through parent pointers.
+        if found is not None:
+            path: list[str] = []
+            cur = found
+            while parent[cur] is not None:
+                prev_snap, action = parent[cur]
+                path.append(action)
+                cur = prev_snap
+            path.reverse()
+            plan = path
+
+    finally:
+        _gp._gm_gate_exit = orig_gate
+        _gp._stream = orig_stream
+
+    if not plan:
+        # BFS found no solution — fall back to heuristic so the episode still runs
+        return heuristic_policy
+
+    pending = list(plan)
+
+    def _bfs_policy(w, ps, action_space):
+        while pending:
+            nxt = pending[0]
+            if nxt in action_space:
+                pending.pop(0)
+                return nxt
+            # Action not yet legal (gate not open) — idle and wait
+            return _gp.IDLE_ACTION
+        return _gp.IDLE_ACTION
+
+    return _bfs_policy
+
+
+# ---------------------------------------------------------------------------
 # Static backward-chain solvability checker
 # ---------------------------------------------------------------------------
 

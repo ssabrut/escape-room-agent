@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmark.engine import EpisodeResult, HeadlessEpisode
-from benchmark.policies import first_policy, heuristic_policy, random_policy
+from benchmark.policies import bfs_policy, first_policy, heuristic_policy, random_policy
 from state import GameWorld
 
 DEFAULT_GLOB = "smoke_runs/**/game_master/output.json"
@@ -75,7 +75,9 @@ def _summarize(results: list[EpisodeResult]) -> dict:
 
 # Episodes per policy for a single-world benchmark: stochastic policies are
 # averaged so win% is meaningful; deterministic ones take one exact path.
-_SINGLE_WORLD_EPISODES = {"random": 20, "first": 1, "heuristic": 1}
+# BFS is deterministic and stateful (pending list drains), so it always runs
+# once — the factory regenerates a fresh closure per world/episode.
+_SINGLE_WORLD_EPISODES = {"random": 20, "first": 20, "heuristic": 20, "bfs": 1}
 
 
 def compute_policy_benchmark(world) -> list[dict]:
@@ -89,6 +91,7 @@ def compute_policy_benchmark(world) -> list[dict]:
         ("random", random_policy(rng)),
         ("first", first_policy),
         ("heuristic", heuristic_policy),
+        ("bfs", bfs_policy),  # factory: called per world to get a fresh closure
     ]
     rows: list[dict] = []
     for name, policy in policies:
@@ -98,14 +101,46 @@ def compute_policy_benchmark(world) -> list[dict]:
 
 
 def run_policy(name, policy, worlds, episodes: int) -> dict:
+    """Run `policy` on each world for `episodes` episodes each.
+
+    `policy` may be either a plain policy callable ``(world, ps, action_space)
+    -> str`` or a *factory* ``(world) -> policy_callable`` (used for BFS, whose
+    returned closure is stateful and must be regenerated per episode). A factory
+    is detected by checking whether calling it with just the world returns a
+    callable rather than a string.
+    """
     results: list[EpisodeResult] = []
     for _label, world in worlds:
         ep = HeadlessEpisode(world)
         for _ in range(episodes):
-            results.append(ep.run(policy))
+            # Detect factory: bfs_policy(world) returns a callable, not a string.
+            resolved = policy(world) if callable(policy) and _is_factory(policy, world) else policy
+            results.append(ep.run(resolved))
     summary = _summarize(results)
     summary["policy"] = name
     return summary
+
+
+def _is_factory(policy, world) -> bool:
+    """True if `policy` is a world factory (takes one arg and returns a callable).
+
+    Checks the function signature rather than calling it — avoids running BFS
+    twice just to detect the type. A factory has exactly one required parameter.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(policy)
+        params = [
+            p for p in sig.parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            )
+        ]
+        return len(params) == 1
+    except (ValueError, TypeError):
+        return False
 
 
 def _fmt(v, spec=".2f"):
@@ -136,6 +171,7 @@ def main() -> None:
         ("random", random_policy(rng)),
         ("first", first_policy),
         ("heuristic", heuristic_policy),
+        ("bfs", bfs_policy),
     ]
 
     print(f"Loaded {len(worlds)} world(s); {args.episodes} episode(s) each\n")
