@@ -613,10 +613,10 @@ def _eval_prompt_compliance(world: "GameWorld") -> DimensionResult:
 # ---------------------------------------------------------------------------
 
 
-def _eval_solution_path(world: "GameWorld") -> DimensionResult:
+def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = None) -> DimensionResult:
     """Check solution path object references and replay-solvability.
 
-    Two checks (both deterministic):
+    Two deterministic checks, followed by an LLM judge when issues are found:
 
     A) Object/room reference validity — every object or room id mentioned by
        name in the solution_path steps must actually exist in the world.
@@ -629,6 +629,9 @@ def _eval_solution_path(world: "GameWorld") -> DimensionResult:
        check whether the GM-authored path actually solves the world. If the
        path is incomplete or uses wrong ids, the replay fails even though the
        oracle wins via a different route.
+
+    When either check fails, an LLM judge is called with the oracle trace as
+    ground truth to produce specific, actionable GM feedback.
     """
     notes: list[str] = []
     issues: list[str] = []
@@ -695,19 +698,32 @@ def _eval_solution_path(world: "GameWorld") -> DimensionResult:
         except Exception as exc:
             notes.append(f"Replay skipped — harness unavailable ({exc})")
     else:
-        notes.append(
-            "No parseable engine actions found in solution_path "
-            "(steps may use natural language only — replay skipped)"
+        issues.append(
+            "No parseable engine actions found in solution_path — steps must use engine "
+            "verbs (examine, take, use_tool, enter_code, go, flip_fuse, insert_liquid) "
+            "followed by a real object or room id so the replay can verify the path"
         )
 
     # --- Score ---
-    # Start at 1.0, deduct for ghost ids and failed replay
+    # Start at 1.0, deduct for ghost ids and failed/unparseable replay
     score = 1.0
     if plausible_ghosts:
         score -= 0.3
-    if replay_ok is False:
+    if replay_ok is False or (replay_ok is None and not candidate_actions):
         score -= 0.4
     score = max(0.0, round(score, 3))
+
+    # --- LLM judge for detailed GM feedback when issues exist ---
+    if issues:
+        llm_result = _eval_solution_path_llm(
+            world=world,
+            path=path,
+            oracle_trace=oracle_trace or [],
+            candidate_actions=candidate_actions,
+            replay_ok=replay_ok,
+        )
+        if llm_result is not None:
+            return llm_result
 
     if not issues:
         verdict = "All solution path references exist; path replay confirms solvability"
@@ -718,6 +734,72 @@ def _eval_solution_path(world: "GameWorld") -> DimensionResult:
         notes = issues + notes
 
     return DimensionResult(score=score, label=_grade(score), verdict=verdict, notes=notes)
+
+
+def _eval_solution_path_llm(
+    world: "GameWorld",
+    path: list[str],
+    oracle_trace: list[str],
+    candidate_actions: list[str],
+    replay_ok: bool | None,
+) -> "DimensionResult | None":
+    """LLM judge for solution_path issues — returns detailed GM feedback or None on failure."""
+    from prompts import load_prompt
+
+    world_summary = json.dumps(
+        {
+            "rooms": [
+                {"id": r.id, "goal": r.goal,
+                 "goal_completion": r.goal_completion.model_dump(exclude_none=True) if r.goal_completion else None}
+                for r in world.rooms
+            ],
+            "objects": [
+                {"id": o.id, "location": o.location, "state": o.state,
+                 "takeable": o.takeable, "requires_tool": o.requires_tool,
+                 "requires_code": o.requires_code, "contains_info": o.contains_info}
+                for o in world.objects
+            ],
+            "win_condition": world.win_condition.model_dump(),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+    replay_result_str = (
+        "PASS — replay reached victory"
+        if replay_ok is True
+        else "FAIL — replay did not reach victory"
+        if replay_ok is False
+        else "SKIPPED — no parseable engine actions found in solution path"
+    )
+
+    prompt = _fill(
+        load_prompt("narrative_eval", "solution_path"),
+        world=world_summary,
+        solution_path="\n".join(path),
+        oracle_trace="\n".join(oracle_trace) if oracle_trace else "(oracle trace not available)",
+        parsed_actions="\n".join(candidate_actions) if candidate_actions else "(none extracted)",
+        replay_result=replay_result_str,
+    )
+
+    data, ok = _judge_call(prompt)
+    if not ok:
+        return None
+
+    score = _clamp(data.get("score", 0.5))
+    verdict = str(data.get("verdict", "")).strip()
+    feedback_notes: list[str] = []
+    for item in data.get("gm_feedback", []):
+        feedback_notes.append(f"GM fix needed: {item}")
+    for item in data.get("passes", []):
+        feedback_notes.append(f"✓ {item}")
+
+    return DimensionResult(
+        score=round(score, 3),
+        label=_grade(score),
+        verdict=verdict,
+        notes=feedback_notes,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +828,7 @@ def evaluate_world(world: "GameWorld") -> NarrativeEvalReport:
     compliance = _eval_prompt_compliance(world)
 
     print("[narrative_eval] checking solution path validity...", flush=True)
-    solution_path = _eval_solution_path(world)
+    solution_path = _eval_solution_path(world, oracle_trace=trace)
 
     scores = [
         narr.score, twist.score, coherence.score, tool_present.score,

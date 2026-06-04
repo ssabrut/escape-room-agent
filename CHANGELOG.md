@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-04 11:11:45 WIB
+
+### What changed
+- When the deterministic `solution_path` checks fail (ghost object IDs or no parseable engine actions), an LLM judge is now invoked with the oracle's winning trace as ground truth to produce specific, actionable feedback for the GM on how to fix the path.
+- Unparseable solution paths (steps with no recognized engine verbs) are now scored as a failure (`-0.4`) and flagged with an explicit issue message listing the required engine verbs, rather than being silently skipped with a neutral note.
+- The oracle trace is now threaded from `evaluate_world` into `_eval_solution_path`, making it available as ground truth for the LLM judge when issues are detected.
+
+### Why
+The deterministic checks could identify *that* a solution path was broken but not *how* to fix it — the GM was left with a score and no concrete guidance. Feeding the oracle's verified winning trace to an LLM judge when issues arise closes that gap with actionable repair instructions. Treating unparseable paths as scoring failures (rather than neutral skips) aligns the score with the real quality of the authored path.
+
+---
+
 ## 2026-06-04 10:08:06 WIB
 
 ### What changed
