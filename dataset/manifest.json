@@ -1,0 +1,21 @@
+{
+  "themes": [
+    "Horror"
+  ],
+  "per_theme_target": 1,
+  "chain_depth_target": 0,
+  "model": "qwen3.5:9b-mlx",
+  "targets": [
+    "puzzle"
+  ],
+  "totals": {
+    "puzzle_sft": 1,
+    "puzzle_dpo": 3
+  },
+  "per_theme_counts": {
+    "Horror": {
+      "puzzle_sft": 1,
+      "puzzle_dpo": 3
+    }
+  }
+}

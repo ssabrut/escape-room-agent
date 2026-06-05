@@ -158,6 +158,24 @@ def _judge_violations(world: GameWorld) -> list[str]:
         return []
 
 
+def _puzzle_issues(
+    world: GameWorld, chain_target: int, min_objs: int, use_judge: bool
+) -> list[str]:
+    """Unified gate: deterministic policy issues + LLM-judge issues.
+
+    The deterministic check (`_eval_puzzle`) runs first and is always authoritative.
+    The (slow, stochastic) LLM judge runs ONLY when the world is already
+    structurally valid — there's no point judging the prose of an unsolvable
+    world, and it saves a judge call on every broken attempt. The returned list
+    is the union; an empty list means the world satisfies BOTH the policy and
+    the judge, which is the single accept condition for the revision loop.
+    """
+    issues = _eval_puzzle(world, chain_target, min_objs)
+    if use_judge and not issues:
+        issues = _judge_violations(world)
+    return issues
+
+
 # ---------------------------------------------------------------------------
 # Contrastive corruptors — turn an ACCEPTED (solvable + deep) world into a
 # deliberately WORSE one on a single, named axis. The accepted world is always
@@ -612,11 +630,27 @@ def generate_theme(
             print(f" puzzle gen error: {exc}")
             continue
 
-        puzzle_issues = _eval_puzzle(full, chain_target, min_objs)
+        # --- Unified revision loop -----------------------------------------
+        # ONE loop drives the world until it satisfies BOTH the deterministic
+        # policy AND the LLM judge (when --judge-dpo is on). `_puzzle_issues`
+        # returns the union of issues — deterministic first, and the LLM judge
+        # only once the world is already structurally valid. Every attempt feeds
+        # the full issue list back into the regen, so revision is driven by the
+        # combined feedback. The loop exits only when issues == [] (both pass)
+        # or the attempt budget is exhausted; in the latter case the world is
+        # DISCARDED below (hard gate), so a written world ALWAYS satisfies both.
+        puzzle_issues = _puzzle_issues(full, chain_target, min_objs, judge_dpo)
         pretry = 0
         while puzzle_issues and pretry < max_attempts - 1:
             pretry += 1
             bad_full = full
+            # A judge-only failure (deterministic already clean) is a compliance
+            # contrast; otherwise it's a solvability/structure contrast.
+            cleared_axis = (
+                "compliance"
+                if not _eval_puzzle(full, chain_target, min_objs)
+                else "solvability"
+            )
             if debug:
                 for v in puzzle_issues:
                     print(f"\n      puzzle: {v}", end="")
@@ -633,55 +667,27 @@ def generate_theme(
                 print(f" puzzle regen error: {exc}")
                 break
             prev_issues = puzzle_issues
-            puzzle_issues = _eval_puzzle(full, chain_target, min_objs)
+            puzzle_issues = _puzzle_issues(full, chain_target, min_objs, judge_dpo)
+            # Capture the bad->good transition as a real DPO pair the moment the
+            # regen clears ALL issues (both judges).
             if "puzzle" in targets and not puzzle_issues:
                 counts["puzzle_dpo"] += 1
                 out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
-                _write(
-                    out,
-                    _puzzle_dpo(
-                        skeleton, prev_issues, bad_full, full, chain_depth, min_objs
-                    ),
+                pair = _puzzle_dpo(
+                    skeleton, prev_issues, bad_full, full, chain_depth, min_objs
                 )
+                pair["axis"] = cleared_axis
+                _write(out, pair)
 
         if puzzle_issues:
             print(
                 f"\n    => puzzle discarded after {pretry + 1} attempt(s): "
-                f"{len(puzzle_issues)} issue(s)"
+                f"{len(puzzle_issues)} issue(s) (policy+judge not both satisfied)"
             )
             continue
 
-        # --- Judge-flagged DPO (real, not synthetic) -----------------------
-        # The deterministic gate above guarantees solvable + deep, but says
-        # nothing about narrative-quality / prompt-compliance. Run the LLM judge
-        # ONCE on the structurally-valid world; if it flags violations, do a
-        # single feedback regen, and if that clears them, capture a genuine
-        # bad->good DPO pair on the 'compliance' axis. `full` advances to the
-        # judge-approved world so the SFT example we keep is the better one.
-        if judge_dpo and "puzzle" in targets:
-            jv = _judge_violations(full)
-            if jv:
-                bad_judge = full
-                try:
-                    fixed, _ = _silent(
-                        _generate_puzzle_with_feedback,
-                        llm, skeleton, chain_depth, min_objs, jv,
-                    )
-                except Exception as exc:
-                    print(f" judge regen error: {exc}")
-                    fixed = None
-                # The regen must stay structurally valid AND clear the judge.
-                if (
-                    fixed is not None
-                    and not _eval_puzzle(fixed, chain_target, min_objs)
-                    and not _judge_violations(fixed)
-                ):
-                    counts["puzzle_dpo"] += 1
-                    out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
-                    pair = _puzzle_dpo(skeleton, jv, bad_judge, fixed, chain_depth, min_objs)
-                    pair["axis"] = "compliance"
-                    _write(out, pair)
-                    full = fixed  # keep the judge-approved world as the SFT target
+        # Past this point `full` is guaranteed solvable, deep, AND (if the judge
+        # was enabled) judge-approved — the revised, accepted world.
 
         sig = _world_signature(full)
         if sig in seen:
@@ -1015,9 +1021,10 @@ def main() -> None:
     parser.add_argument(
         "--judge-dpo",
         action="store_true",
-        help="run the LLM-as-judge (quick narrative_eval pass) on each accepted "
-        "world and, when it flags issues that a feedback regen fixes, capture a "
-        "real 'compliance'-axis DPO pair. Adds LLM cost; non-deterministic.",
+        help="add the LLM-as-judge (quick narrative_eval pass) to the revision "
+        "loop as a HARD gate: each world is revised until it satisfies BOTH the "
+        "deterministic policy AND the judge, or is discarded. Bad->good fixes are "
+        "captured as real DPO pairs. Adds LLM cost; non-deterministic.",
     )
     parser.add_argument(
         "--min-quality",
@@ -1097,7 +1104,7 @@ def main() -> None:
         f"  dpo contrast axes   : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
     )
     print(f"  max dpo / world     : {args.max_dpo_per_world or 'no cap'}")
-    print(f"  judge-flagged dpo   : {args.judge_dpo}")
+    print(f"  llm judge gate      : {args.judge_dpo}  (revise until policy+judge pass)")
     print(f"  quality post-filter : {args.min_quality or 'off'}")
     print(f"  output              : {DATASET_DIR}/")
 

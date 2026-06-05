@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 10:14:55 WIB
+
+### What changed
+- The `--judge-dpo` flag is now a **hard gate** inside a single unified revision loop rather than a separate one-shot pass that ran after acceptance. When enabled, each puzzle world is revised until it satisfies BOTH the deterministic policy (solvable + deep) AND the LLM judge, or it is discarded — so any world written to the dataset is guaranteed to pass both. The deterministic check runs first and stays authoritative; the slow, stochastic judge runs only once a world is already structurally valid, saving a judge call on every broken attempt.
+- Every regen that clears all issues (both judges) now captures the bad→good transition as a real DPO pair, and the pair's `axis` is labelled `compliance` when the deterministic check was already clean (a narrative/prompt-compliance fix) versus `solvability` when structure was the failure — so compliance and solvability contrasts are distinguishable in the dataset.
+- The run header now reports the judge as an `llm judge gate` ("revise until policy+judge pass"), and a discarded world's message states that policy+judge were not both satisfied.
+
+### Why
+The previous design judged compliance only in a separate stage bolted on after the deterministic gate, which duplicated the regen logic and could let a world be kept as an SFT target without the judge and the policy ever being satisfied together. Folding the judge into one revision loop as a hard gate guarantees every kept world clears both checks, captures every fix as a labelled DPO pair, and removes the redundant second code path.
+
+---
+
 ## 2026-06-05 09:56:18 WIB
 
 ### What changed
