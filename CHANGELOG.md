@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 12:41:38 WIB
+
+### What changed
+- Dataset generation now mints **synthetic contrastive DPO pairs for `world_builder`** by corrupting an accepted room skeleton on the structural axes the world evaluator checks: a dangling exit pointing at a nonexistent room (`broken_adjacency`), a one-directional exit with no mirror (`unmirrored_adjacency`), a room stripped of its win condition (`missing_room_goal`), and a duplicated room id (`duplicate_room`). The accepted skeleton becomes `chosen` and the corrupted copy `rejected`, with the failed axis labelled on each pair. Each corruption is only kept if it actually trips `_eval_world_structure`, and the pairs honour the same per-world cap and shuffle as puzzle DPO.
+- A new `--world-dpo-axes` flag selects which world corruptors run (default `all`, or `none` to disable), mirroring the existing `--dpo-axes` for puzzles; the run header now reports puzzle and world DPO axes separately.
+- A new `--difficulty` preset (`easy` / `hard` / `env`) sets `HARD_MODE` before settings load, routes output to `dataset/<difficulty>/` so easy and hard runs never share files, and stamps a `difficulty` field onto every written example. `env` (default) preserves legacy behaviour: honour the existing `HARD_MODE` env and write to bare `dataset/`.
+
+### Why
+World skeletons almost always pass structural evaluation on the first try, so the live retry loop produced essentially zero natural preference pairs for `world_builder` — the synthetic corruptors give that half of the dataset real DPO signal, matching what was already done for puzzles. The difficulty preset and per-example tagging keep easy and hard datasets cleanly separated and self-describing so the two profiles can be generated and consumed without colliding.
+
+---
+
 ## 2026-06-05 10:42:33 WIB
 
 ### What changed

@@ -362,6 +362,92 @@ PUZZLE_CORRUPTORS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# World-stage corruptors — same idea as the puzzle ones, but degrade the
+# rooms-only SKELETON on the structural axes `_eval_world_structure` checks
+# (room count, metadata, adjacency topology). The accepted skeleton is `chosen`;
+# the corrupted copy is `rejected`. These give world_builder real preference
+# signal, which the live retry loop almost never produces (skeletons usually
+# pass structural eval first-try, so 0 natural DPO pairs).
+# ---------------------------------------------------------------------------
+
+
+def _corrupt_broken_adjacency(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
+    """Point an exit at a room that doesn't exist (dangling adjacency)."""
+    rooms_with_exits = [r for r in world.rooms if r.adjacency]
+    if not rooms_with_exits:
+        return None
+    bad = _clone(world)
+    room = next(r for r in bad.rooms if r.id == rng.choice(rooms_with_exits).id)
+    direction = rng.choice(list(room.adjacency))
+    room.adjacency[direction] = "nonexistent_void_room"
+    return bad, (
+        f"room '{room.id}': adjacency '{direction}' points to "
+        "'nonexistent_void_room', which is not a real room"
+    )
+
+
+def _corrupt_unmirrored_adjacency(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
+    """Delete the reverse exit so adjacency is one-directional (not mirrored)."""
+    opp = {"north": "south", "south": "north", "east": "west", "west": "east"}
+    candidates = [
+        (r, d, n)
+        for r in world.rooms
+        for d, n in r.adjacency.items()
+        if d in opp
+    ]
+    if not candidates:
+        return None
+    bad = _clone(world)
+    r0, d0, n0 = rng.choice(candidates)
+    neighbor = next((x for x in bad.rooms if x.id == n0), None)
+    if neighbor is None or opp[d0] not in neighbor.adjacency:
+        return None
+    del neighbor.adjacency[opp[d0]]
+    return bad, (
+        f"room '{r0.id}': adjacency not mirrored — '{n0}' is missing the "
+        f"'{opp[d0]}' exit back to '{r0.id}'"
+    )
+
+
+def _corrupt_missing_room_goal(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
+    """Strip a room's goal_completion so it has no win condition."""
+    gated = [r for r in world.rooms if r.goal_completion is not None]
+    if not gated:
+        return None
+    bad = _clone(world)
+    target = next(r for r in bad.rooms if r.id == rng.choice(gated).id)
+    target.goal_completion = None
+    return bad, f"room '{target.id}': missing goal_completion"
+
+
+def _corrupt_duplicate_room(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
+    """Duplicate a room id and drop another, keeping the count right but invalid."""
+    if len(world.rooms) < 2:
+        return None
+    bad = _clone(world)
+    a, b = rng.sample(range(len(bad.rooms)), 2)
+    bad.rooms[b].id = bad.rooms[a].id  # now two rooms share an id
+    return bad, f"duplicate room id: '{bad.rooms[a].id}'"
+
+
+# World-stage corruptors keyed by axis name (CLI-selectable).
+WORLD_CORRUPTORS = {
+    "broken_adjacency": _corrupt_broken_adjacency,
+    "unmirrored_adjacency": _corrupt_unmirrored_adjacency,
+    "missing_room_goal": _corrupt_missing_room_goal,
+    "duplicate_room": _corrupt_duplicate_room,
+}
+
+
 def _corruption_is_real(
     axis: str, bad: GameWorld, chain_target: int, min_objs: int
 ) -> bool:
@@ -507,7 +593,11 @@ def _puzzle_dpo(
     }
 
 
+CURRENT_DIFFICULTY = "env"  # set in main(); stamped onto every written example
+
+
 def _write(path: Path, payload: dict) -> None:
+    payload = {**payload, "difficulty": CURRENT_DIFFICULTY}
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
@@ -527,6 +617,7 @@ def generate_theme(
     min_objs: int,
     targets: set[str],
     corruptors: list[str],
+    world_corruptors: list[str],
     max_dpo_per_world: int,
     judge_dpo: bool,
     rng: random.Random,
@@ -702,6 +793,30 @@ def generate_theme(
             out = dirs["world_sft"] / f"{counts['world_sft']:04d}.jsonl"
             _write(out, _world_sft(theme, skeleton))
             notes.append(f"world {counts['world_sft']}/{per_theme}")
+
+            # Synthetic world DPO — same cap/shuffle/validate pattern as puzzle.
+            # Skeletons almost always pass structural eval first-try, so without
+            # these the world half would have ~0 preference signal. Each corruptor
+            # must produce a real `_eval_world_structure` violation to be kept.
+            w_shuffled = list(world_corruptors)
+            rng.shuffle(w_shuffled)
+            w_written = 0
+            for axis in w_shuffled:
+                if max_dpo_per_world > 0 and w_written >= max_dpo_per_world:
+                    break
+                made = WORLD_CORRUPTORS[axis](skeleton, rng)
+                if made is None:
+                    continue
+                bad_skel, label = made
+                if not _eval_world_structure(bad_skel, max_rooms):
+                    continue  # corruption didn't actually break structure — skip
+                counts["world_dpo"] += 1
+                out = dirs["world_dpo"] / f"{counts['world_dpo']:04d}.jsonl"
+                pair = _world_dpo(theme, [label], bad_skel, skeleton)
+                pair["axis"] = axis
+                _write(out, pair)
+                notes.append(f"wdpo:{axis}")
+                w_written += 1
         if "puzzle" in targets:
             counts["puzzle_sft"] += 1
             out = dirs["puzzle_sft"] / f"{counts['puzzle_sft']:04d}.jsonl"
@@ -981,6 +1096,16 @@ def main() -> None:
         help="which agent(s) to build a dataset for (default: both)",
     )
     parser.add_argument(
+        "--difficulty",
+        choices=["easy", "hard", "env"],
+        default="env",
+        help="difficulty preset: 'easy' (HARD_MODE off — 2 rooms, no chain-depth "
+        "target) or 'hard' (HARD_MODE on — uses NUM_ROOMS/CHAIN_DEPTH). Sets the "
+        "mode AND routes output to dataset/<difficulty>/ so easy and hard never "
+        "collide, and tags each example. 'env' (default) = honour existing "
+        "HARD_MODE env and write to bare dataset/ (legacy behaviour).",
+    )
+    parser.add_argument(
         "--max-attempts-per-world",
         type=int,
         default=0,
@@ -1009,6 +1134,16 @@ def main() -> None:
         help="synthetic contrastive DPO axes for puzzle_builder: "
         f"{', '.join(PUZZLE_CORRUPTORS)} (default: all). Use 'none' to keep "
         "only opportunistic live-retry pairs.",
+    )
+    parser.add_argument(
+        "--world-dpo-axes",
+        nargs="+",
+        default=["all"],
+        metavar="AXIS",
+        choices=["all", "none"] + list(WORLD_CORRUPTORS),
+        help="synthetic contrastive DPO axes for world_builder: "
+        f"{', '.join(WORLD_CORRUPTORS)} (default: all). Use 'none' to disable "
+        "world-side synthetic DPO (world skeletons rarely yield live pairs).",
     )
     parser.add_argument(
         "--max-dpo-per-world",
@@ -1077,7 +1212,27 @@ def main() -> None:
         corruptors = list(PUZZLE_CORRUPTORS)
     else:
         corruptors = [a for a in args.dpo_axes if a in PUZZLE_CORRUPTORS]
+
+    if "none" in args.world_dpo_axes:
+        world_corruptors: list[str] = []
+    elif "all" in args.world_dpo_axes:
+        world_corruptors = list(WORLD_CORRUPTORS)
+    else:
+        world_corruptors = [a for a in args.world_dpo_axes if a in WORLD_CORRUPTORS]
     rng = random.Random(args.seed)
+
+    # --difficulty: set the mode env BEFORE Settings() reads it, and route output
+    # to dataset/<difficulty>/ so easy and hard runs never share files. 'env'
+    # leaves both untouched (legacy: honour existing HARD_MODE, write to dataset/).
+    global CURRENT_DIFFICULTY
+    CURRENT_DIFFICULTY = args.difficulty
+    if args.difficulty != "env":
+        import os
+        os.environ["HARD_MODE"] = "true" if args.difficulty == "hard" else "false"
+        global DATASET_DIR, WORLD_DIR, PUZZLE_DIR
+        DATASET_DIR = ROOT / "dataset" / args.difficulty
+        WORLD_DIR = DATASET_DIR / "world"
+        PUZZLE_DIR = DATASET_DIR / "puzzle"
 
     s = Settings()
     max_attempts = args.max_attempts_per_world or s.gen_max_attempts
@@ -1090,6 +1245,7 @@ def main() -> None:
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Dataset generation via live two-stage pipeline")
+    print(f"  difficulty          : {args.difficulty}")
     print(f"  targets             : {', '.join(sorted(targets))}")
     print(f"  themes              : {len(themes)}")
     print(f"  SFT target/theme    : {args.per_theme}")
@@ -1101,7 +1257,10 @@ def main() -> None:
     )
     print(f"  model               : {s.game_master_model}")
     print(
-        f"  dpo contrast axes   : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
+        f"  puzzle dpo axes     : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
+    )
+    print(
+        f"  world dpo axes      : {', '.join(world_corruptors) if world_corruptors else '(live-retry only)'}"
     )
     print(f"  max dpo / world     : {args.max_dpo_per_world or 'no cap'}")
     print(f"  llm judge gate      : {args.judge_dpo}  (revise until policy+judge pass)")
@@ -1136,6 +1295,7 @@ def main() -> None:
             min_objs=min_objs,
             targets=targets,
             corruptors=corruptors,
+            world_corruptors=world_corruptors,
             max_dpo_per_world=args.max_dpo_per_world,
             judge_dpo=args.judge_dpo,
             rng=rng,
