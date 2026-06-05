@@ -247,6 +247,8 @@ def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, 
     merged_rooms = [fixed_by_id.get(r.id, r) for r in world.rooms]
     merged_rooms = _repair_adjacency(merged_rooms)
 
+    # win_condition is a computed property derived from the final room's
+    # goal_completion — it is never set explicitly; it follows from merged_rooms.
     repaired = GameWorld(
         scenario=world.scenario,
         objective=world.objective,
@@ -254,7 +256,6 @@ def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, 
         objects=world.objects,
         rules=world.rules,
         solution_path=world.solution_path,
-        win_condition=world.win_condition,
     )
     return repaired, response.content
 

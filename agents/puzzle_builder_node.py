@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from config.settings import Settings, get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, Prerequisite, Room, WorldObject
+from state.game_state import derive_win_condition
 
 SYSTEM_PROMPT = load_prompt("puzzle_builder", "system")
 GENERATION_PROMPT = load_prompt("puzzle_builder", "generation")
@@ -225,7 +226,10 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
         return True
 
     for room in rooms:
-        room.key_objects = [k for k in room.key_objects if k in object_ids]
+        # NOTE: key_objects are intentionally NOT scrubbed here. They are the
+        # mandatory anchors world_builder promised; _eval_key_objects_present must
+        # be able to see a missing one to reject the attempt and retry. Silently
+        # dropping it would mask the violation.
         if room.goal_completion is not None and not _valid(room.goal_completion):
             room.goal_completion = None
     return rooms
@@ -715,6 +719,12 @@ def _prune_orphan_objects(
             keep.add(obj_id)
             frontier.append(obj_id)
 
+    # Always keep every declared key object — they are mandatory anchors, so even
+    # if one is not strictly backward-reachable from a goal it must survive pruning.
+    for room in rooms:
+        for kid in room.key_objects:
+            _enqueue(kid)
+
     for room in rooms:
         gc = room.goal_completion
         if gc is None:
@@ -994,6 +1004,9 @@ def _build_puzzle(
         objects=objects,
         rules=rules,
         solution_path=solution_path,
+        # win_condition is owned by puzzle_builder: now that objects exist and the
+        # final room's goal_completion is settled, derive the game-ending target.
+        win_condition=derive_win_condition(rooms),
     )
 
 
@@ -1016,6 +1029,7 @@ def _build_prompt(world: GameWorld, chain_depth: int, min_objects_per_room: int)
         objective=world.objective,
         rooms=_format_rooms(world.rooms),
         room_goals=_format_room_goals(world.rooms),
+        key_objects=_format_key_objects(world.rooms),
         chain_depth=chain_depth,
         min_objects_per_room=min_objects_per_room,
     )
@@ -1094,7 +1108,7 @@ def _room_subworld(
 
     The room's adjacency is cleared so the oracle stays inside this room.
     Only objects that transitively belong to this room are included.
-    Win condition is derived automatically from room.goal_completion.
+    Win condition is derived from this room's goal_completion.
     """
     isolated_room = Room(
         id=room.id,
@@ -1112,6 +1126,7 @@ def _room_subworld(
         objects=local_objects,
         rules=[],
         solution_path=[],
+        win_condition=derive_win_condition([isolated_room]),
     )
 
 
@@ -1187,6 +1202,25 @@ def _eval_room_goals(world: GameWorld) -> list[str]:
     return issues
 
 
+def _eval_key_objects_present(world: GameWorld) -> list[str]:
+    """Check that every room's declared key_objects exist as real objects.
+
+    key_objects are the mandatory anchors world_builder promised — the room goal
+    revolves around them, so puzzle_builder must materialise each one with the
+    same id. A missing key object means the room's goal lost its subject.
+    """
+    object_ids = {o.id for o in world.objects}
+    issues: list[str] = []
+    for room in world.rooms:
+        missing = [k for k in room.key_objects if k not in object_ids]
+        if missing:
+            issues.append(
+                f"room '{room.id}': missing key object(s) {missing} — every "
+                f"key_object must be materialised as an object with the same id"
+            )
+    return issues
+
+
 def _eval_object_counts(world: GameWorld, min_per_room: int) -> list[str]:
     """Check that every room has at least `min_per_room` objects (puzzle + scenic)."""
     if min_per_room <= 0:
@@ -1227,7 +1261,10 @@ def _eval_puzzle(
     except Exception:
         pass
 
-    # --- pass 2: per-room object count ---
+    # --- pass 2: key objects must all be present ---
+    issues.extend(_eval_key_objects_present(world))
+
+    # --- pass 2b: per-room object count ---
     issues.extend(_eval_object_counts(world, min_objects_per_room))
 
     # --- pass 3: per-room oracle ---

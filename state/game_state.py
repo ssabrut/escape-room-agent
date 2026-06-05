@@ -4,7 +4,7 @@ from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 
 
 class Prerequisite(BaseModel):
@@ -62,19 +62,34 @@ class WorldObject(BaseModel):
 
 
 class WinCondition(BaseModel):
-    """The target object state that ends the game in victory.
-
-    Not stored on its own anymore — :attr:`GameWorld.win_condition` derives this
-    from the final room's ``goal_completion`` so the win target lives in exactly
-    one place and cannot drift from the room it belongs to.
-    """
+    """The target object state that ends the game in victory."""
 
     object_id: str = ""
     state: str = ""
 
 
+def derive_win_condition(rooms: list["Room"]) -> WinCondition:
+    """Build the win condition from the final room's object_state goal_completion.
+
+    The win condition is, by construction (see the generation prompt), the last
+    room's ``object_state`` goal. puzzle_builder calls this once the world is
+    fully assembled to populate :attr:`GameWorld.win_condition`. Returns an empty
+    WinCondition when there is no usable final ``object_state`` goal.
+    """
+    for room in reversed(rooms):
+        gc = room.goal_completion
+        if gc is not None and gc.type == "object_state" and gc.object_id:
+            return WinCondition(object_id=gc.object_id, state=gc.state or "")
+    return WinCondition()
+
+
 class GameWorld(BaseModel):
-    """The frozen dungeon blueprint produced by the game master."""
+    """The frozen dungeon blueprint produced by the game master.
+
+    ``win_condition`` is a stored field populated by puzzle_builder (via
+    :func:`derive_win_condition`) once objects exist. world_builder leaves it at
+    its empty default, so a rooms-only skeleton has no win target yet.
+    """
 
     scenario: str = ""
     objective: str = ""
@@ -82,22 +97,7 @@ class GameWorld(BaseModel):
     objects: list[WorldObject] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
     solution_path: list[str] = Field(default_factory=list)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def win_condition(self) -> WinCondition:
-        """The game-ending target, derived from the final room's goal_completion.
-
-        The win condition is, by construction (see the generation prompt), the
-        last room's ``object_state`` goal. Deriving it here keeps a single source
-        of truth instead of storing the same object_id/state twice. Falls back to
-        an empty WinCondition when there is no usable final ``object_state`` goal.
-        """
-        for room in reversed(self.rooms):
-            gc = room.goal_completion
-            if gc is not None and gc.type == "object_state" and gc.object_id:
-                return WinCondition(object_id=gc.object_id, state=gc.state or "")
-        return WinCondition()
+    win_condition: WinCondition = Field(default_factory=WinCondition)
 
 
 class Character(BaseModel):

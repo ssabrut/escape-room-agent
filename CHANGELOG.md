@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 16:20:11 WIB
+
+### What changed
+- `generate` mode now runs the full two-stage pipeline again — after `world_builder` produces the rooms skeleton, `puzzle_builder` runs immediately on it, and both stages are rendered, timed, logged, and structurally traced together (single runs, captured runs, smoke, and per-node tracing all now scope to both `world_builder` and `puzzle_builder` in generate mode, undoing the prior world-only restriction).
+- The win condition is now an explicitly stored field owned by `puzzle_builder` rather than a property computed on the fly from the final room's goal. `world_builder` leaves it empty, and once objects exist `puzzle_builder` derives and writes it (via a new shared `derive_win_condition` helper), so a rooms-only skeleton carries no win target until the puzzle stage assembles one. World repair no longer re-passes the win condition (it follows from the merged rooms).
+- A room's declared `key_objects` are now enforced as mandatory anchors throughout puzzle building: a new structural check rejects any world where a room's `key_objects` are not all materialised as real objects with matching ids (causing an automatic retry), and the generation prompt now lists each room's key objects and forbids dropping, renaming, or substituting them. To support this, key objects are no longer silently scrubbed from rooms and are always kept through orphan pruning even if not strictly reachable.
+
+### Why
+The two stages had been split apart so that generate mode produced only a rooms skeleton, but generating and evaluating a complete world in one pass is what the dataset pipeline needs, so the puzzle stage was rejoined to generate mode. Making the win condition a stored field owned by the puzzle stage removes the awkwardness of a "computed" win target that was meaningless for a rooms-only world and gives each stage a clear owner for it. Enforcing key objects as hard anchors prevents the puzzle builder from quietly dropping the headline objects a room's goal was designed around — previously such a drop could be masked instead of surfaced and retried.
+
+---
+
 ## 2026-06-05 16:04:24 WIB
 
 ### What changed

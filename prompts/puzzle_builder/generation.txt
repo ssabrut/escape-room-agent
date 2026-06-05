@@ -10,6 +10,10 @@ ROOMS (do NOT modify these — only reference their ids):
 ROOM GOALS AND COMPLETION CONDITIONS (your objects must make these satisfiable):
 {room_goals}
 
+KEY OBJECTS (MANDATORY ANCHORS — failing this causes automatic rejection and retry):
+{key_objects}
+Every id listed above MUST appear as an object in your output with that EXACT id, placed in (or nested under something in) the room it is listed for. These are the headline puzzle objects the room was designed around — the room's goal and goal_completion revolve around them. You may add supporting objects (clue notes, hidden tools, intermediate locks, scenic props) to make the chain solvable, but you may NOT drop, rename, or substitute any key object.
+
 YOUR TASK:
 Design all objects for every room. Every object must be load-bearing — either on the solution path or a scenic prop. Build the deepest chain you can: clue -> code -> unlock -> tool -> unlock -> clue -> ... Each step must depend on the previous result.
 
