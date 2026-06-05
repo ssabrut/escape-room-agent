@@ -598,7 +598,7 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
 
 
 def _prune_orphan_objects(
-    rooms: list[Room], objects: list[WorldObject]
+    rooms: list[Room], objects: list[WorldObject], solution_path: list[str] | None = None
 ) -> tuple[list[WorldObject], list[str]]:
     by_id = {o.id: o for o in objects}
 
@@ -634,6 +634,15 @@ def _prune_orphan_objects(
         else:
             for pid in _producers_of_code(subj):
                 _enqueue(pid)
+
+    # Seed from every object id mentioned in solution_path so intermediate
+    # result objects referenced only in the solution narrative are not pruned.
+    if solution_path:
+        import re as _re
+        for step in solution_path:
+            for token in _re.findall(r"\b[a-z][a-z0-9_]*\b", step):
+                if token in by_id:
+                    _enqueue(token)
 
     def _liquid_producers(token: str) -> list[str]:
         return [o.id for o in objects if o.contains_info == token]
@@ -757,7 +766,47 @@ def _scrub_ghost_ids(
 # Core build function
 # ---------------------------------------------------------------------------
 
-def _build_puzzle(world: GameWorld, data: dict) -> GameWorld:
+def _backfill_scenic_objects(
+    rooms: list[Room], objects: list[WorldObject], min_per_room: int
+) -> list[str]:
+    """Top each room up to ``min_per_room`` objects with inert scenic props.
+
+    Runs AFTER orphan pruning. The pruner legitimately deletes objects that are
+    not backward-reachable from a room goal, which can drop a room below the
+    per-room minimum and re-trigger the count violation on the next attempt —
+    a fight the LLM never wins. Backfilling with ``scenic=True`` props (which
+    are exempt from pruning and never sit on the solution path) satisfies the
+    count requirement without reintroducing solvability hazards.
+
+    Mutates ``objects`` in place; returns the ids of the props added.
+    """
+    if min_per_room <= 0:
+        return []
+    added: list[str] = []
+    for room in rooms:
+        existing = _objects_for_room(room.id, objects)
+        deficit = min_per_room - len(existing)
+        if deficit <= 0:
+            continue
+        # Continue numbering past any scenic props already in the room so ids
+        # stay unique even across repeated backfills.
+        start = sum(1 for o in objects if o.id.startswith(f"scenic_filler_{room.id}_"))
+        for n in range(deficit):
+            prop = WorldObject(
+                id=f"scenic_filler_{room.id}_{start + n + 1}",
+                location=room.id,
+                description="Nondescript clutter that fills the space — of no use to anyone.",
+                state="visible",
+                interactable=False,
+                takeable=False,
+                scenic=True,
+            )
+            objects.append(prop)
+            added.append(prop.id)
+    return added
+
+
+def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -> GameWorld:
     """Apply the repair pipeline to LLM-generated object data and return a completed GameWorld."""
     rooms = world.rooms
     room_ids = {r.id for r in rooms}
@@ -806,10 +855,17 @@ def _build_puzzle(world: GameWorld, data: dict) -> GameWorld:
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
 
-    objects, orphans = _prune_orphan_objects(rooms, objects)
+    objects, orphans = _prune_orphan_objects(rooms, objects, solution_path)
     if orphans:
         print(f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True)
         rooms = _scrub_room_refs(rooms, {o.id for o in objects})
+
+    # Backfill AFTER pruning so the scenic props themselves are never pruned and
+    # the per-room minimum survives the prune pass (otherwise the count check and
+    # the pruner fight each other across attempts).
+    filler = _backfill_scenic_objects(rooms, objects, min_objects_per_room)
+    if filler:
+        print(f"[puzzle_builder] backfilled scenic props to meet minimum: {', '.join(filler)}", flush=True)
 
     valid_ids = {o.id for o in objects} | {r.id for r in rooms}
     solution_path, ghost_replacements = _scrub_ghost_ids(solution_path, valid_ids)
@@ -846,27 +902,34 @@ def _default_chain_depth(s: Settings) -> int:
     return s.chain_depth if s.hard_mode else 3
 
 
-def _build_prompt(world: GameWorld, chain_depth: int) -> str:
+def _min_objects_per_room(s: Settings) -> int:
+    return 8 if s.hard_mode else 1
+
+
+def _build_prompt(world: GameWorld, chain_depth: int, min_objects_per_room: int) -> str:
     return GENERATION_PROMPT.format(
         scenario=world.scenario,
         objective=world.objective,
         rooms=_format_rooms(world.rooms),
         room_goals=_format_room_goals(world.rooms),
         chain_depth=chain_depth,
+        min_objects_per_room=min_objects_per_room,
     )
 
 
-def _generate_puzzle(llm, world: GameWorld, chain_depth: int) -> tuple[GameWorld, str]:
-    prompt = _build_prompt(world, chain_depth)
+def _generate_puzzle(
+    llm, world: GameWorld, chain_depth: int, min_objects_per_room: int
+) -> tuple[GameWorld, str]:
+    prompt = _build_prompt(world, chain_depth, min_objects_per_room)
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
     data = _parse_json(response.content) or {}
-    return _build_puzzle(world, data), response.content
+    return _build_puzzle(world, data, min_objects_per_room), response.content
 
 
 def _generate_puzzle_with_feedback(
-    llm, world: GameWorld, chain_depth: int, violations: list[str]
+    llm, world: GameWorld, chain_depth: int, min_objects_per_room: int, violations: list[str]
 ) -> tuple[GameWorld, str]:
     violation_block = "\n".join(f"  - {v}" for v in violations)
     correction = (
@@ -875,7 +938,7 @@ def _generate_puzzle_with_feedback(
         "Return only the JSON object — no prose.\n\n"
         f"Issues to fix:\n{violation_block}"
     )
-    prompt = _build_prompt(world, chain_depth)
+    prompt = _build_prompt(world, chain_depth, min_objects_per_room)
     response = llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
@@ -884,35 +947,199 @@ def _generate_puzzle_with_feedback(
         ]
     )
     data = _parse_json(response.content) or {}
-    return _build_puzzle(world, data), response.content
+    return _build_puzzle(world, data, min_objects_per_room), response.content
 
 
 # ---------------------------------------------------------------------------
-# Solvability checks (same as game_master — duplicated to avoid circular import)
+# Eval B — unified deterministic + oracle check, no LLM calls
 # ---------------------------------------------------------------------------
 
-def _world_is_solvable(world: GameWorld) -> bool:
+def _objects_for_room(room_id: str, all_objects: list[WorldObject]) -> list[WorldObject]:
+    """Return all objects that transitively belong to `room_id`.
+
+    Objects can be nested (location = another object's id). Walk the parent chain
+    to find every object whose root anchor is this room.
+    """
+    by_id = {o.id: o for o in all_objects}
+
+    def root_room(obj: WorldObject) -> str:
+        seen: set[str] = set()
+        cursor = obj
+        while cursor.id not in seen:
+            seen.add(cursor.id)
+            if cursor.location in by_id:
+                cursor = by_id[cursor.location]
+            else:
+                return cursor.location
+        return cursor.location  # cycle guard — return last known
+
+    return [o for o in all_objects if root_room(o) == room_id]
+
+
+def _room_subworld(room: Room, all_objects: list[WorldObject], scenario: str) -> GameWorld:
+    """Build a single-room GameWorld where `room` is the only room.
+
+    The room's adjacency is cleared so the oracle stays inside this room.
+    Only objects that transitively belong to this room are included.
+    Win condition is derived automatically from room.goal_completion.
+    """
+    isolated_room = Room(
+        id=room.id,
+        description=room.description,
+        adjacency={},  # no exits — oracle must solve goal in-room
+        goal=room.goal,
+        goal_completion=room.goal_completion,
+        key_objects=room.key_objects,
+    )
+    local_objects = _objects_for_room(room.id, all_objects)
+    return GameWorld(
+        scenario=scenario,
+        objective=room.goal,
+        rooms=[isolated_room],
+        objects=local_objects,
+        rules=[],
+        solution_path=[],
+    )
+
+
+def _eval_room_goals(world: GameWorld) -> list[str]:
+    """Run a per-room oracle on each room that has a goal_completion condition.
+
+    For every room (except the final room, which is already validated by the
+    global oracle in _eval_puzzle), build a single-room sub-world containing only
+    that room and its locally-anchored objects, then run HeadlessEpisode to
+    confirm the room goal is achievable with local objects alone.
+
+    Returns a flat list of issue strings, one per failing room.
+    """
     try:
         from benchmark.engine import HeadlessEpisode
         from benchmark.policies import heuristic_policy
     except Exception:
-        return True
+        return []
+
+    if not world.rooms:
+        return []
+
+    issues: list[str] = []
+    # Skip the final room — the global oracle already validates it end-to-end.
+    rooms_to_check = world.rooms[:-1] if len(world.rooms) > 1 else world.rooms
+
+    for room in rooms_to_check:
+        if room.goal_completion is None:
+            continue  # no condition to satisfy — always passable
+
+        sub = _room_subworld(room, world.objects, world.scenario)
+
+        # If goal_completion is not object_state, win_condition will be empty.
+        # We still run the oracle and check object/info state manually after.
+        if not sub.win_condition.object_id and room.goal_completion.type != "object_state":
+            # known_info and has_item goals: just verify the required object/info
+            # exists among local objects — static check is sufficient.
+            gc = room.goal_completion
+            if gc.type == "has_item":
+                found = any(
+                    o.id == gc.object_id and o.takeable
+                    for o in sub.objects
+                )
+                if not found:
+                    issues.append(
+                        f"room '{room.id}': goal requires taking '{gc.object_id}' "
+                        f"but that object is not takeable or not in this room"
+                    )
+            elif gc.type == "known_info":
+                found = any(o.contains_info == gc.info for o in sub.objects)
+                if not found:
+                    issues.append(
+                        f"room '{room.id}': goal requires knowing '{gc.info}' "
+                        f"but no local object exposes that info"
+                    )
+            continue
+
+        if not sub.win_condition.object_id:
+            continue  # nothing to check
+
+        try:
+            result = HeadlessEpisode(sub).run(heuristic_policy)
+            if not result.victory:
+                issues.append(
+                    f"room '{room.id}': per-room oracle failed to satisfy goal "
+                    f"'{room.goal}' using local objects in {result.ticks} tick(s) "
+                    f"(win object: {sub.win_condition.object_id!r}, "
+                    f"state: {result.win_object_state!r})"
+                )
+        except Exception as exc:
+            issues.append(f"room '{room.id}': per-room oracle error — {exc}")
+
+    return issues
+
+
+def _eval_object_counts(world: GameWorld, min_per_room: int) -> list[str]:
+    """Check that every room has at least `min_per_room` objects (puzzle + scenic)."""
+    if min_per_room <= 0:
+        return []
+    issues: list[str] = []
+    for room in world.rooms:
+        room_objs = _objects_for_room(room.id, world.objects)
+        if len(room_objs) < min_per_room:
+            issues.append(
+                f"room '{room.id}': has {len(room_objs)} object(s), "
+                f"minimum required is {min_per_room}"
+            )
+    return issues
+
+
+def _eval_puzzle(world: GameWorld, chain_depth_target: int, min_objects_per_room: int = 1) -> list[str]:
+    """Return violation strings for the fully-built puzzle world.
+
+    Runs four passes in sequence, all without LLM calls:
+      1. Static backward-chain analysis (check_solvable) — zero simulation cost
+      2. Per-room object count — every room must meet the minimum object threshold
+      3. Per-room oracle — confirms each room's goal is satisfiable with local objects
+      4. Global HeadlessEpisode oracle — confirms end-to-end solvability and chain depth
+
+    Returns an empty list when the world is fully valid.
+    """
+    issues: list[str] = []
+
+    # --- pass 1: static backward-chain ---
+    try:
+        from benchmark.policies import check_solvable
+        report = check_solvable(world)
+        if not report.solvable:
+            issues.extend(report.issues)
+    except Exception:
+        pass
+
+    # --- pass 2: per-room object count ---
+    issues.extend(_eval_object_counts(world, min_objects_per_room))
+
+    # --- pass 3: per-room oracle ---
+    issues.extend(_eval_room_goals(world))
+
+    # --- pass 3: global oracle (dynamic end-to-end) ---
     if not world.win_condition.object_id or not world.rooms:
-        return False
-    return HeadlessEpisode(world).run(heuristic_policy).victory
+        issues.append("no win condition or rooms defined")
+        return issues
 
-
-def _world_meets_chain_depth(world: GameWorld, target: int) -> bool:
-    if target <= 0:
-        return True
     try:
         from benchmark.engine import HeadlessEpisode
         from benchmark.policies import heuristic_policy
+        result = HeadlessEpisode(world).run(heuristic_policy)
+        if not result.victory:
+            issues.append(
+                f"oracle failed to win in {result.ticks} tick(s) "
+                f"(last room: {result.last_room}, "
+                f"win object state: {result.win_object_state!r})"
+            )
+        elif chain_depth_target > 0 and result.chain_depth < chain_depth_target:
+            issues.append(
+                f"chain depth {result.chain_depth} < target {chain_depth_target}"
+            )
     except Exception:
-        return True
-    if not world.win_condition.object_id or not world.rooms:
-        return False
-    return HeadlessEpisode(world).run(heuristic_policy).chain_depth >= target
+        pass
+
+    return issues
 
 
 def _print_solvability_check(world: GameWorld) -> None:
@@ -963,87 +1190,132 @@ def _print_policy_benchmark(world: GameWorld) -> None:
 # LangGraph node
 # ---------------------------------------------------------------------------
 
+def _is_unsolvable_issue(issue: str) -> bool:
+    """True when an issue means the world cannot be won (regenerating the world helps).
+
+    Cosmetic/structural issues (coherence warnings, etc.) are repaired in place and
+    are not worth throwing away the whole world for. But an oracle failure or a
+    missing win condition means the win-chain itself is broken — a fresh world is
+    the right move.
+    """
+    return issue.startswith("oracle failed to win") or "no win condition" in issue
+
+
+def _build_puzzle_for_world(
+    llm, base_world: GameWorld, chain_depth: int, chain_depth_target: int, min_objs: int,
+    max_attempts: int,
+) -> tuple[GameWorld, str, list[str], list[dict], int]:
+    """Run the puzzle-attempt loop against one fixed world.
+
+    Returns (world, final_raw, remaining_issues, attempt_log, attempts).
+    """
+    attempt_log: list[dict] = []
+    world, raw = _generate_puzzle(llm, base_world, chain_depth, min_objs)
+    attempts = 1
+    issues = _eval_puzzle(world, chain_depth_target, min_objs)
+
+    while issues and attempts < max_attempts:
+        attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
+        print(
+            f"[puzzle_builder] attempt {attempts} rejected — {len(issues)} issue(s):",
+            flush=True,
+        )
+        for issue in issues:
+            print(f"  • {issue}", flush=True)
+        print(
+            f"[puzzle_builder] regenerating with feedback "
+            f"(attempt {attempts + 1}/{max_attempts})...",
+            flush=True,
+        )
+        world, raw = _generate_puzzle_with_feedback(llm, base_world, chain_depth, min_objs, issues)
+        attempts += 1
+        issues = _eval_puzzle(world, chain_depth_target, min_objs)
+
+    return world, raw, issues, attempt_log, attempts
+
+
 def puzzle_builder_node(state: GameState) -> dict:
     """Generate objects and solution path for the rooms built by world_builder.
 
-    Retries independently when the puzzle is unsolvable or too shallow —
-    the room layout is preserved across retries.
+    Retries when eval B (deterministic + oracle) finds issues, feeding violations
+    back into the next LLM prompt. If the puzzle is still *unsolvable* after the
+    puzzle-attempt budget is spent, the whole world is discarded and regenerated
+    from scratch (world_builder → puzzle_builder) rather than shipping a broken,
+    unwinnable world into gameplay/benchmark.
     """
     if not state.world or not state.world.rooms:
         return {}
+
+    # Imported here to avoid a circular import at module load time.
+    from agents.game_master import world_builder_node
 
     import time
     s = Settings()
     llm = get_llm("game_master")
     chain_depth = _default_chain_depth(s)
-
-    # Each entry: {"attempt": N, "why": str, "violations": [...], "raw": str}
-    attempt_log: list[dict] = []
+    chain_depth_target = chain_depth if s.hard_mode else 0
+    min_objs = _min_objects_per_room(s)
+    max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
+    max_world_regens = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
 
     start = time.perf_counter()
-    world, raw = _generate_puzzle(llm, state.world, chain_depth)
 
-    def _world_ok(w: GameWorld) -> tuple[bool, str]:
-        if not _world_is_solvable(w):
-            return False, "unsolvable"
-        if not _world_meets_chain_depth(w, chain_depth if s.hard_mode else 0):
-            return False, f"chain depth < {chain_depth}"
-        return True, ""
+    base_world = state.world
+    world_messages: list[AIMessage] = []
+    world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
+        llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
+    )
 
-    attempts = 1
-    if s.gen_max_attempts > 0:
-        ok, why = _world_ok(world)
-        while not ok and attempts < s.gen_max_attempts:
-            try:
-                from benchmark.narrative_eval import quick_eval_for_feedback
-                qr = quick_eval_for_feedback(world)
-                violations = qr.violations
-            except Exception:
-                violations = []
-
-            attempt_log.append({
-                "attempt": attempts,
-                "why": why,
-                "violations": violations,
-                "raw": raw,
-            })
-
-            if violations:
-                print(
-                    f"[puzzle_builder] puzzle rejected ({why}), "
-                    f"{len(violations)} violation(s) — regenerating with feedback "
-                    f"(attempt {attempts + 1}/{s.gen_max_attempts})",
-                    flush=True,
-                )
-                for v in violations:
-                    print(f"  {v}", flush=True)
-                world, raw = _generate_puzzle_with_feedback(llm, state.world, chain_depth, violations)
-            else:
-                print(
-                    f"[puzzle_builder] puzzle rejected ({why}) — regenerating "
-                    f"(attempt {attempts + 1}/{s.gen_max_attempts})",
-                    flush=True,
-                )
-                world, raw = _generate_puzzle(llm, state.world, chain_depth)
-
-            attempts += 1
-            ok, why = _world_ok(world)
+    world_regens = 0
+    while (
+        any(_is_unsolvable_issue(i) for i in issues)
+        and world_regens < max_world_regens
+    ):
+        world_regens += 1
+        print(
+            f"[puzzle_builder] world still unsolvable after {attempts} puzzle attempt(s) — "
+            f"regenerating WORLD (regen {world_regens}/{max_world_regens})...",
+            flush=True,
+        )
+        regen = world_builder_node(GameState(theme=state.theme))
+        new_world = regen.get("world")
+        if not new_world or not new_world.rooms:
+            print("[puzzle_builder] world regeneration produced no world — keeping current.", flush=True)
+            break
+        base_world = new_world
+        world_messages.extend(m for m in regen.get("messages", []) if isinstance(m, AIMessage))
+        world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
+            llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
+        )
 
     elapsed = time.perf_counter() - start
-    print(f"[puzzle_builder] built puzzle in {attempts} attempt(s) in {elapsed:.2f}s", flush=True)
+
+    if issues:
+        print(
+            f"[puzzle_builder] WARNING: {len(issues)} issue(s) remain after "
+            f"{attempts} attempt(s) and {world_regens} world regen(s):",
+            flush=True,
+        )
+        for issue in issues:
+            print(f"  • {issue}", flush=True)
+    else:
+        print(
+            f"[puzzle_builder] built puzzle in {attempts} attempt(s)"
+            + (f" and {world_regens} world regen(s)" if world_regens else "")
+            + f" in {elapsed:.2f}s",
+            flush=True,
+        )
 
     _print_solvability_check(world)
     _print_policy_benchmark(world)
 
-    # Build one AIMessage per attempt so _write_node_log captures the full retry trail.
-    # Rejected attempts include a header with why they failed and what feedback was given.
-    messages: list[AIMessage] = []
+    messages: list[AIMessage] = list(world_messages)
     for entry in attempt_log:
-        header_lines = [f"=== ATTEMPT {entry['attempt']} (rejected: {entry['why']}) ==="]
-        if entry["violations"]:
-            header_lines.append("Violations / feedback sent to next attempt:")
-            header_lines.extend(f"  - {v}" for v in entry["violations"])
-        header = "\n".join(header_lines)
+        header = (
+            f"=== ATTEMPT {entry['attempt']} (rejected) ===\n"
+            "Issues / feedback sent to next attempt:\n"
+            + "\n".join(f"  • {i}" for i in entry["issues"])
+        )
         messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
     messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))
 

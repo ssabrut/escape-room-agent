@@ -15,6 +15,10 @@ Design all objects for every room. Every object must be load-bearing — either 
 
 DEPTH REQUIREMENT: the solution path must require at least {chain_depth} dependent sequential steps. A step counts when it is gated by the result of a previous step. Aim for: examine object -> learn code/clue -> use on lock -> reveals tool -> use tool on gate -> reveals next clue -> ...
 
+OBJECT COUNT REQUIREMENT (MANDATORY — failing this causes automatic rejection and retry):
+- Every room MUST contain at least {min_objects_per_room} objects total (puzzle objects + scenic props combined).
+- No room may be left empty or near-empty. Distribute objects across ALL rooms — do not front-load one room.
+
 Object rules:
 - Every object has a unique snake_case id
 - An object id MUST NOT equal any room id

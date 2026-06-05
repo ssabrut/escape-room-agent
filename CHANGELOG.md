@@ -2,6 +2,22 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 08:45:38 WIB
+
+### What changed
+- World generation now self-validates and retries. After building the rooms-only skeleton, the world builder runs a deterministic structural check (room count, required metadata, duplicate ids, and mirrored adjacency topology) and regenerates the world up to the configured attempt budget when violations are found, emitting one message per attempt so the retry trail is captured.
+- The puzzle builder was rebuilt around a unified "eval B" gate that runs four deterministic passes with no LLM calls: static backward-chain solvability, a per-room object-count minimum, a per-room oracle that confirms each room's goal is achievable using only that room's local objects, and a global end-to-end oracle that confirms full solvability and chain depth. Violations are fed back into the next generation prompt as feedback.
+- When a puzzle remains genuinely unsolvable after the puzzle-attempt budget is exhausted, the builder now discards the entire world and regenerates it from scratch (world builder → puzzle builder) rather than shipping an unwinnable world, up to a world-regen budget. Cosmetic/structural issues no longer trigger a full world discard.
+- Rooms now enforce a minimum object count per room (1 in standard mode, 8 in hard mode). The generation prompt states this requirement explicitly, and after orphan-pruning the builder backfills any under-filled room with inert scenic props so the count survives pruning instead of fighting it across attempts.
+- Orphan pruning now seeds reachability from object ids mentioned in the solution path, so intermediate result objects referenced only in the solution narrative are no longer incorrectly pruned.
+- The separate Game Master eval node was removed from the pipeline. Room-exit gating is now a deterministic in-process check (no LLM call), and victory/time-up detection happens at the end of each gameplay tick with a conditional edge routing straight to END, eliminating an LLM round-trip and the `pending_directive` state field.
+- Smoke runs and single runs now emit a per-node timing table (elapsed time and percentage per stage), write a clean human-readable run summary, and serialize the final assembled world to a `.world.json` file alongside the raw stdout capture.
+
+### Why
+The world/puzzle generation pipeline was shipping broken or unwinnable worlds and wasting LLM calls on eval steps that could be done deterministically. Splitting validation into a structural "eval A" for the room skeleton and an oracle-backed "eval B" for the full puzzle — with feedback-driven retries and a world-discard fallback — makes generation reliable for the fine-tuning dataset. Collapsing the Game Master eval node into deterministic checks removes per-tick LLM latency, and the timing/summary output makes slow runs diagnosable.
+
+---
+
 ## 2026-06-04 15:08:33 WIB
 
 ### What changed

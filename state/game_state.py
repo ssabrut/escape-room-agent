@@ -168,12 +168,6 @@ class PartyState(BaseModel):
         default_factory=dict
     )  # room_id -> escape-plan bullets
     last_fingerprint: str | None = None  # room snapshot from end of previous tick
-    # When the current room's goal is already satisfied at tick start, the GM
-    # computes its "advance to <dest>" directive once, in-tick, so the agents see
-    # it while choosing (not one tick late). Stored here as (dest_room, narration)
-    # so game_master_eval_node can reuse it instead of re-calling the LLM. Cleared
-    # once consumed. Plain tuple to avoid a state->agents import dependency.
-    pending_directive: tuple[str, str] | None = None
     global_object_observations: dict[str, ObjectObservation] = Field(
         default_factory=dict
     )  # object_id -> latest structured observation across all rooms

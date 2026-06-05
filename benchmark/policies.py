@@ -214,7 +214,6 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
                 "room_observations": dict(ps.room_observations),
                 "room_plans": dict(ps.room_plans),
                 "global_object_observations": dict(ps.global_object_observations),
-                "pending_directive": None,
                 "last_fingerprint": None,
             }
         )

@@ -178,24 +178,123 @@ def _generate_world(llm, theme: str, max_rooms: int) -> tuple[GameWorld, str]:
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
-    s = Settings()
     data = _parse_json(response.content) or {}
     return _build_world(data, max_rooms), response.content
+
+
+# ---------------------------------------------------------------------------
+# Eval A — deterministic structural check on the rooms-only world skeleton
+# ---------------------------------------------------------------------------
+
+_OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
+
+
+def _eval_world_structure(world: GameWorld, expected_rooms: int) -> list[str]:
+    """Return structural violation strings for the rooms-only world skeleton.
+
+    Only checks what world_builder owns: room count, metadata, and adjacency
+    topology. Object-level checks belong to eval B in puzzle_builder_node.
+    """
+    issues: list[str] = []
+
+    if not world.scenario:
+        issues.append("missing scenario")
+    if not world.objective:
+        issues.append("missing objective")
+
+    if len(world.rooms) != expected_rooms:
+        issues.append(f"expected {expected_rooms} room(s), got {len(world.rooms)}")
+
+    seen_ids: set[str] = set()
+    for r in world.rooms:
+        if r.id in seen_ids:
+            issues.append(f"duplicate room id: '{r.id}'")
+        seen_ids.add(r.id)
+
+    room_ids = {r.id for r in world.rooms}
+    for r in world.rooms:
+        if not r.description:
+            issues.append(f"room '{r.id}': missing description")
+        if not r.goal:
+            issues.append(f"room '{r.id}': missing goal")
+        if r.goal_completion is None:
+            issues.append(f"room '{r.id}': missing goal_completion")
+        for direction, neighbor_id in r.adjacency.items():
+            if neighbor_id not in room_ids:
+                issues.append(
+                    f"room '{r.id}': adjacency '{direction}' → '{neighbor_id}' does not exist"
+                )
+            else:
+                reverse = _OPPOSITES.get(direction)
+                neighbor = next((x for x in world.rooms if x.id == neighbor_id), None)
+                if reverse and neighbor and neighbor.adjacency.get(reverse) != r.id:
+                    issues.append(
+                        f"room '{r.id}': adjacency not mirrored — "
+                        f"'{neighbor_id}' missing '{reverse}' → '{r.id}'"
+                    )
+
+    return issues
 
 
 def world_builder_node(state: GameState) -> dict:
     s = Settings()
     llm = get_llm("game_master")
     max_rooms = s.num_rooms if s.hard_mode else MAX_ROOMS
+    mode = "HARD" if s.hard_mode else "standard"
+    max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
+
+    attempt_log: list[dict] = []
 
     start = time.perf_counter()
     world, raw = _generate_world(llm, state.theme, max_rooms)
+
+    attempts = 1
+    issues = _eval_world_structure(world, max_rooms)
+
+    while issues and attempts < max_attempts:
+        attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
+        print(
+            f"[world_builder] attempt {attempts} rejected — "
+            f"{len(issues)} structural issue(s):",
+            flush=True,
+        )
+        for issue in issues:
+            print(f"  • {issue}", flush=True)
+        print(
+            f"[world_builder] regenerating (attempt {attempts + 1}/{max_attempts})...",
+            flush=True,
+        )
+        world, raw = _generate_world(llm, state.theme, max_rooms)
+        attempts += 1
+        issues = _eval_world_structure(world, max_rooms)
+
     elapsed = time.perf_counter() - start
 
-    mode = "HARD" if s.hard_mode else "standard"
-    print(f"[world_builder] generated {mode} world ({len(world.rooms)} rooms) in {elapsed:.2f}s", flush=True)
+    if issues:
+        print(
+            f"[world_builder] WARNING: {len(issues)} issue(s) remain after "
+            f"{attempts} attempt(s):",
+            flush=True,
+        )
+        for issue in issues:
+            print(f"  • {issue}", flush=True)
+    else:
+        print(
+            f"[world_builder] generated {mode} world ({len(world.rooms)} room(s)) "
+            f"in {attempts} attempt(s) in {elapsed:.2f}s",
+            flush=True,
+        )
+
+    messages: list[AIMessage] = []
+    for entry in attempt_log:
+        header = (
+            f"=== ATTEMPT {entry['attempt']} (rejected) ===\n"
+            + "\n".join(f"  • {i}" for i in entry["issues"])
+        )
+        messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
+    messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))
 
     return {
-        "messages": [AIMessage(content=raw)],
+        "messages": messages,
         "world": world,
     }
