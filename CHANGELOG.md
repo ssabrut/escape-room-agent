@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 10:42:33 WIB
+
+### What changed
+- The default game-master model shipped in `.env.example` is now `qwen3:14b` (was `qwen3.5:9b-mlx`), so fresh checkouts generate worlds with the larger, non-MLX model out of the box.
+- Dataset generation now defaults to `HARD_MODE=false` in `.env.example`, making the easier generation profile the default for new setups.
+
+### Why
+The example environment was retargeted at a more capable game-master model for higher-quality world generation, and hard mode was turned off by default so the generator produces solvable worlds more reliably on a fresh setup. (Regenerated dataset artifacts — manifest counts and puzzle jsonl files — accompany this run but are produced output, not behavior changes.)
+
+---
+
 ## 2026-06-05 10:14:55 WIB
 
 ### What changed

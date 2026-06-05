@@ -2,20 +2,20 @@
   "themes": [
     "Horror"
   ],
-  "per_theme_target": 1,
+  "per_theme_target": 2,
   "chain_depth_target": 0,
-  "model": "qwen3.5:9b-mlx",
+  "model": "qwen3:14b",
   "targets": [
     "puzzle"
   ],
   "totals": {
-    "puzzle_sft": 1,
-    "puzzle_dpo": 3
+    "puzzle_sft": 2,
+    "puzzle_dpo": 7
   },
   "per_theme_counts": {
     "Horror": {
-      "puzzle_sft": 1,
-      "puzzle_dpo": 3
+      "puzzle_sft": 2,
+      "puzzle_dpo": 7
     }
   }
 }
