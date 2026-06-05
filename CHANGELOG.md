@@ -2,6 +2,21 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 14:45:08 WIB
+
+### What changed
+- Added a per-node structural eval trace (`--trace-eval`): as the pipeline runs, each stage's deterministic structural checks (world structure for `world_builder`, solvability for `puzzle_builder`) run inline and print PASS/FAIL plus the specific issues found, with a final summary listing any failed nodes. This is independent of `--eval`, which still runs the narrative LLM judge once at the end. The trace also works under `--smoke`, writing each run's per-node `eval.json` and a `trace_eval_summary.json` roll-up, and under `--log`.
+- When tracing, the fully-assembled world (after `puzzle_builder`) additionally gets the LLM-free policy benchmark emitted as `benchmark.json`, so the trace captures how baseline policies fare on the world.
+- Added the ability to run a single pipeline node in isolation (`--node NAME`): `world_builder` runs from a `--theme` alone, while every other node loads its upstream inputs from a saved `output.json`/`world.json` via `--from PATH`, validates that the inputs it depends on are present, runs the node, and writes the result to `logs/<node>/output.json`.
+- Added a `--theme` flag that supplies the generation theme directly and skips the interactive theme picker, for both the normal pipeline and single-node runs.
+- Solvability checking now flags goals that reference objects the party cannot actually act on: an `object_state` goal object must physically live in the room it gates, and a `has_item` goal item must live in a room reachable on the path leading to that room (so the party can carry it in). Object home rooms are resolved by walking nested-object location chains (guarding against cycles).
+- Renamed the oracle solve-trace flag from `--eval-trace` to `--oracle-trace` to free up `--trace-eval` for the new per-node structural trace.
+
+### Why
+The pipeline previously only surfaced quality problems via the end-of-run narrative judge, making it hard to tell which stage produced a structurally broken world; running each stage's structural eval inline gives fast, deterministic per-stage feedback and lets smoke runs roll up pass/fail rates. Being able to run and trace a single node against saved upstream state shortens the debug loop when iterating on one stage. The new goal-reachability checks close a solvability gap where a room's win condition could point at an object that was never present or reachable, which would make the room unwinnable.
+
+---
+
 ## 2026-06-05 14:01:23 WIB
 
 ### What changed

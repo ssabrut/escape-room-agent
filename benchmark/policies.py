@@ -337,6 +337,9 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
     - requires_power with no fuse panel that can activate it
     - known_info goal tokens with no upstream contains_info
     - Room goal_completion targets that reference non-existent objects
+    - Goal objects that are not present/reachable in the room they gate
+      (object_state goal object must live in that room; has_item goal item
+      must live in a room reachable on the way to it)
     - Win condition object that does not exist
     - Rooms with no path to the win room (disconnected graph)
     """
@@ -503,6 +506,47 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"in the world supplies it"
                 )
 
+    # --- Resolve an object's home room by walking its location chain ---
+    # An object's `location` is a room id, or another object's id when nested.
+    # Walk up parent objects until we land on a room id. Returns None on a
+    # dangling/cyclic chain.
+    def _room_of(object_id: str) -> str | None:
+        seen: set[str] = set()
+        cur = object_id
+        while cur in obj_by_id:
+            if cur in seen:
+                return None  # cycle in nesting chain
+            seen.add(cur)
+            loc = obj_by_id[cur].location
+            if loc in room_ids:
+                return loc
+            cur = loc
+        return None
+
+    # --- Reachable-room set: every room on a path from start up to a target ---
+    # For a has_item goal the party may carry the item in from an earlier room,
+    # so the supplier may live in any room reachable on the way to the goal room.
+    def _rooms_up_to(target_room: str) -> set[str]:
+        if not world.rooms:
+            return set()
+        start_room = world.rooms[0].id
+        # BFS from start; any room from which target_room is still reachable counts.
+        adj: dict[str, set[str]] = {r.id: set() for r in world.rooms}
+        for r in world.rooms:
+            for n in r.adjacency.values():
+                if n in room_ids:
+                    adj[r.id].add(n)
+        # rooms reachable from start
+        from_start: set[str] = set()
+        q = [start_room]
+        while q:
+            c = q.pop()
+            if c in from_start:
+                continue
+            from_start.add(c)
+            q.extend(adj.get(c, ()))
+        return from_start if target_room in from_start else set()
+
     # --- Room goal_completion prerequisites ---
     for room in world.rooms:
         gc = room.goal_completion
@@ -514,6 +558,16 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"room '{room.id}' goal_completion references non-existent "
                     f"object '{gc.object_id}'"
                 )
+            elif gc.object_id:
+                # Goal achievability: an object_state goal is satisfied by acting on
+                # the object where it sits, so it MUST live in this room.
+                home = _room_of(gc.object_id)
+                if home != room.id:
+                    where = f"room '{home}'" if home else "no resolvable room"
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal object "
+                        f"'{gc.object_id}' is in {where}, not in this room"
+                    )
         elif gc.type == "known_info":
             if gc.info and gc.info not in info_producers:
                 issues.append(
@@ -531,6 +585,21 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"room '{room.id}' goal_completion requires has_item '{gc.object_id}' "
                     f"but that object is not takeable"
                 )
+            elif gc.object_id:
+                # Goal achievability: the party can carry the item in, so its home
+                # room only has to be reachable on a path leading to this room.
+                home = _room_of(gc.object_id)
+                if home is None:
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal item "
+                        f"'{gc.object_id}' has no resolvable room location"
+                    )
+                elif home not in _rooms_up_to(room.id):
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal item "
+                        f"'{gc.object_id}' lives in room '{home}', which is not "
+                        f"reachable on the way to this room"
+                    )
         elif gc.type == "power_active":
             if gc.id:
                 satisfying = [p for p in panels if _panel_satisfies_power(p, gc.id)]

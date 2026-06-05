@@ -334,8 +334,21 @@ def _merge_update(result: dict, update: dict) -> None:
             result[key] = value
 
 
+def _report_eval_failures(eval_failures: list[str]) -> None:
+    """Print a final summary line for per-node eval tracing."""
+    if not eval_failures:
+        return
+    print(
+        f"\n  [eval] {len(eval_failures)} node(s) FAILED their eval: "
+        f"{', '.join(eval_failures)}"
+    )
+
+
 def run(
-    mode: str = MODE_FULL, log_nodes: list[str] | None = None, theme: str = ""
+    mode: str = MODE_FULL,
+    log_nodes: list[str] | None = None,
+    theme: str = "",
+    trace_eval: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -343,6 +356,8 @@ def run(
 
     node_times: dict[str, float] = {}
     log_set = set(log_nodes)
+    eval_failures: list[str] = []
+    eval_root = LOG_DIR if trace_eval else None
 
     if mode == MODE_GENERATE:
         from agents.game_master import world_builder_node
@@ -356,6 +371,8 @@ def run(
         if "world_builder" in log_set:
             node_dir = _write_node_log("world_builder", wb_update)
             print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+        if trace_eval and not _eval_node("world_builder", wb_update, eval_root):
+            eval_failures.append("world_builder")
 
         state = state.model_copy(update={"world": wb_update.get("world")})
         t0 = time.perf_counter()
@@ -366,8 +383,12 @@ def run(
             print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
         result = {**wb_update, **pb_update}
+        if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
+            eval_failures.append("puzzle_builder")
+
         _render(result)
         _print_timing_table(node_times)
+        _report_eval_failures(eval_failures)
         return
 
     result: dict = {}
@@ -380,9 +401,14 @@ def run(
             if node in log_set:
                 node_dir = _write_node_log(node, update)
                 print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+            # Trace per node against the merged result (so puzzle_builder sees
+            # the assembled world, not just its own partial update).
+            if trace_eval and not _eval_node(node, result, eval_root):
+                eval_failures.append(node)
         _step_start = time.perf_counter()
     _render(result)
     _print_timing_table(node_times)
+    _report_eval_failures(eval_failures)
 
 
 def _run_once_captured(
@@ -450,6 +476,96 @@ def _run_once_captured(
     return buf.getvalue(), result, node_times
 
 
+def _write_policy_benchmark(world, out_path: Path) -> None:
+    """Run the LLM-free policy benchmark for `world` and write it to `out_path`.
+
+    Diagnostic only — used by the --trace-eval flow so the per-node trace also
+    captures how the baseline policies fare on the assembled world. Failures are
+    swallowed so a benchmark hiccup never aborts the eval trace.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return
+    try:
+        from benchmark.run import compute_policy_benchmark
+
+        rows = compute_policy_benchmark(world)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"      [eval] wrote {out_path}")
+    except Exception as exc:
+        print(f"      [eval] policy benchmark skipped: {exc}")
+
+
+def _eval_node(
+    node: str, result: dict, out_root: Path | None = None
+) -> bool:
+    """Run the structural eval that belongs to `node` and print a PASS/FAIL trace.
+
+    Returns True if the node's eval passed (or had no eval to run). This is a
+    fast, deterministic check per pipeline stage — the narrative LLM judge runs
+    once at the end via _run_narrative_eval, not here.
+    """
+    world = result.get("world")
+    issues: list[str] = []
+
+    if node == "world_builder":
+        if world is None:
+            issues.append("no world produced")
+        else:
+            from agents.game_master import _eval_world_structure, MAX_ROOMS
+            from benchmark.policies import check_solvable
+
+            issues += _eval_world_structure(world, len(world.rooms) or MAX_ROOMS)
+            # Solvability is only meaningful once objects exist; at this stage
+            # objects is usually empty, so skip the object-graph walk.
+            if world.objects:
+                issues += check_solvable(world).issues
+    elif node == "puzzle_builder":
+        if world is None:
+            issues.append("no world to check (puzzle_builder produced nothing)")
+        else:
+            from benchmark.policies import check_solvable
+
+            issues += check_solvable(world).issues
+    else:
+        # No structural eval defined for this node (e.g. character_master,
+        # player agents, gameplay). Nothing to trace.
+        return True
+
+    passed = not issues
+    status = "PASS" if passed else f"FAIL ({len(issues)} issue(s))"
+    print(f"  [eval:{node}] {status}")
+    for i, msg in enumerate(issues, 1):
+        print(f"      {i}. {msg}")
+
+    if out_root is not None:
+        out_path = out_root / node / "eval.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "node": node,
+                    "status": "PASS" if passed else "FAIL",
+                    "passed": passed,
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "issues": issues,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"      [eval] wrote {out_path}")
+
+        # The policy benchmark needs the fully-assembled world (objects exist
+        # only once puzzle_builder has run), so emit it at that stage.
+        if node == "puzzle_builder" and world is not None:
+            _write_policy_benchmark(world, out_root / node / "benchmark.json")
+
+    return passed
+
+
 def _run_narrative_eval(
     world, show_trace: bool = False, out_path: Path | None = None
 ) -> None:
@@ -476,6 +592,122 @@ def _load_world_from_json(path: Path) -> "GameWorld | None":
     except Exception as exc:
         print(f"  [eval] could not parse GameWorld from {path}: {exc}")
         return None
+
+
+def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None":
+    """Load a saved GameState from a node output.json (or a bare world.json).
+
+    Accepts either a full GameState dump (keys like world/characters/party) or a
+    bare world JSON (wrapped or unwrapped in a 'world' key). Returns a GameState
+    seeded with whatever upstream fields the file carries, so a single node can
+    run against it.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  [node] could not read {path}: {exc}")
+        return None
+    if not isinstance(raw, dict):
+        print(f"  [node] {path} is not a JSON object")
+        return None
+
+    # A GameState dump has top-level node fields; a bare world has rooms/scenario.
+    is_state = any(k in raw for k in ("characters", "party", "party_state")) or (
+        "world" in raw and "rooms" not in raw
+    )
+    fields: dict = {}
+    if is_state:
+        fields = {k: v for k, v in raw.items() if k != "messages"}
+    else:
+        fields = {"world": raw.get("world", raw)}
+    if theme:
+        fields["theme"] = theme
+
+    try:
+        return GameState.model_validate(fields)
+    except Exception as exc:
+        print(f"  [node] could not parse GameState from {path}: {exc}")
+        return None
+
+
+# Maps a node name to (entry function, required GameState fields it reads).
+# world_builder needs nothing but a theme, so its requirements are empty.
+def _node_registry() -> dict:
+    from agents.character_master_node import character_master_node
+    from agents.game_master import world_builder_node
+    from agents.gameplay_node import gameplay_node
+    from agents.player_agent_node import player_agent_1_node, player_agent_2_node
+    from agents.puzzle_builder_node import puzzle_builder_node
+
+    return {
+        "world_builder": (world_builder_node, ()),
+        "puzzle_builder": (puzzle_builder_node, ("world",)),
+        "character_master": (character_master_node, ("world",)),
+        "player_agent_1": (player_agent_1_node, ("characters",)),
+        "player_agent_2": (player_agent_2_node, ("characters",)),
+        "gameplay": (gameplay_node, ("world", "party")),
+    }
+
+
+def run_node(
+    node: str,
+    from_path: str | None = None,
+    theme: str = "",
+    trace_eval: bool = False,
+) -> None:
+    """Run a single pipeline node independently against saved upstream state.
+
+    world_builder runs from a theme alone; every other node loads its inputs
+    from --from PATH (a prior node's output.json or a world.json). The node's
+    output is written to logs/<node>/output.json.
+    """
+    registry = _node_registry()
+    if node not in registry:
+        print(f"  [node] unknown node '{node}'. Choices: {', '.join(registry)}")
+        sys.exit(1)
+    fn, required = registry[node]
+
+    # Build the seed state.
+    if node == "world_builder":
+        if not theme:
+            theme = _pick_theme()
+        state = GameState(theme=theme)
+    else:
+        if not from_path:
+            print(
+                f"  [node] '{node}' needs upstream state — pass --from PATH "
+                f"(a saved output.json carrying: {', '.join(required)})"
+            )
+            sys.exit(1)
+        loaded = _load_game_state_from_json(Path(from_path), theme=theme)
+        if loaded is None:
+            sys.exit(1)
+        state = loaded
+        # Verify the inputs this node depends on are actually present.
+        missing = [
+            f for f in required if not getattr(state, f, None)
+        ]
+        if missing:
+            print(
+                f"  [node] '{node}' is missing required input(s) {missing} in "
+                f"{from_path}. Run the upstream node first."
+            )
+            sys.exit(1)
+
+    print(f"  [node] running '{node}' independently...")
+    t0 = time.perf_counter()
+    update = fn(state)
+    elapsed = time.perf_counter() - t0
+
+    node_dir = _write_node_log(node, update)
+    print(f"  [node] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+    _print_timing_table({node: elapsed})
+
+    if trace_eval:
+        # Eval against the merged state so e.g. puzzle_builder sees the world.
+        merged = {**{k: getattr(state, k) for k in ("world",)}, **update}
+        if not _eval_node(node, merged, LOG_DIR):
+            _report_eval_failures([node])
 
 
 def _write_benchmark(world, path: Path) -> str:
@@ -505,6 +737,7 @@ def smoke(
     mode: str = MODE_FULL,
     eval_narrative: bool = False,
     eval_trace: bool = False,
+    trace_eval: bool = False,
     theme: str = "pirate",
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
@@ -517,6 +750,7 @@ def smoke(
         print(f"  [log] per-run node logs under {run_dir}/run_<NNN>_logs/")
 
     errors = 0
+    eval_records: list[dict] = []  # per-run structural eval outcomes for the roll-up
     for i in range(1, n + 1):
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
@@ -538,6 +772,25 @@ def smoke(
                 f"done in {total_elapsed:.1f}s → {out_file.name}{world_note}{bench_note}"
             )
             _print_timing_table(node_times)
+            if trace_eval:
+                # Structural per-node eval (PASS/FAIL + status/timestamp), written
+                # to each node's eval.json under this run's log dir.
+                eval_root = run_dir / f"run_{i:03d}_logs"
+                nodes = ("world_builder", "puzzle_builder")
+                per_node = {node: _eval_node(node, result, eval_root) for node in nodes}
+                eval_failures = [node for node, ok in per_node.items() if not ok]
+                _report_eval_failures(eval_failures)
+                eval_records.append(
+                    {
+                        "run": i,
+                        "passed": not eval_failures,
+                        "nodes": {
+                            node: ("PASS" if ok else "FAIL")
+                            for node, ok in per_node.items()
+                        },
+                        "failures": eval_failures,
+                    }
+                )
             if eval_narrative:
                 world = result.get("world")
                 if world:
@@ -548,6 +801,28 @@ def smoke(
             err_file = run_dir / f"run_{i:03d}.error.txt"
             err_file.write_text(traceback.format_exc(), encoding="utf-8")
             print(f"ERROR → {err_file.name} ({e})")
+
+    if eval_records:
+        passed = sum(1 for r in eval_records if r["passed"])
+        per_node_pass: dict[str, int] = {}
+        for r in eval_records:
+            for node, status in r["nodes"].items():
+                per_node_pass[node] = per_node_pass.get(node, 0) + (status == "PASS")
+        roll_up = {
+            "runs_evaluated": len(eval_records),
+            "passed": passed,
+            "failed": len(eval_records) - passed,
+            "per_node_pass": per_node_pass,
+            "records": eval_records,
+        }
+        summary_path = run_dir / "trace_eval_summary.json"
+        summary_path.write_text(
+            json.dumps(roll_up, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(
+            f"\n  [trace-eval] {passed}/{len(eval_records)} run(s) passed "
+            f"→ {summary_path.name}"
+        )
 
     summary = f"\nAll runs saved to {run_dir}/"
     if errors:
@@ -568,6 +843,9 @@ if __name__ == "__main__":
             "  python main.py --eval path/to/output.json   # evaluate a saved world\n"
             "  python main.py --mode generate --eval        # generate then evaluate\n"
             "  python main.py --mode generate --smoke 3 --eval  # smoke + eval each run\n"
+            "  python main.py --mode generate --trace-eval  # per-node eval trace\n"
+            "  python main.py --node world_builder --theme pirate   # run one node\n"
+            "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
         ),
     )
     parser.add_argument(
@@ -621,9 +899,38 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--eval-trace",
+        "--oracle-trace",
         action="store_true",
         help="When --eval is active, also print the oracle's tick-by-tick solve trace.",
+    )
+    parser.add_argument(
+        "--trace-eval",
+        action="store_true",
+        help="Run each node's structural eval inline (PASS/FAIL + issues) as the "
+        "pipeline progresses, for per-stage tracing. Independent of --eval (which "
+        "runs the narrative LLM judge once at the end).",
+    )
+    parser.add_argument(
+        "--theme",
+        default="",
+        metavar="THEME",
+        help="Theme for generation (skips the interactive picker). "
+        "Used by --node world_builder and the normal pipeline.",
+    )
+    parser.add_argument(
+        "--node",
+        choices=list(NODE_NAMES),
+        metavar="NAME",
+        help="Run a SINGLE node independently against saved upstream state "
+        "(see --from). world_builder runs from --theme alone. Output is written "
+        "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_path",
+        metavar="PATH",
+        help="With --node: path to a saved output.json (or world.json) carrying "
+        "the upstream state the node needs as input.",
     )
     args = parser.parse_args()
 
@@ -638,8 +945,18 @@ if __name__ == "__main__":
     if log_nodes and "all" in log_nodes:
         log_nodes = list(NODE_NAMES)
 
+    # --node NAME: run a single node independently against saved state, then exit.
+    if args.node:
+        run_node(
+            args.node,
+            from_path=args.from_path,
+            theme=args.theme,
+            trace_eval=args.trace_eval,
+        )
+        sys.exit(0)
+
     eval_arg = args.eval
-    eval_trace = args.eval_trace
+    eval_trace = args.oracle_trace
 
     # --eval PATH: load and evaluate a saved world — no theme needed, exit immediately.
     if isinstance(eval_arg, str):
@@ -651,8 +968,9 @@ if __name__ == "__main__":
         _run_narrative_eval(world, show_trace=eval_trace, out_path=eval_out)
         sys.exit(0)
 
-    # For all generation paths, ask the user to pick a theme now (once).
-    theme = _pick_theme()
+    # For all generation paths, ask the user to pick a theme now (once) unless
+    # one was supplied via --theme.
+    theme = args.theme or _pick_theme()
 
     eval_inline = eval_arg is True  # --eval without a path: evaluate after generation
 
@@ -665,6 +983,7 @@ if __name__ == "__main__":
             mode=args.mode,
             eval_narrative=eval_inline,
             eval_trace=eval_trace,
+            trace_eval=args.trace_eval,
             theme=theme,
         )
     else:
@@ -676,6 +995,14 @@ if __name__ == "__main__":
                 log_nodes, log_root, mode=args.mode, theme=theme
             )
             _print_timing_table(node_times)
+            # Per-node structural trace runs first (fast), then the narrative judge.
+            if args.trace_eval:
+                eval_failures = [
+                    n
+                    for n in ("world_builder", "puzzle_builder")
+                    if not _eval_node(n, result, log_root)
+                ]
+                _report_eval_failures(eval_failures)
             world = result.get("world")
             if world:
                 eval_out = (log_root or Path(".")) / "eval.json"
@@ -683,4 +1010,9 @@ if __name__ == "__main__":
             else:
                 print("[eval] no world available to evaluate")
         else:
-            run(mode=args.mode, log_nodes=log_nodes, theme=theme)
+            run(
+                mode=args.mode,
+                log_nodes=log_nodes,
+                theme=theme,
+                trace_eval=args.trace_eval,
+            )
