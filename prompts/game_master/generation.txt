@@ -17,8 +17,8 @@ Each room must have:
 - id (unique snake_case)
 - description (vivid, at least two sensory details)
 - adjacency: a single mirrored direction pair connecting the two rooms (valid: north/south, east/west). If room 1 reaches room 2 via "east", room 2 MUST reach room 1 via "west".
-- goal: one sentence describing what the party must accomplish here. The FIRST room's goal gates passage to the second room. The SECOND room's goal ends the game when satisfied.
-- goal_completion: a structured condition that is TRUE exactly when the room's goal is done. Must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
+- goal: one sentence describing what the party must accomplish here. It MUST explicitly name a key object that is required to finish the room (e.g. "Recover the brass key from the safe to unlock the captain's door" — naming the key object the party must obtain, use, or manipulate). The named object MUST appear in this room's key_objects list AND be the object referenced by goal_completion. The FIRST room's goal gates passage to the second room. The SECOND room's goal ends the game when satisfied.
+- goal_completion: a structured condition that is TRUE exactly when the room's goal is done. It MUST reference the same key object named in the goal sentence (via object_id, or via info/id derived from it). Must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
   Shapes:
     - {{"type": "object_state", "object_id": "<id>", "state": "unlocked"}}  ← use literal "unlocked" for any open/unlock goal, never a synonym
     - {{"type": "known_info", "info": "<token>"}}
@@ -42,16 +42,16 @@ Respond ONLY with raw JSON. No prose, no markdown fences.
             "id": "first_room_id",
             "description": "vivid room description",
             "adjacency": {{"east": "second_room_id"}},
-            "goal": "one-sentence goal that gates passage to the second room",
-            "goal_completion": {{"type": "object_state", "object_id": "connecting_door_id", "state": "unlocked"}},
-            "key_objects": ["room1_safe", "room1_clue_note"]
+            "goal": "Unlock the connecting_door using the room1_safe to reach the next room",
+            "goal_completion": {{"type": "object_state", "object_id": "connecting_door", "state": "unlocked"}},
+            "key_objects": ["connecting_door", "room1_safe", "room1_clue_note"]
         }},
         {{
             "id": "second_room_id",
             "description": "vivid room description",
             "adjacency": {{"west": "first_room_id"}},
-            "goal": "one-sentence goal for the final room",
-            "goal_completion": {{"type": "object_state", "object_id": "final_target_id", "state": "unlocked"}},
+            "goal": "Claim the room2_target to end the game",
+            "goal_completion": {{"type": "has_item", "object_id": "room2_target"}},
             "key_objects": ["room2_target", "room2_clue"]
         }}
     ]

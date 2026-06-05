@@ -90,7 +90,8 @@ def _write_world_json(world, path: Path) -> str:
     if world is None:
         return ""
     path.write_text(
-        json.dumps(_jsonable(world), indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps({"world": _jsonable(world)}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
     return f" + {path.name}"
 

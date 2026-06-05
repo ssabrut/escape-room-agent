@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 14:01:23 WIB
+
+### What changed
+- World structural validation now enforces that each room's goal revolves around a real key object: when a room's `goal_completion` names an `object_id`, that id MUST appear in the room's `key_objects` list, otherwise the world is flagged as invalid. The generation prompt and JSON template were tightened in lockstep — the `goal` sentence must explicitly name the key object the party obtains/uses/manipulates, that object must be listed in `key_objects`, and it must be the same object `goal_completion` references.
+- `solution_path` is no longer scrubbed of secrets. Because the path is an internal validation/debug artifact never shown to the player, the real object ids, clue tokens, and codes are now preserved in it (exactly what makes it useful for confirming solvability). The dedicated secret-token/spoiler redaction pass (`_secret_tokens`/`_scrub_spoilers`) was removed; only genuinely hallucinated ids that match nothing real are still scrubbed, with the valid-id set widened to include `contains_info` and `requires_code` tokens so legitimate clue/code references survive.
+- Serialized world JSON is now wrapped under a top-level `"world"` key instead of being the bare world object at the document root.
+
+### Why
+Goals could be authored around objects that weren't actually the room's key objects, letting the puzzle's win target drift from the items the prompt told the party to focus on; requiring the goal, `key_objects`, and `goal_completion` to all name the same object keeps the objective coherent. Since `solution_path` is internal-only, blanking its codes and ids to "the hidden code"/"the object" stripped exactly the information needed to confirm a world is solvable, so spoiler scrubbing was dropped in favor of preserving real references. Wrapping the JSON under `"world"` gives the output a stable envelope for downstream consumers.
+
+---
+
 ## 2026-06-05 12:41:38 WIB
 
 ### What changed

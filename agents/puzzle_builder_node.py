@@ -785,48 +785,6 @@ def _prune_orphan_objects(
     return kept, dropped
 
 
-def _secret_tokens(objects: list[WorldObject]) -> set[str]:
-    tokens: set[str] = set()
-    for o in objects:
-        code = o.requires_code
-        if code:
-            tokens.add(code)
-            digits = re.sub(r"[^0-9]", "", code)
-            if digits:
-                tokens.add(digits)
-    return tokens
-
-
-def _scrub_spoilers(
-    solution_path: list[str], secrets: set[str]
-) -> tuple[list[str], list[str]]:
-    redactions: list[str] = []
-    ordered = sorted(secrets, key=len, reverse=True)
-    secret_digits: set[str] = {
-        d for tok in secrets if (d := re.sub(r"[^0-9]", "", tok)) and len(d) >= 3
-    }
-
-    def _redact(text: str, where: str) -> str:
-        out = text
-        for tok in ordered:
-            if tok and tok in out:
-                out = out.replace(tok, "the hidden code")
-                redactions.append(f"{where}: '{tok}'")
-
-        def _digit_sub(m: re.Match) -> str:
-            digits = m.group(0)
-            if digits in secret_digits:
-                redactions.append(f"{where}: bare digits '{digits}'")
-                return "the hidden code"
-            return digits
-
-        out = re.sub(r"\b\d{3,}\b", _digit_sub, out)
-        return out
-
-    cleaned_path = [_redact(step, "solution_path") for step in solution_path]
-    return cleaned_path, redactions
-
-
 def _scrub_ghost_ids(
     solution_path: list[str], valid_ids: set[str]
 ) -> tuple[list[str], list[str]]:
@@ -989,19 +947,23 @@ def _build_puzzle(
             flush=True,
         )
 
-    valid_ids = {o.id for o in objects} | {r.id for r in rooms}
+    # solution_path is an internal validation/debug artifact — it is never shown
+    # to the player (no gameplay node reads it). So we keep the REAL object ids,
+    # clue tokens, and codes in it: that is exactly what makes it useful for
+    # confirming the world is solvable. We still scrub genuinely hallucinated ids
+    # (tokens that match nothing real), but legitimate clue/code references and
+    # object ids are preserved rather than blanked to "the object".
+    valid_ids = (
+        {o.id for o in objects}
+        | {r.id for r in rooms}
+        | {o.contains_info for o in objects if o.contains_info}
+        | {o.requires_code for o in objects if o.requires_code}
+    )
     solution_path, ghost_replacements = _scrub_ghost_ids(solution_path, valid_ids)
     if ghost_replacements:
         print(
-            f"[puzzle_builder] scrubbed ghost ids from solution_path: {', '.join(set(ghost_replacements))}",
+            f"[puzzle_builder] scrubbed hallucinated ids from solution_path: {', '.join(set(ghost_replacements))}",
             flush=True,
-        )
-
-    secrets = _secret_tokens(objects)
-    solution_path, redactions = _scrub_spoilers(solution_path, secrets)
-    if redactions:
-        print(
-            f"[puzzle_builder] scrubbed spoilers: {', '.join(redactions)}", flush=True
         )
 
     coherence = _check_coherence(rooms, objects)

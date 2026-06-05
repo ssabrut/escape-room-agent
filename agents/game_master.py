@@ -219,6 +219,14 @@ def _eval_world_structure(world: GameWorld, expected_rooms: int) -> list[str]:
             issues.append(f"room '{r.id}': missing goal")
         if r.goal_completion is None:
             issues.append(f"room '{r.id}': missing goal_completion")
+        elif r.goal_completion.object_id:
+            # The goal must revolve around a key object: the object the
+            # goal_completion checks should be one of the room's key_objects.
+            if r.goal_completion.object_id not in r.key_objects:
+                issues.append(
+                    f"room '{r.id}': goal_completion object_id "
+                    f"'{r.goal_completion.object_id}' is not in key_objects"
+                )
         for direction, neighbor_id in r.adjacency.items():
             if neighbor_id not in room_ids:
                 issues.append(
