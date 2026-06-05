@@ -143,6 +143,21 @@ def _correction(kind: str, violations: list[str]) -> str:
     )
 
 
+def _judge_violations(world: GameWorld) -> list[str]:
+    """Run the LLM-as-judge quick pass and return its violation strings.
+
+    Uses `quick_eval_for_feedback` (tool presence + oracle solvability +
+    prompt_compliance LLM judge) — the loop-tuned subset of narrative_eval.
+    Returns [] on any failure so a flaky/unavailable judge never blocks
+    generation. stdout is suppressed to keep the progress line clean.
+    """
+    try:
+        from benchmark.narrative_eval import quick_eval_for_feedback
+        return _silent(quick_eval_for_feedback, world).violations
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Contrastive corruptors — turn an ACCEPTED (solvable + deep) world into a
 # deliberately WORSE one on a single, named axis. The accepted world is always
@@ -495,6 +510,7 @@ def generate_theme(
     targets: set[str],
     corruptors: list[str],
     max_dpo_per_world: int,
+    judge_dpo: bool,
     rng: random.Random,
     resume_from_world: int,
     resume_from_puzzle: int,
@@ -634,6 +650,38 @@ def generate_theme(
                 f"{len(puzzle_issues)} issue(s)"
             )
             continue
+
+        # --- Judge-flagged DPO (real, not synthetic) -----------------------
+        # The deterministic gate above guarantees solvable + deep, but says
+        # nothing about narrative-quality / prompt-compliance. Run the LLM judge
+        # ONCE on the structurally-valid world; if it flags violations, do a
+        # single feedback regen, and if that clears them, capture a genuine
+        # bad->good DPO pair on the 'compliance' axis. `full` advances to the
+        # judge-approved world so the SFT example we keep is the better one.
+        if judge_dpo and "puzzle" in targets:
+            jv = _judge_violations(full)
+            if jv:
+                bad_judge = full
+                try:
+                    fixed, _ = _silent(
+                        _generate_puzzle_with_feedback,
+                        llm, skeleton, chain_depth, min_objs, jv,
+                    )
+                except Exception as exc:
+                    print(f" judge regen error: {exc}")
+                    fixed = None
+                # The regen must stay structurally valid AND clear the judge.
+                if (
+                    fixed is not None
+                    and not _eval_puzzle(fixed, chain_target, min_objs)
+                    and not _judge_violations(fixed)
+                ):
+                    counts["puzzle_dpo"] += 1
+                    out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
+                    pair = _puzzle_dpo(skeleton, jv, bad_judge, fixed, chain_depth, min_objs)
+                    pair["axis"] = "compliance"
+                    _write(out, pair)
+                    full = fixed  # keep the judge-approved world as the SFT target
 
         sig = _world_signature(full)
         if sig in seen:
@@ -803,6 +851,64 @@ def write_manifest(
 # ---------------------------------------------------------------------------
 
 
+def _world_from_sft_file(path: Path) -> "GameWorld | None":
+    """Reconstruct a GameWorld from a saved SFT file's assistant message."""
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        assistant = rec["messages"][-1]["content"]
+        data = json.loads(assistant)["world"]
+        return GameWorld.model_validate(data)
+    except Exception:
+        return None
+
+
+def quality_filter(themes: list[str], targets: set[str], min_quality: float) -> None:
+    """Post-filter: run full narrative_eval over accepted puzzle SFT worlds and
+    delete any whose overall score is below `min_quality`.
+
+    Runs AFTER generation so the generation pass itself stays deterministic and
+    fast. Only puzzle worlds carry objects + solution path, so only the puzzle
+    SFT tree is scored (world skeletons have no solvable content to judge).
+    Deletes the SFT file in place; the subsequent merge/manifest reflect the cut.
+    """
+    if min_quality <= 0 or "puzzle" not in targets:
+        return
+    try:
+        from benchmark.narrative_eval import evaluate_world
+    except Exception as exc:
+        print(f"\n[quality-filter] narrative_eval unavailable — skipping ({exc})")
+        return
+
+    print(f"\n{'═' * 64}")
+    print(f"  Quality post-filter (min overall score: {min_quality})")
+    print(f"{'═' * 64}")
+
+    kept = dropped = 0
+    for theme in themes:
+        sft_dir = PUZZLE_DIR / "sft" / _slug(theme)
+        if not sft_dir.exists():
+            continue
+        for p in sorted(sft_dir.glob("*.jsonl")):
+            world = _world_from_sft_file(p)
+            if world is None:
+                continue
+            try:
+                report = _silent(evaluate_world, world)
+            except Exception as exc:
+                print(f"  [{theme}] {p.name}: eval error ({exc}) — keeping")
+                kept += 1
+                continue
+            if report.overall < min_quality:
+                p.unlink()
+                dropped += 1
+                print(f"  [{theme}] {p.name}: overall {report.overall:.2f} < "
+                      f"{min_quality} — DROPPED")
+            else:
+                kept += 1
+
+    print(f"\n  quality-filter: kept {kept}, dropped {dropped}")
+
+
 def print_stats() -> None:
     """Summarise SFT/DPO counts and the per-axis breakdown of puzzle DPO pairs."""
 
@@ -907,6 +1013,22 @@ def main() -> None:
         "(default: 2). 0 = no cap (keep every validated axis).",
     )
     parser.add_argument(
+        "--judge-dpo",
+        action="store_true",
+        help="run the LLM-as-judge (quick narrative_eval pass) on each accepted "
+        "world and, when it flags issues that a feedback regen fixes, capture a "
+        "real 'compliance'-axis DPO pair. Adds LLM cost; non-deterministic.",
+    )
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=0.0,
+        metavar="SCORE",
+        help="post-filter: after generation, run full narrative_eval over accepted "
+        "worlds and DROP any whose overall score is below SCORE (0.0-1.0). "
+        "0 = no filter (default). Adds LLM cost; runs once per accepted world.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -975,6 +1097,8 @@ def main() -> None:
         f"  dpo contrast axes   : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
     )
     print(f"  max dpo / world     : {args.max_dpo_per_world or 'no cap'}")
+    print(f"  judge-flagged dpo   : {args.judge_dpo}")
+    print(f"  quality post-filter : {args.min_quality or 'off'}")
     print(f"  output              : {DATASET_DIR}/")
 
     t0 = time.time()
@@ -1006,11 +1130,14 @@ def main() -> None:
             targets=targets,
             corruptors=corruptors,
             max_dpo_per_world=args.max_dpo_per_world,
+            judge_dpo=args.judge_dpo,
             rng=rng,
             resume_from_world=existing_world if args.resume else 0,
             resume_from_puzzle=existing_puzzle if args.resume else 0,
             debug=args.debug,
         )
+
+    quality_filter(themes, targets, args.min_quality)
 
     totals = merge_all(themes, targets)
     write_manifest(

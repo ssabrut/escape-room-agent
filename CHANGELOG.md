@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 09:56:18 WIB
+
+### What changed
+- The dataset generator can now mine *real* (non-synthetic) compliance DPO pairs via the new `--judge-dpo` flag. After a world clears the deterministic solvable+deep gate, an LLM-as-judge quick pass (`quick_eval_for_feedback`) runs once; if it flags narrative/prompt-compliance violations that a single feedback regen then fixes (re-verified to stay structurally valid AND clear the judge), the bad→good pair is captured on a new `compliance` axis and the judge-approved world replaces the original as the SFT target. A flaky or unavailable judge never blocks generation (failures return no violations).
+- Added a `--min-quality SCORE` post-generation filter that scores every accepted puzzle SFT world with the full `narrative_eval` and deletes any whose overall score falls below the threshold (0.0 = off). It runs once after generation so the generation pass stays deterministic, and only puzzle worlds (which carry objects and a solution path) are scored; the subsequent merge/manifest reflect the cut.
+- The run header now reports the judge-flagged-DPO and quality-post-filter settings.
+
+### Why
+The deterministic gate guarantees structural solvability but says nothing about narrative quality or prompt compliance, so the dataset lacked a contrastive signal for those failure modes. Routing the LLM judge into a single feedback-regen loop yields genuine bad→good compliance pairs, and the optional quality post-filter lets low-scoring worlds be dropped from the final SFT set without slowing or de-determinizing generation itself.
+
+---
+
 ## 2026-06-05 09:42:37 WIB
 
 ### What changed
