@@ -105,7 +105,17 @@ def _write_node_log(node: str, update: dict, root: Path = LOG_DIR) -> Path:
     )
     (node_dir / "raw.txt").write_text(raw, encoding="utf-8")
 
-    parsed = {k: _jsonable(v) for k, v in update.items() if k != "messages"}
+    attempt_log = update.get("_attempt_log")
+    if attempt_log:
+        (node_dir / "attempts.json").write_text(
+            json.dumps(attempt_log, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    parsed = {
+        k: _jsonable(v)
+        for k, v in update.items()
+        if k not in ("messages", "_attempt_log")
+    }
     (node_dir / "output.json").write_text(
         json.dumps(parsed, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -330,7 +340,7 @@ def _merge_update(result: dict, update: dict) -> None:
     for key, value in update.items():
         if key == "messages":
             result.setdefault("messages", []).extend(value or [])
-        else:
+        elif key != "_attempt_log":
             result[key] = value
 
 
@@ -361,7 +371,6 @@ def run(
 
     if mode == MODE_GENERATE:
         from agents.game_master import world_builder_node
-        from agents.puzzle_builder_node import puzzle_builder_node
         from state import GameState as _GS
 
         state = _GS(theme=theme)
@@ -374,19 +383,7 @@ def run(
         if trace_eval and not _eval_node("world_builder", wb_update, eval_root):
             eval_failures.append("world_builder")
 
-        state = state.model_copy(update={"world": wb_update.get("world")})
-        t0 = time.perf_counter()
-        pb_update = puzzle_builder_node(state)
-        node_times["puzzle_builder"] = time.perf_counter() - t0
-        if "puzzle_builder" in log_set:
-            node_dir = _write_node_log("puzzle_builder", pb_update)
-            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
-
-        result = {**wb_update, **pb_update}
-        if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
-            eval_failures.append("puzzle_builder")
-
-        _render(result)
+        _render(wb_update)
         _print_timing_table(node_times)
         _report_eval_failures(eval_failures)
         return
@@ -431,7 +428,6 @@ def _run_once_captured(
         if mode == MODE_GENERATE:
             # Time each sub-node manually for generate-only mode.
             from agents.game_master import world_builder_node
-            from agents.puzzle_builder_node import puzzle_builder_node
             from state import GameState as _GS
 
             state = _GS(theme=theme)
@@ -445,18 +441,7 @@ def _run_once_captured(
                 )
                 print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-            state = state.model_copy(update={"world": wb_update.get("world")})
-
-            t0 = time.perf_counter()
-            pb_update = puzzle_builder_node(state)
-            node_times["puzzle_builder"] = time.perf_counter() - t0
-            if log_set and "puzzle_builder" in log_set:
-                node_dir = _write_node_log(
-                    "puzzle_builder", pb_update, root=log_root or LOG_DIR
-                )
-                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
-
-            result = {**wb_update, **pb_update}
+            result = wb_update
         else:
             result = {}
             _step_start = time.perf_counter()
@@ -776,7 +761,11 @@ def smoke(
                 # Structural per-node eval (PASS/FAIL + status/timestamp), written
                 # to each node's eval.json under this run's log dir.
                 eval_root = run_dir / f"run_{i:03d}_logs"
-                nodes = ("world_builder", "puzzle_builder")
+                nodes = (
+                    ("world_builder",)
+                    if mode == MODE_GENERATE
+                    else ("world_builder", "puzzle_builder")
+                )
                 per_node = {node: _eval_node(node, result, eval_root) for node in nodes}
                 eval_failures = [node for node, ok in per_node.items() if not ok]
                 _report_eval_failures(eval_failures)
@@ -946,7 +935,9 @@ if __name__ == "__main__":
         log_nodes = list(NODE_NAMES)
 
     # --node NAME: run a single node independently against saved state, then exit.
-    if args.node:
+    # --smoke takes precedence — when both are given, --node is ignored and the
+    # smoke runner uses --mode to control which pipeline runs.
+    if args.node and args.smoke is None:
         run_node(
             args.node,
             from_path=args.from_path,
@@ -997,9 +988,14 @@ if __name__ == "__main__":
             _print_timing_table(node_times)
             # Per-node structural trace runs first (fast), then the narrative judge.
             if args.trace_eval:
+                trace_nodes = (
+                    ("world_builder",)
+                    if args.mode == MODE_GENERATE
+                    else ("world_builder", "puzzle_builder")
+                )
                 eval_failures = [
                     n
-                    for n in ("world_builder", "puzzle_builder")
+                    for n in trace_nodes
                     if not _eval_node(n, result, log_root)
                 ]
                 _report_eval_failures(eval_failures)

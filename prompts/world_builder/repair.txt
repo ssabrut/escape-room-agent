@@ -1,0 +1,31 @@
+The following escape room world has structural issues in one or more rooms.
+Return ONLY the corrected versions of the listed rooms — do not rewrite rooms that are not listed.
+
+Current world (for context):
+{world_json}
+
+Rooms to fix and their issues:
+{repairs_json}
+
+Rules you must satisfy for each fixed room:
+- id must remain exactly the same
+- goal must explicitly name a key object that appears in key_objects AND is referenced by goal_completion
+- goal_completion.object_id (if present) must be one of the room's key_objects
+- adjacency must use only valid directions (north/south/east/west) and reference only existing room ids
+- Each mirrored direction pair must be consistent with the rooms NOT being changed
+- goal_completion.state must use the literal "unlocked" for any open/unlock goal
+
+Respond ONLY with raw JSON — no prose, no markdown fences.
+
+{{
+    "rooms": [
+        {{
+            "id": "<same id as the broken room>",
+            "description": "<keep or improve>",
+            "adjacency": {{ "<direction>": "<neighbor_id>" }},
+            "goal": "<fixed goal>",
+            "goal_completion": {{ "type": "...", "object_id": "...", "state": "..." }},
+            "key_objects": ["...", "..."]
+        }}
+    ]
+}}

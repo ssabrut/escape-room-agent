@@ -111,6 +111,21 @@ def _format_room_goals(rooms: list[Room]) -> str:
     return "\n".join(lines)
 
 
+def _format_key_objects(rooms: list[Room]) -> str:
+    lines = []
+    for r in rooms:
+        ids = ", ".join(r.key_objects) if r.key_objects else "(none)"
+        lines.append(f'  Room "{r.id}": {ids}')
+    return "\n".join(lines)
+
+
+def _all_key_objects(rooms: list[Room]) -> set[str]:
+    keys: set[str] = set()
+    for r in rooms:
+        keys.update(r.key_objects)
+    return keys
+
+
 # ---------------------------------------------------------------------------
 # Object building (moved from game_master.py)
 # ---------------------------------------------------------------------------

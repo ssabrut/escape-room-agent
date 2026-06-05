@@ -1,0 +1,58 @@
+Generate the setting for a 2D text-based conversational escape room game.
+
+Theme: {theme}
+
+NARRATIVE QUALITY REQUIREMENTS (evaluated by an LLM judge — generic prose will score poorly):
+* The scenario paragraph must be evocative and specific: include at least one sensory detail (sound, smell, texture, light quality) and establish a distinct mood. Avoid generic phrases like "you find yourself in a room" or "the goal is to escape."
+* Each room description must paint the space with at least two vivid details — the creak of floorboards, salt-crusted lanterns, the smell of gunpowder — not a bare inventory of objects.
+* The rooms must feel like they belong to the same story world: consistent tone, consistent era, consistent stakes.
+* PLOT TWIST: Embed at least one narrative subversion. This could be a role reversal (the "treasure" is a warning), a misdirect (the obvious exit is a trap), a reveal (the room belongs to an unexpected person), or an irony (the player IS the villain). The twist should be hinted at through room descriptions, then confirmed by the objective or final room.
+
+Include:
+* The scenario (one paragraph setting the scene + atmosphere)
+* Main objective (one sentence)
+* Exactly TWO rooms, connected by a single doorway. The FIRST room is the starting room; the SECOND room is the final room.
+
+Each room must have:
+- id (unique snake_case)
+- description (vivid, at least two sensory details)
+- adjacency: a single mirrored direction pair connecting the two rooms (valid: north/south, east/west). If room 1 reaches room 2 via "east", room 2 MUST reach room 1 via "west".
+- goal: one sentence describing what the party must accomplish here. It MUST explicitly name a key object that is required to finish the room (e.g. "Recover the brass key from the safe to unlock the captain's door" — naming the key object the party must obtain, use, or manipulate). The named object MUST appear in this room's key_objects list AND be the object referenced by goal_completion. The FIRST room's goal gates passage to the second room. The SECOND room's goal ends the game when satisfied.
+- goal_completion: a structured condition that is TRUE exactly when the room's goal is done. It MUST reference the same key object named in the goal sentence (via object_id, or via info/id derived from it). Must require non-trivial effort (a keypad, a tool, a fuse panel — never just walking in).
+  Shapes:
+    - {{"type": "object_state", "object_id": "<id>", "state": "unlocked"}}  ← use literal "unlocked" for any open/unlock goal, never a synonym
+    - {{"type": "known_info", "info": "<token>"}}
+    - {{"type": "has_item", "object_id": "<id>"}}
+    - {{"type": "power_active", "id": "<token>"}}
+- key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects you expect in this room (e.g. "room1_safe", "room1_clue_note"). These will be concretely placed during puzzle generation.
+
+The SECOND room's goal_completion will become the win condition.
+
+Adjacency rules:
+- Connect the two rooms with exactly one mirrored direction pair (north<->south or east<->west).
+- Each room's adjacency maps one direction to the other room's id only.
+
+Respond ONLY with raw JSON. No prose, no markdown fences.
+
+{{
+    "scenario": "one paragraph setting + atmosphere",
+    "objective": "one sentence objective",
+    "rooms": [
+        {{
+            "id": "first_room_id",
+            "description": "vivid room description",
+            "adjacency": {{"east": "second_room_id"}},
+            "goal": "Unlock the connecting_door using the room1_safe to reach the next room",
+            "goal_completion": {{"type": "object_state", "object_id": "connecting_door", "state": "unlocked"}},
+            "key_objects": ["connecting_door", "room1_safe", "room1_clue_note"]
+        }},
+        {{
+            "id": "second_room_id",
+            "description": "vivid room description",
+            "adjacency": {{"west": "first_room_id"}},
+            "goal": "Claim the room2_target to end the game",
+            "goal_completion": {{"type": "has_item", "object_id": "room2_target"}},
+            "key_objects": ["room2_target", "room2_clue"]
+        }}
+    ]
+}}

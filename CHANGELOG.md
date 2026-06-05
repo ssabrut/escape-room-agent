@@ -2,6 +2,20 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 16:04:24 WIB
+
+### What changed
+- World generation now repairs failed rooms surgically instead of regenerating the whole world. When the structural eval flags issues that name specific rooms (e.g. `room '<id>': ...`), the world builder sends only those rooms — alongside the full world for context and a per-room list of their issues — to a new `repair` prompt, then merges the fixed rooms back in and re-runs adjacency repair. Only when an issue names no room (e.g. a missing scenario) does it fall back to a full regeneration. The retry log now prints whether each attempt is a targeted repair or a full regeneration.
+- World generation prompts moved to a dedicated `prompts/world_builder/` set (system, generation, generation_bank, plus the new repair prompt), replacing the prompts previously loaded from the `game_master` namespace.
+- Each generation node now records its per-attempt retry history (attempt number and issues) to a separate `attempts.json` under the node's log directory, and the rejected-attempt messages no longer embed the full raw LLM payload — keeping the message trail and `output.json` lean while the structured attempt log lives in its own file.
+- The `generate` mode now runs only the `world_builder` stage; the `puzzle_builder` stage no longer runs in generate-only mode (single runs, captured runs, smoke, and per-node structural tracing all scope their node set to `world_builder` when in generate mode).
+- When `--smoke` and `--node` are passed together, `--smoke` now takes precedence and `--node` is ignored, with the smoke runner using `--mode` to control which pipeline runs.
+
+### Why
+World skeletons were thrown away and regenerated wholesale even when only one or two rooms had structural defects, which was slow and discarded otherwise-valid rooms (and stories) on every retry. Targeted per-room repair keeps the good rooms and fixes only what failed, and moving the world-builder prompts into their own namespace plus restricting generate mode to that single stage reflects the now-independent world/puzzle split. Pulling the raw payload out of the retry messages into a dedicated attempts log keeps the conversation trail readable while preserving the full retry trace for inspection.
+
+---
+
 ## 2026-06-05 14:45:08 WIB
 
 ### What changed

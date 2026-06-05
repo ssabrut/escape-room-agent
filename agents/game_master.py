@@ -16,9 +16,10 @@ from config.settings import Settings, get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, Prerequisite, Room
 
-SYSTEM_PROMPT = load_prompt("game_master", "system")
-GENERATION_PROMPT = load_prompt("game_master", "generation")
-BANK_GENERATION_PROMPT = load_prompt("game_master", "generation_bank")
+SYSTEM_PROMPT = load_prompt("world_builder", "system")
+GENERATION_PROMPT = load_prompt("world_builder", "generation")
+BANK_GENERATION_PROMPT = load_prompt("world_builder", "generation_bank")
+REPAIR_PROMPT = load_prompt("world_builder", "repair")
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
@@ -182,6 +183,82 @@ def _generate_world(llm, theme: str, max_rooms: int) -> tuple[GameWorld, str]:
     return _build_world(data, max_rooms), response.content
 
 
+def _room_ids_from_issues(issues: list[str]) -> set[str]:
+    """Extract room ids mentioned in issue strings (format: "room '<id>': ...")."""
+    ids: set[str] = set()
+    for issue in issues:
+        m = re.search(r"room '([^']+)'", issue)
+        if m:
+            ids.add(m.group(1))
+    return ids
+
+
+def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, str]:
+    """Ask the LLM to fix only the rooms mentioned in `issues`, then merge back."""
+    broken_ids = _room_ids_from_issues(issues)
+
+    # Issues with no room reference (e.g. "missing scenario") can't be targeted —
+    # fall back to a full regeneration for those; here we repair what we can.
+    rooms_to_fix = [r for r in world.rooms if r.id in broken_ids]
+    if not rooms_to_fix:
+        # No room-level target: nothing to patch surgically.
+        return world, ""
+
+    repairs_payload = [
+        {"id": r.id, "issues": [i for i in issues if f"room '{r.id}'" in i]}
+        for r in rooms_to_fix
+    ]
+
+    world_json = json.dumps(
+        {
+            "scenario": world.scenario,
+            "objective": world.objective,
+            "rooms": [
+                {
+                    "id": r.id,
+                    "description": r.description,
+                    "adjacency": r.adjacency,
+                    "goal": r.goal,
+                    "goal_completion": (
+                        r.goal_completion.model_dump(exclude_none=True)
+                        if r.goal_completion
+                        else None
+                    ),
+                    "key_objects": r.key_objects,
+                }
+                for r in world.rooms
+            ],
+        },
+        indent=2,
+    )
+
+    prompt = REPAIR_PROMPT.format(
+        world_json=world_json,
+        repairs_json=json.dumps(repairs_payload, indent=2),
+    )
+    response = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    )
+    data = _parse_json(response.content) or {}
+    fixed_rooms = _build_rooms(data.get("rooms", []))
+
+    # Merge: replace only the rooms that were sent for repair.
+    fixed_by_id = {r.id: r for r in fixed_rooms}
+    merged_rooms = [fixed_by_id.get(r.id, r) for r in world.rooms]
+    merged_rooms = _repair_adjacency(merged_rooms)
+
+    repaired = GameWorld(
+        scenario=world.scenario,
+        objective=world.objective,
+        rooms=merged_rooms,
+        objects=world.objects,
+        rules=world.rules,
+        solution_path=world.solution_path,
+        win_condition=world.win_condition,
+    )
+    return repaired, response.content
+
+
 # ---------------------------------------------------------------------------
 # Eval A — deterministic structural check on the rooms-only world skeleton
 # ---------------------------------------------------------------------------
@@ -260,7 +337,7 @@ def world_builder_node(state: GameState) -> dict:
     issues = _eval_world_structure(world, max_rooms)
 
     while issues and attempts < max_attempts:
-        attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
+        attempt_log.append({"attempt": attempts, "issues": issues})
         print(
             f"[world_builder] attempt {attempts} rejected — "
             f"{len(issues)} structural issue(s):",
@@ -268,11 +345,22 @@ def world_builder_node(state: GameState) -> dict:
         )
         for issue in issues:
             print(f"  • {issue}", flush=True)
-        print(
-            f"[world_builder] regenerating (attempt {attempts + 1}/{max_attempts})...",
-            flush=True,
-        )
-        world, raw = _generate_world(llm, state.theme, max_rooms)
+
+        broken_ids = _room_ids_from_issues(issues)
+        if broken_ids:
+            print(
+                f"[world_builder] repairing room(s) {sorted(broken_ids)} "
+                f"(attempt {attempts + 1}/{max_attempts})...",
+                flush=True,
+            )
+            world, raw = _repair_world(llm, world, issues)
+        else:
+            print(
+                f"[world_builder] regenerating (attempt {attempts + 1}/{max_attempts})...",
+                flush=True,
+            )
+            world, raw = _generate_world(llm, state.theme, max_rooms)
+
         attempts += 1
         issues = _eval_world_structure(world, max_rooms)
 
@@ -298,10 +386,13 @@ def world_builder_node(state: GameState) -> dict:
         header = f"=== ATTEMPT {entry['attempt']} (rejected) ===\n" + "\n".join(
             f"  • {i}" for i in entry["issues"]
         )
-        messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
+        messages.append(AIMessage(content=header))
     messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))
+
+    loggable_attempts = attempt_log
 
     return {
         "messages": messages,
         "world": world,
+        "_attempt_log": loggable_attempts,
     }
