@@ -19,9 +19,9 @@ from config.settings import Settings, get_llm
 from prompts import load_prompt
 from state import GameState, GameWorld, Prerequisite, Room
 
-SYSTEM_PROMPT = load_prompt("game_master", "system")
-GENERATION_PROMPT = load_prompt("game_master", "generation")
-BANK_GENERATION_PROMPT = load_prompt("game_master", "generation_bank")
+SYSTEM_PROMPT = load_prompt("world_builder", "system")
+GENERATION_PROMPT = load_prompt("world_builder", "generation")
+BANK_GENERATION_PROMPT = load_prompt("world_builder", "generation_bank")
 
 OPPOSITES = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
@@ -303,7 +303,7 @@ def _write_attempt_history(history: list[dict], summary: dict) -> None:
 
 def world_builder_node(state: GameState) -> dict:
     s = Settings()
-    llm = get_llm("game_master")
+    llm = get_llm("world_builder")
     max_rooms = s.num_rooms if s.hard_mode else MAX_ROOMS
     mode = "HARD" if s.hard_mode else "standard"
     max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1

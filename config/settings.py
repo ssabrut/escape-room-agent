@@ -13,11 +13,11 @@ def _env_bool(name: str, default: bool) -> bool:
 
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    game_master_model: str = os.getenv("GAME_MASTER_MODEL", "llama3.2")
+    world_builder_model: str = os.getenv("WORLD_BUILDER_MODEL", "llama3.2")
     player_model: str = os.getenv(
-        "PLAYER_MODEL", os.getenv("GAME_MASTER_MODEL", "llama3.2")
+        "PLAYER_MODEL", os.getenv("WORLD_BUILDER_MODEL", "llama3.2")
     )
-    game_master_temperature: float = float(os.getenv("GAME_MASTER_TEMPERATURE", "0.8"))
+    world_builder_temperature: float = float(os.getenv("WORLD_BUILDER_TEMPERATURE", "0.8"))
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
 
     def __init__(self) -> None:
@@ -35,13 +35,13 @@ class Settings:
 
 
 _ROLE_CONFIG = {
-    "game_master": lambda s: (s.game_master_model, s.game_master_temperature),
+    "world_builder": lambda s: (s.world_builder_model, s.world_builder_temperature),
     "player": lambda s: (s.player_model, s.player_temperature),
 }
 
 
 @lru_cache(maxsize=4)
-def get_llm(role: str = "game_master") -> ChatOllama:
+def get_llm(role: str = "world_builder") -> ChatOllama:
     s = Settings()
     resolver = _ROLE_CONFIG.get(role)
     if resolver is None:

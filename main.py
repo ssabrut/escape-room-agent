@@ -12,7 +12,7 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
-from agents.game_master import world_builder_node
+from agents.world_builder import world_builder_node
 from state import GameState, GameWorld
 
 
