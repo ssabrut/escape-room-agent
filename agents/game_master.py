@@ -7,8 +7,11 @@ built by puzzle_builder_node in the next graph step.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+from datetime import datetime
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -129,6 +132,22 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
     ]
 
 
+def _repair_key_objects(rooms: list[Room]) -> list[Room]:
+    """Ensure each room's goal_completion object is listed among its key_objects.
+
+    The structural eval requires the goal to revolve around a key object
+    (goal_completion.object_id must appear in key_objects). The LLM occasionally
+    sets a goal object without naming it as a key object — a trivially-fixable
+    incoherence. Rather than burn a regeneration on it, we reconcile it here by
+    appending the goal object to key_objects when it is missing.
+    """
+    for room in rooms:
+        gc = room.goal_completion
+        if gc and gc.object_id and gc.object_id not in room.key_objects:
+            room.key_objects = [*room.key_objects, gc.object_id]
+    return rooms
+
+
 MAX_ROOMS = 2
 
 
@@ -144,7 +163,7 @@ def _select_rooms(rooms: list[Room], limit: int) -> list[Room]:
 
 def _build_world(data: dict, max_rooms: int) -> GameWorld:
     """Parse and validate room/scenario data into a rooms-only GameWorld skeleton."""
-    rooms = _repair_adjacency(_build_rooms(data.get("rooms", [])))
+    rooms = _repair_key_objects(_repair_adjacency(_build_rooms(data.get("rooms", []))))
     if max_rooms > 0 and len(rooms) > max_rooms:
         rooms = _select_rooms(rooms, max_rooms)
         kept_ids = {r.id for r in rooms}
@@ -173,8 +192,18 @@ def _generation_prompt(theme: str) -> str:
     return GENERATION_PROMPT.format(theme=theme)
 
 
-def _generate_world(llm, theme: str, max_rooms: int) -> tuple[GameWorld, str]:
+def _generate_world(
+    llm, theme: str, max_rooms: int, feedback: list[str] | None = None
+) -> tuple[GameWorld, str]:
     prompt = _generation_prompt(theme)
+    if feedback:
+        # Revision pass: tell the model exactly which structural checks its prior
+        # output failed so it fixes them, rather than re-rolling the same prompt.
+        prompt += (
+            "\n\nYour previous attempt was REJECTED for these structural issues. "
+            "Fix every one of them in this attempt:\n"
+            + "\n".join(f"  - {issue}" for issue in feedback)
+        )
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
@@ -244,6 +273,34 @@ def _eval_world_structure(world: GameWorld, expected_rooms: int) -> list[str]:
     return issues
 
 
+def _write_attempt_history(history: list[dict], summary: dict) -> None:
+    """Persist the generate → evaluate → revise trace for world_builder.
+
+    Writes a structured JSON record of every attempt (raw LLM output, the
+    structural issues the eval found, whether it was accepted, and the feedback
+    fed into the next attempt) so the revision loop is auditable from disk in
+    both the normal and smoke-test run paths.
+
+    The output directory comes from WORLD_BUILDER_LOG_DIR (set per-run by the
+    smoke runner) and defaults to ``logs/world_builder/``. Diagnostic only —
+    failures are swallowed so logging never aborts generation.
+    """
+    out_dir = Path(os.environ.get("WORLD_BUILDER_LOG_DIR", "logs/world_builder"))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "attempt_history.json").write_text(
+            json.dumps(
+                {**summary, "attempts": history}, indent=2, ensure_ascii=False
+            ),
+            encoding="utf-8",
+        )
+        print(
+            f"[world_builder] wrote {out_dir / 'attempt_history.json'}", flush=True
+        )
+    except Exception as exc:
+        print(f"[world_builder] attempt-history log skipped: {exc}", flush=True)
+
+
 def world_builder_node(state: GameState) -> dict:
     s = Settings()
     llm = get_llm("game_master")
@@ -251,16 +308,26 @@ def world_builder_node(state: GameState) -> dict:
     mode = "HARD" if s.hard_mode else "standard"
     max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
 
-    attempt_log: list[dict] = []
+    # Full generate → evaluate → revise trace, one record per attempt.
+    history: list[dict] = []
+    feedback: list[str] | None = None
 
     start = time.perf_counter()
     world, raw = _generate_world(llm, state.theme, max_rooms)
 
     attempts = 1
     issues = _eval_world_structure(world, max_rooms)
+    history.append(
+        {
+            "attempt": attempts,
+            "revised_from_feedback": None,  # first attempt has no upstream feedback
+            "issues": issues,
+            "accepted": not issues,
+            "raw": raw,
+        }
+    )
 
     while issues and attempts < max_attempts:
-        attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
         print(
             f"[world_builder] attempt {attempts} rejected — "
             f"{len(issues)} structural issue(s):",
@@ -272,9 +339,19 @@ def world_builder_node(state: GameState) -> dict:
             f"[world_builder] regenerating (attempt {attempts + 1}/{max_attempts})...",
             flush=True,
         )
-        world, raw = _generate_world(llm, state.theme, max_rooms)
+        feedback = issues
+        world, raw = _generate_world(llm, state.theme, max_rooms, feedback=feedback)
         attempts += 1
         issues = _eval_world_structure(world, max_rooms)
+        history.append(
+            {
+                "attempt": attempts,
+                "revised_from_feedback": feedback,
+                "issues": issues,
+                "accepted": not issues,
+                "raw": raw,
+            }
+        )
 
     elapsed = time.perf_counter() - start
 
@@ -293,8 +370,22 @@ def world_builder_node(state: GameState) -> dict:
             flush=True,
         )
 
+    _write_attempt_history(
+        history,
+        {
+            "node": "world_builder",
+            "theme": state.theme,
+            "mode": mode,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "attempt_count": len(history),
+            "accepted": not issues,
+            "remaining_issues": issues,
+            "elapsed_seconds": round(elapsed, 2),
+        },
+    )
+
     messages: list[AIMessage] = []
-    for entry in attempt_log:
+    for entry in history[:-1]:
         header = f"=== ATTEMPT {entry['attempt']} (rejected) ===\n" + "\n".join(
             f"  • {i}" for i in entry["issues"]
         )

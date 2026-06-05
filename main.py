@@ -416,10 +416,13 @@ def _run_once_captured(
     log_root: Path | None,
     mode: str = MODE_FULL,
     theme: str = "pirate",
+    stop_after: str | None = None,
 ) -> tuple[str, dict, dict[str, float]]:
     """Run the pipeline once with stdout captured.
 
-    If log_nodes is set, write per-node logs under log_root. Returns the captured
+    If log_nodes is set, write per-node logs under log_root. If stop_after is set
+    to a node name, the pipeline halts right after that node runs (used by
+    --smoke --node to generate only up to a target stage). Returns the captured
     text, the merged result dict, and a per-node elapsed-time mapping.
     """
     log_set = set(log_nodes or [])
@@ -427,6 +430,11 @@ def _run_once_captured(
     buf = io.StringIO()
     orig_stdout = sys.stdout
     sys.stdout = buf
+    # Redirect world_builder's generate/eval/revise attempt-history file into this
+    # run's own log dir so smoke runs don't clobber a single shared logs/ copy.
+    prev_wb_log = os.environ.get("WORLD_BUILDER_LOG_DIR")
+    if log_root is not None:
+        os.environ["WORLD_BUILDER_LOG_DIR"] = str(log_root / "world_builder")
     try:
         if mode == MODE_GENERATE:
             # Time each sub-node manually for generate-only mode.
@@ -445,20 +453,24 @@ def _run_once_captured(
                 )
                 print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-            state = state.model_copy(update={"world": wb_update.get("world")})
+            if stop_after == "world_builder":
+                result = dict(wb_update)
+            else:
+                state = state.model_copy(update={"world": wb_update.get("world")})
 
-            t0 = time.perf_counter()
-            pb_update = puzzle_builder_node(state)
-            node_times["puzzle_builder"] = time.perf_counter() - t0
-            if log_set and "puzzle_builder" in log_set:
-                node_dir = _write_node_log(
-                    "puzzle_builder", pb_update, root=log_root or LOG_DIR
-                )
-                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+                t0 = time.perf_counter()
+                pb_update = puzzle_builder_node(state)
+                node_times["puzzle_builder"] = time.perf_counter() - t0
+                if log_set and "puzzle_builder" in log_set:
+                    node_dir = _write_node_log(
+                        "puzzle_builder", pb_update, root=log_root or LOG_DIR
+                    )
+                    print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-            result = {**wb_update, **pb_update}
+                result = {**wb_update, **pb_update}
         else:
             result = {}
+            reached_stop = False
             _step_start = time.perf_counter()
             for step in graph.stream(GameState(theme=theme), stream_mode="updates"):
                 _step_end = time.perf_counter()
@@ -469,10 +481,18 @@ def _run_once_captured(
                     _merge_update(result, update)
                     if node in log_set and log_root is not None:
                         _write_node_log(node, update, root=log_root)
+                    if stop_after is not None and node == stop_after:
+                        reached_stop = True
+                if reached_stop:
+                    break
                 _step_start = time.perf_counter()
         _render(result)
     finally:
         sys.stdout = orig_stdout
+        if prev_wb_log is None:
+            os.environ.pop("WORLD_BUILDER_LOG_DIR", None)
+        else:
+            os.environ["WORLD_BUILDER_LOG_DIR"] = prev_wb_log
     return buf.getvalue(), result, node_times
 
 
@@ -731,6 +751,10 @@ def _write_benchmark(world, path: Path) -> str:
     return f" + {path.name}"
 
 
+# Nodes that have a structural eval, in pipeline order. Used to scope --trace-eval.
+_EVAL_NODES = ("world_builder", "puzzle_builder")
+
+
 def smoke(
     n: int,
     log_nodes: list[str] | None = None,
@@ -739,13 +763,22 @@ def smoke(
     eval_trace: bool = False,
     trace_eval: bool = False,
     theme: str = "pirate",
+    stop_after: str | None = None,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = SMOKE_DIR / timestamp
     run_dir.mkdir()
 
-    print(f"Smoke test ({mode}, theme: {theme}): {n} run(s) → {run_dir}/")
+    # When stopping after a target node, only eval the nodes that actually ran
+    # AND have a structural eval (world_builder, puzzle_builder).
+    if stop_after is not None and stop_after in _EVAL_NODES:
+        eval_nodes = _EVAL_NODES[: _EVAL_NODES.index(stop_after) + 1]
+    else:
+        eval_nodes = _EVAL_NODES
+
+    scope = f" up to '{stop_after}'" if stop_after else ""
+    print(f"Smoke test ({mode}, theme: {theme}){scope}: {n} run(s) → {run_dir}/")
     if log_nodes:
         print(f"  [log] per-run node logs under {run_dir}/run_<NNN>_logs/")
 
@@ -754,10 +787,12 @@ def smoke(
     for i in range(1, n + 1):
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
-            log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
+            # Always give each run its own log dir so the world_builder attempt
+            # history lands per-run; --log additionally fills it with node logs.
+            log_root = run_dir / f"run_{i:03d}_logs"
             out_file = run_dir / f"run_{i:03d}.txt"
             output, result, node_times = _run_once_captured(
-                log_nodes, log_root, mode=mode, theme=theme
+                log_nodes, log_root, mode=mode, theme=theme, stop_after=stop_after
             )
             _write_run_summary(result, out_file, node_times=node_times)
             (run_dir / f"run_{i:03d}_stdout.txt").write_text(output, encoding="utf-8")
@@ -776,8 +811,9 @@ def smoke(
                 # Structural per-node eval (PASS/FAIL + status/timestamp), written
                 # to each node's eval.json under this run's log dir.
                 eval_root = run_dir / f"run_{i:03d}_logs"
-                nodes = ("world_builder", "puzzle_builder")
-                per_node = {node: _eval_node(node, result, eval_root) for node in nodes}
+                per_node = {
+                    node: _eval_node(node, result, eval_root) for node in eval_nodes
+                }
                 eval_failures = [node for node, ok in per_node.items() if not ok]
                 _report_eval_failures(eval_failures)
                 eval_records.append(
@@ -945,8 +981,10 @@ if __name__ == "__main__":
     if log_nodes and "all" in log_nodes:
         log_nodes = list(NODE_NAMES)
 
-    # --node NAME: run a single node independently against saved state, then exit.
-    if args.node:
+    # --node NAME without --smoke: run a single node independently against saved
+    # state, then exit. With --smoke, --node instead bounds the pipeline (see the
+    # smoke() call below, which runs each iteration only up to that node).
+    if args.node and args.smoke is None:
         run_node(
             args.node,
             from_path=args.from_path,
@@ -977,6 +1015,13 @@ if __name__ == "__main__":
     if args.smoke is not None:
         if args.smoke < 1:
             parser.error("--smoke requires a positive integer")
+        # --smoke --node X: bound each iteration to run only up to node X.
+        stop_after = args.node
+        if stop_after is not None and stop_after not in _EVAL_NODES:
+            parser.error(
+                f"--smoke --node only supports a generation boundary: "
+                f"{', '.join(_EVAL_NODES)} (got '{stop_after}')"
+            )
         smoke(
             args.smoke,
             log_nodes=log_nodes,
@@ -985,6 +1030,7 @@ if __name__ == "__main__":
             eval_trace=eval_trace,
             trace_eval=args.trace_eval,
             theme=theme,
+            stop_after=stop_after,
         )
     else:
         if eval_inline:

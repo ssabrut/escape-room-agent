@@ -2,6 +2,21 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 15:13:42 WIB
+
+### What changed
+- World generation now automatically repairs goal coherence by ensuring each room's `goal_completion.object_id` is listed in its `key_objects`; the LLM occasionally sets a goal object without naming it as a key object, which is now reconciled silently rather than burning a regeneration.
+- The world-builder's generate → evaluate → revise loop now logs a structured attempt history (`attempt_history.json`) per run, recording the raw LLM output, structural issues found, whether each attempt was accepted, and the feedback fed into the next attempt. This is written to a per-run log directory and auditable from disk in both normal and smoke-test paths.
+- World generation feedback now includes specific structural issue descriptions (e.g. "dangling exit points to nonexistent room") injected into the next generation prompt, giving the LLM concrete correction targets instead of blind regeneration.
+- `--smoke --node X` now bounds each smoke iteration to run only up to node X (e.g. `--node world_builder` to generate only the room skeleton, skipping puzzle building); the evaluation scope automatically narrows to the nodes that actually ran and have structural eval.
+- Single-node mode (`--node X` without `--smoke`) properly stops the normal pipeline after that node runs instead of continuing to downstream stages.
+- The `world_builder` attempt history is routed into each smoke run's own per-run log dir via the `WORLD_BUILDER_LOG_DIR` environment variable, so multiple smoke runs don't clobber a single shared `logs/` copy of the history.
+
+### Why
+The world-builder almost always succeeds on the first attempt (rooms have minimal structural constraints), so the retry loop produced no natural DPO pairs; feedback-driven regeneration gives the model specific issues to fix rather than blind re-rolling. Logging the attempt history makes generation auditable and lets you inspect what issues were found and how many attempts it took per run. The `--smoke --node` binding lets you benchmark a single stage (e.g., how often does world-builder produce valid skeletons?) without waiting for the full pipeline, and the per-run attempt history ensures each run's trace is independently inspectable.
+
+---
+
 ## 2026-06-05 14:45:08 WIB
 
 ### What changed
