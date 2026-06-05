@@ -46,6 +46,7 @@ THEMES = [
 def _pick_theme() -> str:
     """Prompt the user to choose a theme with arrow-key navigation."""
     import questionary
+
     choice = questionary.select(
         "Choose your escape room theme:",
         choices=THEMES,
@@ -55,6 +56,7 @@ def _pick_theme() -> str:
         print("No theme selected — exiting.")
         sys.exit(0)
     return choice
+
 
 SMOKE_DIR = Path("smoke_runs")
 LOG_DIR = Path("logs")
@@ -209,7 +211,9 @@ def _print_timing_table(node_times: dict[str, float]) -> None:
     print()
 
 
-def _write_run_summary(result: dict, path: Path, node_times: dict[str, float] | None = None) -> None:
+def _write_run_summary(
+    result: dict, path: Path, node_times: dict[str, float] | None = None
+) -> None:
     """Write a clean, human-readable summary of the final output from each node."""
     lines: list[str] = []
     W = 94
@@ -235,7 +239,11 @@ def _write_run_summary(result: dict, path: Path, node_times: dict[str, float] | 
         for r in world.rooms:
             lines.append(f"  [{r.id}]  {r.description}")
             lines.append(f"    Goal       : {r.goal}")
-            gc = r.goal_completion.model_dump(exclude_none=True) if r.goal_completion else "(none)"
+            gc = (
+                r.goal_completion.model_dump(exclude_none=True)
+                if r.goal_completion
+                else "(none)"
+            )
             lines.append(f"    Completion : {gc}")
             lines.append(f"    Adjacency  : {r.adjacency}")
     else:
@@ -297,7 +305,11 @@ def _write_run_summary(result: dict, path: Path, node_times: dict[str, float] | 
     lines.append("")
     _h1("FINAL RESULT")
     if party_state:
-        outcome = "VICTORY" if party_state.victory else f"ENDED (final room: {party_state.current_room})"
+        outcome = (
+            "VICTORY"
+            if party_state.victory
+            else f"ENDED (final room: {party_state.current_room})"
+        )
         lines.append(f"  Result    : {outcome}")
         lines.append(f"  Ticks used: {party_state.tick}")
         lines.append(f"  Inventory : {', '.join(party_state.inventory) or '(empty)'}")
@@ -321,8 +333,9 @@ def _merge_update(result: dict, update: dict) -> None:
             result[key] = value
 
 
-
-def run(mode: str = MODE_FULL, log_nodes: list[str] | None = None, theme: str = "") -> None:
+def run(
+    mode: str = MODE_FULL, log_nodes: list[str] | None = None, theme: str = ""
+) -> None:
     log_nodes = log_nodes or []
     if not theme:
         theme = _pick_theme()
@@ -400,7 +413,9 @@ def _run_once_captured(
             wb_update = world_builder_node(state)
             node_times["world_builder"] = time.perf_counter() - t0
             if log_set and "world_builder" in log_set:
-                node_dir = _write_node_log("world_builder", wb_update, root=log_root or LOG_DIR)
+                node_dir = _write_node_log(
+                    "world_builder", wb_update, root=log_root or LOG_DIR
+                )
                 print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
             state = state.model_copy(update={"world": wb_update.get("world")})
@@ -409,7 +424,9 @@ def _run_once_captured(
             pb_update = puzzle_builder_node(state)
             node_times["puzzle_builder"] = time.perf_counter() - t0
             if log_set and "puzzle_builder" in log_set:
-                node_dir = _write_node_log("puzzle_builder", pb_update, root=log_root or LOG_DIR)
+                node_dir = _write_node_log(
+                    "puzzle_builder", pb_update, root=log_root or LOG_DIR
+                )
                 print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
             result = {**wb_update, **pb_update}
@@ -419,7 +436,9 @@ def _run_once_captured(
             for step in graph.stream(GameState(theme=theme), stream_mode="updates"):
                 _step_end = time.perf_counter()
                 for node, update in step.items():
-                    node_times[node] = node_times.get(node, 0.0) + (_step_end - _step_start)
+                    node_times[node] = node_times.get(node, 0.0) + (
+                        _step_end - _step_start
+                    )
                     _merge_update(result, update)
                     if node in log_set and log_root is not None:
                         _write_node_log(node, update, root=log_root)
@@ -430,9 +449,12 @@ def _run_once_captured(
     return buf.getvalue(), result, node_times
 
 
-def _run_narrative_eval(world, show_trace: bool = False, out_path: Path | None = None) -> None:
+def _run_narrative_eval(
+    world, show_trace: bool = False, out_path: Path | None = None
+) -> None:
     """Evaluate `world` with the LLM-as-judge + oracle, print the report, and optionally save it."""
     from benchmark.narrative_eval import evaluate_world, print_report, write_report
+
     report = evaluate_world(world)
     print_report(report, show_trace=show_trace)
     if out_path is not None:
@@ -499,13 +521,21 @@ def smoke(
         try:
             log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
             out_file = run_dir / f"run_{i:03d}.txt"
-            output, result, node_times = _run_once_captured(log_nodes, log_root, mode=mode, theme=theme)
+            output, result, node_times = _run_once_captured(
+                log_nodes, log_root, mode=mode, theme=theme
+            )
             _write_run_summary(result, out_file, node_times=node_times)
             (run_dir / f"run_{i:03d}_stdout.txt").write_text(output, encoding="utf-8")
-            world_note = _write_world_json(result.get("world"), run_dir / f"run_{i:03d}.world.json")
-            bench_note = _write_benchmark(result.get("world"), run_dir / f"run_{i:03d}.benchmark.json")
+            world_note = _write_world_json(
+                result.get("world"), run_dir / f"run_{i:03d}.world.json"
+            )
+            bench_note = _write_benchmark(
+                result.get("world"), run_dir / f"run_{i:03d}.benchmark.json"
+            )
             total_elapsed = sum(node_times.values())
-            print(f"done in {total_elapsed:.1f}s → {out_file.name}{world_note}{bench_note}")
+            print(
+                f"done in {total_elapsed:.1f}s → {out_file.name}{world_note}{bench_note}"
+            )
             _print_timing_table(node_times)
             if eval_narrative:
                 world = result.get("world")
@@ -581,7 +611,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval",
         nargs="?",
-        const=True,        # --eval with no arg: evaluate freshly generated world
+        const=True,  # --eval with no arg: evaluate freshly generated world
         metavar="PATH",
         help=(
             "Evaluate world narrative quality (LLM-as-judge + oracle). "
@@ -628,14 +658,22 @@ if __name__ == "__main__":
     if args.smoke is not None:
         if args.smoke < 1:
             parser.error("--smoke requires a positive integer")
-        smoke(args.smoke, log_nodes=log_nodes, mode=args.mode,
-              eval_narrative=eval_inline, eval_trace=eval_trace, theme=theme)
+        smoke(
+            args.smoke,
+            log_nodes=log_nodes,
+            mode=args.mode,
+            eval_narrative=eval_inline,
+            eval_trace=eval_trace,
+            theme=theme,
+        )
     else:
         if eval_inline:
             # Capture the result dict so we can pass the world to the evaluator
             # without a second generation call.
             log_root = LOG_DIR if log_nodes else None
-            _, result, node_times = _run_once_captured(log_nodes, log_root, mode=args.mode, theme=theme)
+            _, result, node_times = _run_once_captured(
+                log_nodes, log_root, mode=args.mode, theme=theme
+            )
             _print_timing_table(node_times)
             world = result.get("world")
             if world:

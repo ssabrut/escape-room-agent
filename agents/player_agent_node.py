@@ -63,6 +63,7 @@ def _format_teammate_context(party: list[PartyMember]) -> str:
 
 def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
     import time
+
     world = state.world
 
     taken_names = {member.character.name for member in state.party}

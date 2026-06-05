@@ -60,21 +60,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from agents.game_master import MAX_ROOMS
+from agents.game_master import SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT
 from agents.game_master import (
+    _eval_world_structure,
     _generate_world,
     _generation_prompt,
-    _eval_world_structure,
-    SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT,
-    MAX_ROOMS,
 )
+from agents.puzzle_builder_node import SYSTEM_PROMPT as PUZZLE_SYSTEM_PROMPT
+from agents.puzzle_builder_node import _build_prompt as _puzzle_prompt
 from agents.puzzle_builder_node import (
+    _default_chain_depth,
+    _eval_puzzle,
     _generate_puzzle,
     _generate_puzzle_with_feedback,
-    _build_prompt as _puzzle_prompt,
-    _eval_puzzle,
-    _default_chain_depth,
     _min_objects_per_room,
-    SYSTEM_PROMPT as PUZZLE_SYSTEM_PROMPT,
 )
 from config.settings import Settings, get_llm
 from state import GameWorld
@@ -100,6 +100,7 @@ PUZZLE_DIR = DATASET_DIR / "puzzle"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _slug(theme: str) -> str:
     return theme.lower().replace(" ", "_").replace("/", "_")
@@ -160,7 +161,9 @@ def _clone(world: GameWorld) -> GameWorld:
     return world.model_copy(deep=True)
 
 
-def _corrupt_unsolvable(world: GameWorld, rng: random.Random) -> tuple[GameWorld, str] | None:
+def _corrupt_unsolvable(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
     """Break the win chain: re-lock the win object and strip its unlock mechanism.
 
     Produces a world the oracle can no longer win — the clearest 'unsolvable'
@@ -179,10 +182,15 @@ def _corrupt_unsolvable(world: GameWorld, rng: random.Random) -> tuple[GameWorld
     target.requires_liquid = None
     target.requires_power = None
     target.fuses = None
-    return bad, f"win object '{win_id}' is locked with no unlock mechanism — world is unsolvable"
+    return (
+        bad,
+        f"win object '{win_id}' is locked with no unlock mechanism — world is unsolvable",
+    )
 
 
-def _corrupt_shallow(world: GameWorld, rng: random.Random) -> tuple[GameWorld, str] | None:
+def _corrupt_shallow(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
     """Flatten the difficulty: open every gate so the win object is reachable in
     one step. Stays solvable but collapses chain depth — the 'easy' contrast.
 
@@ -191,11 +199,16 @@ def _corrupt_shallow(world: GameWorld, rng: random.Random) -> tuple[GameWorld, s
     bad = _clone(world)
     opened = 0
     for o in bad.objects:
-        had_gate = any([
-            o.state in {"locked", "locked_bolt", "locked_room", "hidden"},
-            o.requires_code, o.requires_tool, o.requires_liquid,
-            o.requires_power, o.fuses,
-        ])
+        had_gate = any(
+            [
+                o.state in {"locked", "locked_bolt", "locked_room", "hidden"},
+                o.requires_code,
+                o.requires_tool,
+                o.requires_liquid,
+                o.requires_power,
+                o.fuses,
+            ]
+        )
         if had_gate:
             o.state = "visible"
             o.requires_code = None
@@ -206,10 +219,15 @@ def _corrupt_shallow(world: GameWorld, rng: random.Random) -> tuple[GameWorld, s
             opened += 1
     if opened == 0:
         return None
-    return bad, f"all {opened} gate(s) removed — world is solvable but trivially shallow (no puzzle chain)"
+    return (
+        bad,
+        f"all {opened} gate(s) removed — world is solvable but trivially shallow (no puzzle chain)",
+    )
 
 
-def _corrupt_orphans(world: GameWorld, rng: random.Random) -> tuple[GameWorld, str] | None:
+def _corrupt_orphans(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
     """Inject uncorrelated objects that connect to nothing in the solution chain.
 
     Re-introduces exactly what `_prune_orphan_objects` removes: takeable props
@@ -228,15 +246,17 @@ def _corrupt_orphans(world: GameWorld, rng: random.Random) -> tuple[GameWorld, s
         while oid in existing:
             oid += "_x"
         existing.add(oid)
-        bad.objects.append(WorldObject(
-            id=oid,
-            location=room.id,
-            description="An ornate relic that seems important but connects to nothing.",
-            state="locked",
-            interactable=True,
-            takeable=False,
-            requires_code="9981",  # a code no object ever reveals
-        ))
+        bad.objects.append(
+            WorldObject(
+                id=oid,
+                location=room.id,
+                description="An ornate relic that seems important but connects to nothing.",
+                state="locked",
+                interactable=True,
+                takeable=False,
+                requires_code="9981",  # a code no object ever reveals
+            )
+        )
         added.append(oid)
     return bad, (
         f"objects {', '.join(added)} are uncorrelated — gated by a code/clue that "
@@ -244,7 +264,9 @@ def _corrupt_orphans(world: GameWorld, rng: random.Random) -> tuple[GameWorld, s
     )
 
 
-def _corrupt_phantom_solution(world: GameWorld, rng: random.Random) -> tuple[GameWorld, str] | None:
+def _corrupt_phantom_solution(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
     """Inject solution_path steps that reference object ids which do not exist.
 
     Re-introduces what `_scrub_ghost_ids` removes: a narrated step naming a
@@ -266,16 +288,50 @@ def _corrupt_phantom_solution(world: GameWorld, rng: random.Random) -> tuple[Gam
     )
 
 
+def _corrupt_untakeable_tool(
+    world: GameWorld, rng: random.Random
+) -> tuple[GameWorld, str] | None:
+    """Make a tool the solution depends on impossible to pick up.
+
+    Re-introduces what `_make_required_tools_takeable` repairs: a gate whose
+    `requires_tool` points at an object the player can never carry, breaking the
+    win chain at an *intermediate* dependency rather than at the win object
+    itself. A common, subtle LLM failure mode and distinct from `unsolvable`.
+
+    Returns None if no object depends on a takeable tool.
+    """
+    bad = _clone(world)
+    by_id = {o.id: o for o in bad.objects}
+    tool_ids = [
+        o.requires_tool
+        for o in bad.objects
+        if o.requires_tool
+        and o.requires_tool in by_id
+        and by_id[o.requires_tool].takeable
+    ]
+    if not tool_ids:
+        return None
+    tool_id = rng.choice(tool_ids)
+    by_id[tool_id].takeable = False
+    return bad, (
+        f"required tool '{tool_id}' is not takeable — the player can never carry it "
+        "to the lock it opens, breaking the solution chain"
+    )
+
+
 # Puzzle-stage corruptors keyed by axis name (CLI-selectable).
 PUZZLE_CORRUPTORS = {
     "unsolvable": _corrupt_unsolvable,
     "shallow": _corrupt_shallow,
     "orphans": _corrupt_orphans,
     "phantom": _corrupt_phantom_solution,
+    "untakeable_tool": _corrupt_untakeable_tool,
 }
 
 
-def _corruption_is_real(axis: str, bad: GameWorld, chain_target: int, min_objs: int) -> bool:
+def _corruption_is_real(
+    axis: str, bad: GameWorld, chain_target: int, min_objs: int
+) -> bool:
     """Confirm a corrupted world is genuinely worse on its axis before keeping it.
 
     We do not trust the corruptor's claim blindly: the `rejected` example must be
@@ -285,7 +341,9 @@ def _corruption_is_real(axis: str, bad: GameWorld, chain_target: int, min_objs: 
     """
     if axis == "unsolvable":
         # Oracle must now fail end-to-end.
-        return any(_is_oracle_failure(i) for i in _eval_puzzle(bad, chain_target, min_objs))
+        return any(
+            _is_oracle_failure(i) for i in _eval_puzzle(bad, chain_target, min_objs)
+        )
     if axis == "shallow":
         # Must stay winnable but drop below the chain-depth target. Only meaningful
         # when a positive target is set (hard mode); otherwise skip the axis.
@@ -301,6 +359,11 @@ def _corruption_is_real(axis: str, bad: GameWorld, chain_target: int, min_objs: 
     if axis == "phantom":
         # solution_path must reference an id absent from the world.
         return _has_phantom_solution_ids(bad)
+    if axis == "untakeable_tool":
+        # Breaking a tool dependency must make the oracle fail end-to-end.
+        return any(
+            _is_oracle_failure(i) for i in _eval_puzzle(bad, chain_target, min_objs)
+        )
     return False
 
 
@@ -312,7 +375,12 @@ def _has_phantom_solution_ids(world: GameWorld) -> bool:
     valid = {o.id for o in world.objects} | {r.id for r in world.rooms}
     for step in world.solution_path:
         for tok in re.findall(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", step):
-            if tok not in valid and tok not in {"the_hidden", "hidden_code", "the_object", "solution_path"}:
+            if tok not in valid and tok not in {
+                "the_hidden",
+                "hidden_code",
+                "the_object",
+                "solution_path",
+            }:
                 return True
     return False
 
@@ -325,7 +393,12 @@ def _has_orphan_objects(world: GameWorld) -> bool:
             continue
         code = o.requires_code
         if code and not any(
-            (info and (re.sub(r"[^0-9]", "", info) == re.sub(r"[^0-9]", "", code) and code))
+            (
+                info
+                and (
+                    re.sub(r"[^0-9]", "", info) == re.sub(r"[^0-9]", "", code) and code
+                )
+            )
             or (info and (code in info or info in code))
             for info in produced
         ):
@@ -336,6 +409,7 @@ def _has_orphan_objects(world: GameWorld) -> bool:
 # ---------------------------------------------------------------------------
 # Example builders
 # ---------------------------------------------------------------------------
+
 
 def _world_sft(theme: str, world: GameWorld) -> dict:
     """world_builder SFT: theme prompt -> rooms-only skeleton."""
@@ -348,7 +422,9 @@ def _world_sft(theme: str, world: GameWorld) -> dict:
     }
 
 
-def _world_dpo(theme: str, violations: list[str], bad: GameWorld, good: GameWorld) -> dict:
+def _world_dpo(
+    theme: str, violations: list[str], bad: GameWorld, good: GameWorld
+) -> dict:
     return {
         "prompt": [
             {"role": "system", "content": WORLD_SYSTEM_PROMPT},
@@ -361,20 +437,29 @@ def _world_dpo(theme: str, violations: list[str], bad: GameWorld, good: GameWorl
     }
 
 
-def _puzzle_sft(skeleton: GameWorld, full: GameWorld, chain_depth: int, min_objs: int) -> dict:
+def _puzzle_sft(
+    skeleton: GameWorld, full: GameWorld, chain_depth: int, min_objs: int
+) -> dict:
     """puzzle_builder SFT: rooms skeleton prompt -> objects + solution path."""
     return {
         "messages": [
             {"role": "system", "content": PUZZLE_SYSTEM_PROMPT},
-            {"role": "user", "content": _puzzle_prompt(skeleton, chain_depth, min_objs)},
+            {
+                "role": "user",
+                "content": _puzzle_prompt(skeleton, chain_depth, min_objs),
+            },
             {"role": "assistant", "content": _world_json(full)},
         ]
     }
 
 
 def _puzzle_dpo(
-    skeleton: GameWorld, violations: list[str], bad: GameWorld, good: GameWorld,
-    chain_depth: int, min_objs: int,
+    skeleton: GameWorld,
+    violations: list[str],
+    bad: GameWorld,
+    good: GameWorld,
+    chain_depth: int,
+    min_objs: int,
 ) -> dict:
     user = _puzzle_prompt(skeleton, chain_depth, min_objs)
     return {
@@ -397,6 +482,7 @@ def _write(path: Path, payload: dict) -> None:
 # Per-theme generation
 # ---------------------------------------------------------------------------
 
+
 def generate_theme(
     theme: str,
     per_theme: int,
@@ -408,6 +494,7 @@ def generate_theme(
     min_objs: int,
     targets: set[str],
     corruptors: list[str],
+    max_dpo_per_world: int,
     rng: random.Random,
     resume_from_world: int,
     resume_from_puzzle: int,
@@ -483,11 +570,21 @@ def generate_theme(
             if "world" in targets and not world_issues:
                 counts["world_dpo"] += 1
                 out = dirs["world_dpo"] / f"{counts['world_dpo']:04d}.jsonl"
-                _write(out, _world_dpo(theme, _eval_world_structure(bad_world, max_rooms), bad_world, world))
+                _write(
+                    out,
+                    _world_dpo(
+                        theme,
+                        _eval_world_structure(bad_world, max_rooms),
+                        bad_world,
+                        world,
+                    ),
+                )
 
         if world_issues:
-            print(f"\n    => world discarded after {retry + 1} attempt(s): "
-                  f"{len(world_issues)} issue(s)")
+            print(
+                f"\n    => world discarded after {retry + 1} attempt(s): "
+                f"{len(world_issues)} issue(s)"
+            )
             continue
 
         skeleton = world  # rooms-only; keep a clean copy for the puzzle prompt
@@ -510,7 +607,11 @@ def generate_theme(
             try:
                 full, _ = _silent(
                     _generate_puzzle_with_feedback,
-                    llm, skeleton, chain_depth, min_objs, puzzle_issues,
+                    llm,
+                    skeleton,
+                    chain_depth,
+                    min_objs,
+                    puzzle_issues,
                 )
             except Exception as exc:
                 print(f" puzzle regen error: {exc}")
@@ -520,11 +621,18 @@ def generate_theme(
             if "puzzle" in targets and not puzzle_issues:
                 counts["puzzle_dpo"] += 1
                 out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
-                _write(out, _puzzle_dpo(skeleton, prev_issues, bad_full, full, chain_depth, min_objs))
+                _write(
+                    out,
+                    _puzzle_dpo(
+                        skeleton, prev_issues, bad_full, full, chain_depth, min_objs
+                    ),
+                )
 
         if puzzle_issues:
-            print(f"\n    => puzzle discarded after {pretry + 1} attempt(s): "
-                  f"{len(puzzle_issues)} issue(s)")
+            print(
+                f"\n    => puzzle discarded after {pretry + 1} attempt(s): "
+                f"{len(puzzle_issues)} issue(s)"
+            )
             continue
 
         sig = _world_signature(full)
@@ -548,10 +656,21 @@ def generate_theme(
 
             # --- Synthetic contrastive DPO: accepted world is `chosen`, a
             # deliberately degraded copy is `rejected`. Each corruptor targets a
-            # single axis (solvability / difficulty / orphans / phantom ids).
+            # single axis (solvability / difficulty / orphans / phantom / tool).
             # We only keep a pair if the corruption actually fails eval — that
             # guarantees the contrast is real, not merely asserted.
-            for axis in corruptors:
+            #
+            # We cap the pairs per world (max_dpo_per_world): visiting axes in a
+            # seeded-shuffled order and stopping after `cap` validated pairs keeps
+            # any single `chosen` world from being reinforced across all axes
+            # (which would invite memorizing that story), while the rotating
+            # subset keeps every axis globally balanced across the dataset.
+            shuffled = list(corruptors)
+            rng.shuffle(shuffled)
+            written = 0
+            for axis in shuffled:
+                if max_dpo_per_world > 0 and written >= max_dpo_per_world:
+                    break
                 made = PUZZLE_CORRUPTORS[axis](full, rng)
                 if made is None:
                     continue
@@ -560,10 +679,13 @@ def generate_theme(
                     continue  # corruption didn't actually degrade — skip
                 counts["puzzle_dpo"] += 1
                 out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
-                pair = _puzzle_dpo(skeleton, [label], bad_world, full, chain_depth, min_objs)
+                pair = _puzzle_dpo(
+                    skeleton, [label], bad_world, full, chain_depth, min_objs
+                )
                 pair["axis"] = axis
                 _write(out, pair)
                 notes.append(f"dpo:{axis}")
+                written += 1
 
         size = f"{len(full.rooms)}r/{len(full.objects)}o"
         via = []
@@ -587,6 +709,7 @@ def generate_theme(
 # ---------------------------------------------------------------------------
 # Merge + manifest
 # ---------------------------------------------------------------------------
+
 
 def _merge(src_dirs: list[Path], out_path: Path) -> int:
     total = 0
@@ -627,8 +750,12 @@ def merge_all(themes: list[str], targets: set[str]) -> dict[str, int]:
 
 
 def write_manifest(
-    themes: list[str], per_theme: int, model: str, chain_target: int,
-    targets: set[str], totals: dict[str, int],
+    themes: list[str],
+    per_theme: int,
+    model: str,
+    chain_target: int,
+    targets: set[str],
+    totals: dict[str, int],
 ) -> None:
     manifest: dict = {
         "themes": themes,
@@ -672,55 +799,140 @@ def write_manifest(
 
 
 # ---------------------------------------------------------------------------
+# Stats — read-only report over an existing dataset (no generation/LLM)
+# ---------------------------------------------------------------------------
+
+
+def print_stats() -> None:
+    """Summarise SFT/DPO counts and the per-axis breakdown of puzzle DPO pairs."""
+
+    def _count_tree(base: Path, kind: str) -> int:
+        d = base / kind
+        return sum(1 for _ in d.glob("*/*.jsonl")) if d.exists() else 0
+
+    print("Dataset statistics")
+    print(f"  root: {DATASET_DIR}/\n")
+
+    for tgt, base in (("world", WORLD_DIR), ("puzzle", PUZZLE_DIR)):
+        sft = _count_tree(base, "sft")
+        dpo = _count_tree(base, "dpo")
+        if sft == 0 and dpo == 0:
+            continue
+        print(f"  {tgt:<8} SFT: {sft:>5}    DPO: {dpo:>5}")
+
+    # Per-axis breakdown for puzzle DPO (each file carries an "axis" field;
+    # live-retry pairs have none and are bucketed as 'live-retry').
+    axis_counts: dict[str, int] = {}
+    dpo_root = PUZZLE_DIR / "dpo"
+    if dpo_root.exists():
+        for p in dpo_root.glob("*/*.jsonl"):
+            try:
+                rec = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            axis_counts[rec.get("axis", "live-retry")] = (
+                axis_counts.get(rec.get("axis", "live-retry"), 0) + 1
+            )
+
+    if axis_counts:
+        total = sum(axis_counts.values())
+        print(f"\n  puzzle DPO by axis ({total} pairs):")
+        print(f"  {'axis':<18} {'count':>6} {'share':>7}")
+        print(f"  {'─' * 33}")
+        for axis in sorted(axis_counts, key=lambda a: -axis_counts[a]):
+            n = axis_counts[axis]
+            print(f"  {axis:<18} {n:>6} {n / total * 100:>6.1f}%")
+    else:
+        print("\n  (no puzzle DPO pairs found yet)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate SFT + DPO fine-tuning datasets for world_builder and "
-                    "puzzle_builder via the live pipeline"
+        "puzzle_builder via the live pipeline"
     )
     parser.add_argument(
-        "--per-theme", type=int, default=120,
+        "--per-theme",
+        type=int,
+        default=120,
         help="accepted artifacts (SFT examples) to collect per theme (default: 120)",
     )
     parser.add_argument(
-        "--target", choices=["world", "puzzle", "both"], default="both",
+        "--target",
+        choices=["world", "puzzle", "both"],
+        default="both",
         help="which agent(s) to build a dataset for (default: both)",
     )
     parser.add_argument(
-        "--max-attempts-per-world", type=int, default=0,
+        "--max-attempts-per-world",
+        type=int,
+        default=0,
         help="judge-retry attempts per stage before discarding "
-             "(default: settings.gen_max_attempts)",
+        "(default: settings.gen_max_attempts)",
     )
     parser.add_argument(
-        "--max-total-attempts", type=int, default=0,
+        "--max-total-attempts",
+        type=int,
+        default=0,
         help="total pipeline attempts per theme (default: per-theme * 5)",
     )
     parser.add_argument(
-        "--themes", nargs="+", default=None, metavar="THEME",
+        "--themes",
+        nargs="+",
+        default=None,
+        metavar="THEME",
         help="subset of themes to run — quote multi-word names (default: all 10)",
     )
     parser.add_argument(
-        "--dpo-axes", nargs="+", default=["all"], metavar="AXIS",
+        "--dpo-axes",
+        nargs="+",
+        default=["all"],
+        metavar="AXIS",
         choices=["all", "none"] + list(PUZZLE_CORRUPTORS),
         help="synthetic contrastive DPO axes for puzzle_builder: "
-             f"{', '.join(PUZZLE_CORRUPTORS)} (default: all). Use 'none' to keep "
-             "only opportunistic live-retry pairs.",
+        f"{', '.join(PUZZLE_CORRUPTORS)} (default: all). Use 'none' to keep "
+        "only opportunistic live-retry pairs.",
     )
     parser.add_argument(
-        "--seed", type=int, default=0,
+        "--max-dpo-per-world",
+        type=int,
+        default=2,
+        help="cap on synthetic DPO pairs kept per accepted world; axes are "
+        "seeded-shuffled and the first N validated ones are kept "
+        "(default: 2). 0 = no cap (keep every validated axis).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
         help="RNG seed for synthetic corruption (default: 0, reproducible)",
     )
     parser.add_argument(
-        "--resume", action="store_true",
+        "--resume",
+        action="store_true",
         help="skip complete themes; resume partially-done themes from current count",
     )
     parser.add_argument(
-        "--debug", action="store_true",
+        "--debug",
+        action="store_true",
         help="print violation lists for every rejected attempt",
     )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="print SFT/DPO counts and per-axis DPO breakdown for the existing "
+        "dataset, then exit (no generation)",
+    )
     args = parser.parse_args()
+
+    if args.stats:
+        print_stats()
+        return
 
     themes = args.themes if args.themes else ALL_THEMES
     for t in themes:
@@ -754,10 +966,15 @@ def main() -> None:
     print(f"  SFT target/theme    : {args.per_theme}")
     print(f"  max retries/stage   : {max_attempts}")
     print(f"  max total attempts  : {max_total_attempts} per theme")
-    print(f"  hard mode           : {s.hard_mode}  (chain target: {chain_target}, "
-          f"rooms: {max_rooms}, min objs/room: {min_objs})")
+    print(
+        f"  hard mode           : {s.hard_mode}  (chain target: {chain_target}, "
+        f"rooms: {max_rooms}, min objs/room: {min_objs})"
+    )
     print(f"  model               : {s.game_master_model}")
-    print(f"  dpo contrast axes   : {', '.join(corruptors) if corruptors else '(live-retry only)'}")
+    print(
+        f"  dpo contrast axes   : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
+    )
+    print(f"  max dpo / world     : {args.max_dpo_per_world or 'no cap'}")
     print(f"  output              : {DATASET_DIR}/")
 
     t0 = time.time()
@@ -788,6 +1005,7 @@ def main() -> None:
             min_objs=min_objs,
             targets=targets,
             corruptors=corruptors,
+            max_dpo_per_world=args.max_dpo_per_world,
             rng=rng,
             resume_from_world=existing_world if args.resume else 0,
             resume_from_puzzle=existing_puzzle if args.resume else 0,
@@ -795,7 +1013,9 @@ def main() -> None:
         )
 
     totals = merge_all(themes, targets)
-    write_manifest(themes, args.per_theme, s.game_master_model, chain_target, targets, totals)
+    write_manifest(
+        themes, args.per_theme, s.game_master_model, chain_target, targets, totals
+    )
 
     elapsed = time.time() - t0
     print(f"\nTotal time: {elapsed / 60:.1f} min")

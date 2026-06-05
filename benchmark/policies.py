@@ -163,6 +163,7 @@ def heuristic_policy(world, ps, action_space):
 # BFS policy
 # ---------------------------------------------------------------------------
 
+
 def bfs_policy(world: "GameWorld", max_states: int = 50_000):
     """Return a policy that replays the shortest winning action sequence found by BFS.
 
@@ -306,6 +307,7 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
 # Static backward-chain solvability checker
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SolvabilityReport:
     solvable: bool
@@ -360,12 +362,16 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                         queue.append(neighbor)
         for room in world.rooms:
             if room.id not in reachable:
-                issues.append(f"room '{room.id}' is disconnected — unreachable from start '{start}'")
+                issues.append(
+                    f"room '{room.id}' is disconnected — unreachable from start '{start}'"
+                )
 
     # --- Win condition object must exist ---
     win = world.win_condition
     if not win.object_id:
-        issues.append("win_condition has no object_id — final room has no object_state goal_completion")
+        issues.append(
+            "win_condition has no object_id — final room has no object_state goal_completion"
+        )
     elif win.object_id not in obj_by_id:
         issues.append(f"win_condition references non-existent object '{win.object_id}'")
 
@@ -443,9 +449,7 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
         # requires_code: needs a contains_info token containing the code digits
         if obj.requires_code:
             code = obj.requires_code
-            matching = [
-                tok for tok in info_producers if code in tok
-            ]
+            matching = [tok for tok in info_producers if code in tok]
             if not matching:
                 issues.append(
                     f"object '{obj.id}' requires_code '{code}' but no contains_info "
@@ -472,9 +476,7 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     key = frozenset(cycle)
                     if key not in seen_cycles:
                         seen_cycles.add(key)
-                        issues.append(
-                            f"circular tool dependency: {' -> '.join(cycle)}"
-                        )
+                        issues.append(f"circular tool dependency: {' -> '.join(cycle)}")
 
         # requires_power: needs a fuse panel that can activate the token
         if obj.requires_power:
@@ -491,7 +493,8 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
         if obj.requires_liquid:
             token = obj.requires_liquid
             producers = [
-                o for o in world.objects
+                o
+                for o in world.objects
                 if (o.contains_info and token in o.contains_info) or o.id == token
             ]
             if not producers:

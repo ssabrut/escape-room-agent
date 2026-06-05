@@ -578,7 +578,9 @@ def _gm_gate_exit(world: GameWorld, ps: PartyState, room, dest: str) -> GMVerdic
     completion = room.goal_completion
     satisfied = completion is None or _goal_completion_satisfied(completion, ps)
     if satisfied:
-        return GMVerdict(allow=True, narration=f"Goal met — moving to {dest}.", missing="")
+        return GMVerdict(
+            allow=True, narration=f"Goal met — moving to {dest}.", missing=""
+        )
     missing = _format_goal_completion(completion)
     return GMVerdict(
         allow=False,
@@ -957,9 +959,7 @@ def _global_observation_panel_lines(ps: PartyState) -> list[str]:
 
     # Current room first, then the rest alphabetically, so the acting view leads
     # with where the party is.
-    room_order = sorted(
-        by_room, key=lambda r: (r != ps.current_room, r)
-    )
+    room_order = sorted(by_room, key=lambda r: (r != ps.current_room, r))
     lines: list[str] = []
     for room in room_order:
         marker = " (here)" if room == ps.current_room else ""
@@ -1453,7 +1453,9 @@ def _render_tick_header(
         ]
     else:
         plan = ps.room_plans.get(ps.current_room, [])
-        plan_lines = [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)")
+        plan_lines = [f"### {ps.current_room}"] + _bullet_lines(
+            plan, "(not yet planned)"
+        )
     _panel("ESCAPE PLAN", plan_lines)
 
     # Cumulative log of actions already performed by the party (most recent last).
@@ -1558,6 +1560,7 @@ def gameplay_node(state: GameState) -> dict:
     branch to END without a separate eval node.
     """
     import time
+
     world = state.world
     if not world or not state.party:
         return {}
@@ -1597,7 +1600,9 @@ def gameplay_node(state: GameState) -> dict:
         lead = state.party[0]
         merged_notes: dict[str, list[str]] = {}
         for member in state.party:
-            observation, object_notes = _agent_observe(member.agent_id, member, world, ps)
+            observation, object_notes = _agent_observe(
+                member.agent_id, member, world, ps
+            )
             for obj_id, notes in object_notes.items():
                 merged_notes.setdefault(obj_id, []).extend(notes)
             ps.log.append(
@@ -1636,7 +1641,10 @@ def gameplay_node(state: GameState) -> dict:
         ps.observed_rooms.add(ps.current_room)
         ps.last_fingerprint = _room_fingerprint(world, ps)
         elapsed = time.perf_counter() - _tick_start
-        print(f"[gameplay] tick {ps.tick} (observe+plan) elapsed {elapsed:.2f}s", flush=True)
+        print(
+            f"[gameplay] tick {ps.tick} (observe+plan) elapsed {elapsed:.2f}s",
+            flush=True,
+        )
         return {"messages": new_messages, "party_state": ps}
 
     # If last tick changed the room picture (revealed an object, took an item,
@@ -1803,9 +1811,13 @@ def gameplay_node(state: GameState) -> dict:
     elif ps.tick >= MAX_TICKS:
         ps.game_over = True
         _banner("TIME UP", char="*")
-        _stream(f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition.")
+        _stream(
+            f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition."
+        )
         _render_final(ps, world)
-        new_messages.append(AIMessage(content=f"[gameplay] stopped at MAX_TICKS={MAX_TICKS}"))
+        new_messages.append(
+            AIMessage(content=f"[gameplay] stopped at MAX_TICKS={MAX_TICKS}")
+        )
 
     elapsed = time.perf_counter() - _tick_start
     print(f"[gameplay] tick {ps.tick} elapsed {elapsed:.2f}s", flush=True)

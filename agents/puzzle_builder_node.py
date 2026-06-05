@@ -36,11 +36,27 @@ _OPTIONAL_OBJECT_FIELDS = (
 
 _LLM_LOCKED_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
 _UNLOCKER_HINTS = (
-    "wheel", "key", "lever", "crank", "handle", "valve", "tool", "crowbar", "wrench",
+    "wheel",
+    "key",
+    "lever",
+    "crank",
+    "handle",
+    "valve",
+    "tool",
+    "crowbar",
+    "wrench",
 )
 _CLUE_HINTS = (
-    "note", "letter", "paper", "scroll", "document", "diary",
-    "journal", "tome", "book", "tablet",
+    "note",
+    "letter",
+    "paper",
+    "scroll",
+    "document",
+    "diary",
+    "journal",
+    "tome",
+    "book",
+    "tablet",
 )
 HIDDEN_STATES_ROOM = {"locked", "locked_bolt", "locked_room", "hidden"}
 _OPENED_STATES = {"unlocked", "open", "opened", "unsealed", "dissolved", "deactivated"}
@@ -49,6 +65,7 @@ _OPENED_STATES = {"unlocked", "open", "opened", "unsealed", "dissolved", "deacti
 # ---------------------------------------------------------------------------
 # JSON parsing
 # ---------------------------------------------------------------------------
+
 
 def _parse_json(text: str) -> dict | None:
     fence_match = re.search(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -71,12 +88,13 @@ def _parse_json(text: str) -> dict | None:
 # Prompt formatting helpers
 # ---------------------------------------------------------------------------
 
+
 def _format_rooms(rooms: list[Room]) -> str:
     lines = []
     for r in rooms:
         lines.append(f'  id: "{r.id}"')
         lines.append(f'  description: "{r.description}"')
-        lines.append(f'  adjacency: {json.dumps(r.adjacency)}')
+        lines.append(f"  adjacency: {json.dumps(r.adjacency)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -84,7 +102,11 @@ def _format_rooms(rooms: list[Room]) -> str:
 def _format_room_goals(rooms: list[Room]) -> str:
     lines = []
     for r in rooms:
-        gc = r.goal_completion.model_dump(exclude_none=True) if r.goal_completion else "(none)"
+        gc = (
+            r.goal_completion.model_dump(exclude_none=True)
+            if r.goal_completion
+            else "(none)"
+        )
         lines.append(f'  Room "{r.id}": goal="{r.goal}" | goal_completion={gc}')
     return "\n".join(lines)
 
@@ -92,6 +114,7 @@ def _format_room_goals(rooms: list[Room]) -> str:
 # ---------------------------------------------------------------------------
 # Object building (moved from game_master.py)
 # ---------------------------------------------------------------------------
+
 
 def _coerce_id(value) -> str | None:
     if isinstance(value, str):
@@ -163,6 +186,7 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
 # Repair pipeline (moved from game_master.py)
 # ---------------------------------------------------------------------------
 
+
 def _goal_completion_subject(p: Prerequisite) -> str | None:
     if p.type in {"object_state", "has_item"}:
         return p.object_id
@@ -195,8 +219,14 @@ def _scrub_room_refs(rooms: list[Room], object_ids: set[str]) -> list[Room]:
 def _stem(token: str) -> str:
     s = token.lower()
     for suffix in (
-        "_revealed", "_hidden", "_locked", "_unlocked",
-        "_item", "_object", "_tool", "_key",
+        "_revealed",
+        "_hidden",
+        "_locked",
+        "_unlocked",
+        "_item",
+        "_object",
+        "_tool",
+        "_key",
     ):
         if s.endswith(suffix) and len(s) > len(suffix):
             s = s[: -len(suffix)]
@@ -257,7 +287,9 @@ def _make_required_tools_takeable(objects: list[WorldObject]) -> list[str]:
     return repairs
 
 
-def _repair_unsolvable_gates(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+def _repair_unsolvable_gates(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[str]:
     gated: dict[str, str] = {}
     for room in rooms:
         gc = room.goal_completion
@@ -272,23 +304,42 @@ def _repair_unsolvable_gates(rooms: list[Room], objects: list[WorldObject]) -> l
             continue
         if obj.state not in _LLM_LOCKED_STATES:
             continue
-        if any([obj.requires_code, obj.requires_tool, obj.requires_liquid,
-                obj.requires_power, obj.fuses]):
+        if any(
+            [
+                obj.requires_code,
+                obj.requires_tool,
+                obj.requires_liquid,
+                obj.requires_power,
+                obj.fuses,
+            ]
+        ):
             continue
         same_room_takeables = [
-            o for o in objects
-            if o.location == obj.location and o.takeable
-            and o.id != obj.id and o.state not in _LLM_LOCKED_STATES
+            o
+            for o in objects
+            if o.location == obj.location
+            and o.takeable
+            and o.id != obj.id
+            and o.state not in _LLM_LOCKED_STATES
         ]
-        hinted = [o for o in same_room_takeables
-                  if any(h in o.id.lower() for h in _UNLOCKER_HINTS)]
-        pick = hinted[0] if hinted else (same_room_takeables[0] if same_room_takeables else None)
+        hinted = [
+            o
+            for o in same_room_takeables
+            if any(h in o.id.lower() for h in _UNLOCKER_HINTS)
+        ]
+        pick = (
+            hinted[0]
+            if hinted
+            else (same_room_takeables[0] if same_room_takeables else None)
+        )
         if pick is not None:
             obj.requires_tool = pick.id
             repairs.append(f"{obj.id}: locked gate given requires_tool {pick.id}")
         else:
             obj.state = target_state
-            repairs.append(f"{obj.id}: locked gate with no mechanism started at target '{target_state}'")
+            repairs.append(
+                f"{obj.id}: locked gate with no mechanism started at target '{target_state}'"
+            )
     return repairs
 
 
@@ -316,13 +367,20 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
         label = _fuse_label_for(gc.id)
         token = f"sekring_{label}_ON"
         host = next(
-            (o for o in objects
-             if o.location == room.id and not o.takeable
-             and o.state not in _LLM_LOCKED_STATES and o.fuses is None),
+            (
+                o
+                for o in objects
+                if o.location == room.id
+                and not o.takeable
+                and o.state not in _LLM_LOCKED_STATES
+                and o.fuses is None
+            ),
             None,
         )
         if host is None:
-            host = next((o for o in objects if o.location == room.id and o.fuses is None), None)
+            host = next(
+                (o for o in objects if o.location == room.id and o.fuses is None), None
+            )
         if host is None:
             continue
         host.fuses = {label: "OFF"}
@@ -330,11 +388,15 @@ def _repair_power_gates(rooms: list[Room], objects: list[WorldObject]) -> list[s
         if host.state in _LLM_LOCKED_STATES:
             host.state = "visible"
         gc.id = token
-        repairs.append(f"{room.id}: power gate '{orig_id}' -> fuse {label} on {host.id} ({token})")
+        repairs.append(
+            f"{room.id}: power gate '{orig_id}' -> fuse {label} on {host.id} ({token})"
+        )
     return repairs
 
 
-def _repair_missing_win_condition(rooms: list[Room], objects: list[WorldObject]) -> list[str]:
+def _repair_missing_win_condition(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[str]:
     if not rooms:
         return []
     final_room = rooms[-1]
@@ -344,7 +406,11 @@ def _repair_missing_win_condition(rooms: list[Room], objects: list[WorldObject])
 
     final_room_id = final_room.id
     by_id = {o.id: o for o in objects}
-    candidates = [o for o in objects if o.location == final_room_id and o.state in _LLM_LOCKED_STATES]
+    candidates = [
+        o
+        for o in objects
+        if o.location == final_room_id and o.state in _LLM_LOCKED_STATES
+    ]
     key_set = set(final_room.key_objects)
     keyed = [o for o in candidates if o.id in key_set]
     pick = (keyed[0] if keyed else candidates[0]) if candidates else None
@@ -366,7 +432,9 @@ def _repair_missing_win_condition(rooms: list[Room], objects: list[WorldObject])
     return [f"{final_room_id}: synthesised win condition -> {pick.id} = {target_state}"]
 
 
-def _required_info_tokens(rooms: list[Room], objects: list[WorldObject]) -> list[tuple[str, str]]:
+def _required_info_tokens(
+    rooms: list[Room], objects: list[WorldObject]
+) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     start_room = rooms[0].id if rooms else ""
     by_id = {o.id: o for o in objects}
@@ -465,7 +533,9 @@ def _rebind_self_clue_locks(objects: list[WorldObject]) -> list[str]:
         old = lock.requires_code
         lock.requires_code = lock.contains_info
         lock.interactable = True
-        repairs.append(f"{lock.id}: requires_code {old} -> self clue {lock.contains_info}")
+        repairs.append(
+            f"{lock.id}: requires_code {old} -> self clue {lock.contains_info}"
+        )
     return repairs
 
 
@@ -482,8 +552,12 @@ def _dedup_objects(
 
     def _precond_signature(o: WorldObject) -> tuple:
         return (
-            o.location, o.state, o.requires_code, o.requires_tool,
-            o.requires_liquid, o.requires_power,
+            o.location,
+            o.state,
+            o.requires_code,
+            o.requires_tool,
+            o.requires_liquid,
+            o.requires_power,
             tuple(sorted((o.fuses or {}).items())),
         )
 
@@ -565,7 +639,9 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
             continue
         seen_info.setdefault(o.contains_info, []).append(o.id)
         used = any(
-            _token_matches_code(c, o.contains_info) or o.contains_info in c or c in o.contains_info
+            _token_matches_code(c, o.contains_info)
+            or o.contains_info in c
+            or c in o.contains_info
             for c in consumed
         )
         if not used:
@@ -598,7 +674,9 @@ def _check_coherence(rooms: list[Room], objects: list[WorldObject]) -> list[str]
 
 
 def _prune_orphan_objects(
-    rooms: list[Room], objects: list[WorldObject], solution_path: list[str] | None = None
+    rooms: list[Room],
+    objects: list[WorldObject],
+    solution_path: list[str] | None = None,
 ) -> tuple[list[WorldObject], list[str]]:
     by_id = {o.id: o for o in objects}
 
@@ -639,6 +717,7 @@ def _prune_orphan_objects(
     # result objects referenced only in the solution narrative are not pruned.
     if solution_path:
         import re as _re
+
         for step in solution_path:
             for token in _re.findall(r"\b[a-z][a-z0-9_]*\b", step):
                 if token in by_id:
@@ -685,11 +764,17 @@ def _prune_orphan_objects(
         if deficit <= 0:
             continue
         fillers = [
-            o for o in objects
-            if o.id not in keep and not o.scenic and o.location == rid
-            and not o.requires_tool and not o.requires_code
-            and not o.requires_liquid and not o.requires_power
-            and not o.fuses and not o.contains_info
+            o
+            for o in objects
+            if o.id not in keep
+            and not o.scenic
+            and o.location == rid
+            and not o.requires_tool
+            and not o.requires_code
+            and not o.requires_liquid
+            and not o.requires_power
+            and not o.fuses
+            and not o.contains_info
         ]
         for filler in fillers[:deficit]:
             keep.add(filler.id)
@@ -734,6 +819,7 @@ def _scrub_spoilers(
                 redactions.append(f"{where}: bare digits '{digits}'")
                 return "the hidden code"
             return digits
+
         out = re.sub(r"\b\d{3,}\b", _digit_sub, out)
         return out
 
@@ -756,6 +842,7 @@ def _scrub_ghost_ids(
                 return tok
             replacements.append(tok)
             return "the object"
+
         return re.sub(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", _sub, text)
 
     cleaned = [_replace_ghosts(step) for step in solution_path]
@@ -765,6 +852,7 @@ def _scrub_ghost_ids(
 # ---------------------------------------------------------------------------
 # Core build function
 # ---------------------------------------------------------------------------
+
 
 def _backfill_scenic_objects(
     rooms: list[Room], objects: list[WorldObject], min_per_room: int
@@ -806,7 +894,9 @@ def _backfill_scenic_objects(
     return added
 
 
-def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -> GameWorld:
+def _build_puzzle(
+    world: GameWorld, data: dict, min_objects_per_room: int = 0
+) -> GameWorld:
     """Apply the repair pipeline to LLM-generated object data and return a completed GameWorld."""
     rooms = world.rooms
     room_ids = {r.id for r in rooms}
@@ -815,49 +905,78 @@ def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -
 
     objects, merges = _dedup_objects(objects, rooms)
     if merges:
-        print(f"[puzzle_builder] merged duplicate objects: {', '.join(merges)}", flush=True)
+        print(
+            f"[puzzle_builder] merged duplicate objects: {', '.join(merges)}",
+            flush=True,
+        )
 
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
 
     tool_repairs = _repair_tool_refs(objects)
     if tool_repairs:
-        print(f"[puzzle_builder] repaired tool refs: {', '.join(tool_repairs)}", flush=True)
+        print(
+            f"[puzzle_builder] repaired tool refs: {', '.join(tool_repairs)}",
+            flush=True,
+        )
 
     takeable_repairs = _make_required_tools_takeable(objects)
     if takeable_repairs:
-        print(f"[puzzle_builder] made required tools takeable: {', '.join(takeable_repairs)}", flush=True)
+        print(
+            f"[puzzle_builder] made required tools takeable: {', '.join(takeable_repairs)}",
+            flush=True,
+        )
 
     win_repairs = _repair_missing_win_condition(rooms, objects)
     if win_repairs:
-        print(f"[puzzle_builder] repaired missing win condition: {', '.join(win_repairs)}", flush=True)
+        print(
+            f"[puzzle_builder] repaired missing win condition: {', '.join(win_repairs)}",
+            flush=True,
+        )
 
     gate_repairs = _repair_unsolvable_gates(rooms, objects)
     if gate_repairs:
-        print(f"[puzzle_builder] repaired unsolvable gates: {', '.join(gate_repairs)}", flush=True)
+        print(
+            f"[puzzle_builder] repaired unsolvable gates: {', '.join(gate_repairs)}",
+            flush=True,
+        )
 
     power_repairs = _repair_power_gates(rooms, objects)
     if power_repairs:
-        print(f"[puzzle_builder] repaired power gates: {', '.join(power_repairs)}", flush=True)
+        print(
+            f"[puzzle_builder] repaired power gates: {', '.join(power_repairs)}",
+            flush=True,
+        )
 
     patched = _patch_missing_info(rooms, objects)
     if patched:
-        print(f"[puzzle_builder] auto-patched missing clues: {', '.join(patched)}", flush=True)
+        print(
+            f"[puzzle_builder] auto-patched missing clues: {', '.join(patched)}",
+            flush=True,
+        )
 
     self_clue = _rebind_self_clue_locks(objects)
     if self_clue:
-        print(f"[puzzle_builder] rebound self-clue locks: {', '.join(self_clue)}", flush=True)
+        print(
+            f"[puzzle_builder] rebound self-clue locks: {', '.join(self_clue)}",
+            flush=True,
+        )
 
     rewrites = _bind_goals(rooms)
     if rewrites:
-        print(f"[puzzle_builder] rebound goals to completion: {', '.join(rewrites)}", flush=True)
+        print(
+            f"[puzzle_builder] rebound goals to completion: {', '.join(rewrites)}",
+            flush=True,
+        )
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
 
     objects, orphans = _prune_orphan_objects(rooms, objects, solution_path)
     if orphans:
-        print(f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True)
+        print(
+            f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True
+        )
         rooms = _scrub_room_refs(rooms, {o.id for o in objects})
 
     # Backfill AFTER pruning so the scenic props themselves are never pruned and
@@ -865,7 +984,10 @@ def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -
     # the pruner fight each other across attempts).
     filler = _backfill_scenic_objects(rooms, objects, min_objects_per_room)
     if filler:
-        print(f"[puzzle_builder] backfilled scenic props to meet minimum: {', '.join(filler)}", flush=True)
+        print(
+            f"[puzzle_builder] backfilled scenic props to meet minimum: {', '.join(filler)}",
+            flush=True,
+        )
 
     valid_ids = {o.id for o in objects} | {r.id for r in rooms}
     solution_path, ghost_replacements = _scrub_ghost_ids(solution_path, valid_ids)
@@ -878,11 +1000,15 @@ def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -
     secrets = _secret_tokens(objects)
     solution_path, redactions = _scrub_spoilers(solution_path, secrets)
     if redactions:
-        print(f"[puzzle_builder] scrubbed spoilers: {', '.join(redactions)}", flush=True)
+        print(
+            f"[puzzle_builder] scrubbed spoilers: {', '.join(redactions)}", flush=True
+        )
 
     coherence = _check_coherence(rooms, objects)
     if coherence:
-        print(f"[puzzle_builder] coherence warnings: {'; '.join(coherence)}", flush=True)
+        print(
+            f"[puzzle_builder] coherence warnings: {'; '.join(coherence)}", flush=True
+        )
 
     return GameWorld(
         scenario=world.scenario,
@@ -897,6 +1023,7 @@ def _build_puzzle(world: GameWorld, data: dict, min_objects_per_room: int = 0) -
 # ---------------------------------------------------------------------------
 # LLM generation
 # ---------------------------------------------------------------------------
+
 
 def _default_chain_depth(s: Settings) -> int:
     return s.chain_depth if s.hard_mode else 3
@@ -929,7 +1056,11 @@ def _generate_puzzle(
 
 
 def _generate_puzzle_with_feedback(
-    llm, world: GameWorld, chain_depth: int, min_objects_per_room: int, violations: list[str]
+    llm,
+    world: GameWorld,
+    chain_depth: int,
+    min_objects_per_room: int,
+    violations: list[str],
 ) -> tuple[GameWorld, str]:
     violation_block = "\n".join(f"  - {v}" for v in violations)
     correction = (
@@ -954,7 +1085,10 @@ def _generate_puzzle_with_feedback(
 # Eval B — unified deterministic + oracle check, no LLM calls
 # ---------------------------------------------------------------------------
 
-def _objects_for_room(room_id: str, all_objects: list[WorldObject]) -> list[WorldObject]:
+
+def _objects_for_room(
+    room_id: str, all_objects: list[WorldObject]
+) -> list[WorldObject]:
     """Return all objects that transitively belong to `room_id`.
 
     Objects can be nested (location = another object's id). Walk the parent chain
@@ -976,7 +1110,9 @@ def _objects_for_room(room_id: str, all_objects: list[WorldObject]) -> list[Worl
     return [o for o in all_objects if root_room(o) == room_id]
 
 
-def _room_subworld(room: Room, all_objects: list[WorldObject], scenario: str) -> GameWorld:
+def _room_subworld(
+    room: Room, all_objects: list[WorldObject], scenario: str
+) -> GameWorld:
     """Build a single-room GameWorld where `room` is the only room.
 
     The room's adjacency is cleared so the oracle stays inside this room.
@@ -1033,15 +1169,15 @@ def _eval_room_goals(world: GameWorld) -> list[str]:
 
         # If goal_completion is not object_state, win_condition will be empty.
         # We still run the oracle and check object/info state manually after.
-        if not sub.win_condition.object_id and room.goal_completion.type != "object_state":
+        if (
+            not sub.win_condition.object_id
+            and room.goal_completion.type != "object_state"
+        ):
             # known_info and has_item goals: just verify the required object/info
             # exists among local objects — static check is sufficient.
             gc = room.goal_completion
             if gc.type == "has_item":
-                found = any(
-                    o.id == gc.object_id and o.takeable
-                    for o in sub.objects
-                )
+                found = any(o.id == gc.object_id and o.takeable for o in sub.objects)
                 if not found:
                     issues.append(
                         f"room '{room.id}': goal requires taking '{gc.object_id}' "
@@ -1089,7 +1225,9 @@ def _eval_object_counts(world: GameWorld, min_per_room: int) -> list[str]:
     return issues
 
 
-def _eval_puzzle(world: GameWorld, chain_depth_target: int, min_objects_per_room: int = 1) -> list[str]:
+def _eval_puzzle(
+    world: GameWorld, chain_depth_target: int, min_objects_per_room: int = 1
+) -> list[str]:
     """Return violation strings for the fully-built puzzle world.
 
     Runs four passes in sequence, all without LLM calls:
@@ -1105,6 +1243,7 @@ def _eval_puzzle(world: GameWorld, chain_depth_target: int, min_objects_per_room
     # --- pass 1: static backward-chain ---
     try:
         from benchmark.policies import check_solvable
+
         report = check_solvable(world)
         if not report.solvable:
             issues.extend(report.issues)
@@ -1125,6 +1264,7 @@ def _eval_puzzle(world: GameWorld, chain_depth_target: int, min_objects_per_room
     try:
         from benchmark.engine import HeadlessEpisode
         from benchmark.policies import heuristic_policy
+
         result = HeadlessEpisode(world).run(heuristic_policy)
         if not result.victory:
             issues.append(
@@ -1151,7 +1291,9 @@ def _print_solvability_check(world: GameWorld) -> None:
         return
     report = check_solvable(world)
     if report.solvable:
-        print("[puzzle_builder] static check: SOLVABLE — no structural issues", flush=True)
+        print(
+            "[puzzle_builder] static check: SOLVABLE — no structural issues", flush=True
+        )
     else:
         print(
             f"[puzzle_builder] static check: {len(report.issues)} structural issue(s):",
@@ -1190,6 +1332,7 @@ def _print_policy_benchmark(world: GameWorld) -> None:
 # LangGraph node
 # ---------------------------------------------------------------------------
 
+
 def _is_unsolvable_issue(issue: str) -> bool:
     """True when an issue means the world cannot be won (regenerating the world helps).
 
@@ -1202,7 +1345,11 @@ def _is_unsolvable_issue(issue: str) -> bool:
 
 
 def _build_puzzle_for_world(
-    llm, base_world: GameWorld, chain_depth: int, chain_depth_target: int, min_objs: int,
+    llm,
+    base_world: GameWorld,
+    chain_depth: int,
+    chain_depth_target: int,
+    min_objs: int,
     max_attempts: int,
 ) -> tuple[GameWorld, str, list[str], list[dict], int]:
     """Run the puzzle-attempt loop against one fixed world.
@@ -1227,7 +1374,9 @@ def _build_puzzle_for_world(
             f"(attempt {attempts + 1}/{max_attempts})...",
             flush=True,
         )
-        world, raw = _generate_puzzle_with_feedback(llm, base_world, chain_depth, min_objs, issues)
+        world, raw = _generate_puzzle_with_feedback(
+            llm, base_world, chain_depth, min_objs, issues
+        )
         attempts += 1
         issues = _eval_puzzle(world, chain_depth_target, min_objs)
 
@@ -1247,9 +1396,10 @@ def puzzle_builder_node(state: GameState) -> dict:
         return {}
 
     # Imported here to avoid a circular import at module load time.
+    import time
+
     from agents.game_master import world_builder_node
 
-    import time
     s = Settings()
     llm = get_llm("game_master")
     chain_depth = _default_chain_depth(s)
@@ -1268,8 +1418,7 @@ def puzzle_builder_node(state: GameState) -> dict:
 
     world_regens = 0
     while (
-        any(_is_unsolvable_issue(i) for i in issues)
-        and world_regens < max_world_regens
+        any(_is_unsolvable_issue(i) for i in issues) and world_regens < max_world_regens
     ):
         world_regens += 1
         print(
@@ -1280,10 +1429,15 @@ def puzzle_builder_node(state: GameState) -> dict:
         regen = world_builder_node(GameState(theme=state.theme))
         new_world = regen.get("world")
         if not new_world or not new_world.rooms:
-            print("[puzzle_builder] world regeneration produced no world — keeping current.", flush=True)
+            print(
+                "[puzzle_builder] world regeneration produced no world — keeping current.",
+                flush=True,
+            )
             break
         base_world = new_world
-        world_messages.extend(m for m in regen.get("messages", []) if isinstance(m, AIMessage))
+        world_messages.extend(
+            m for m in regen.get("messages", []) if isinstance(m, AIMessage)
+        )
         world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
             llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
         )

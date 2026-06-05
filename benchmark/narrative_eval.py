@@ -40,9 +40,9 @@ if TYPE_CHECKING:
 
 @dataclass
 class DimensionResult:
-    score: float        # [0.0, 1.0]
-    label: str          # "PASS" | "WARN" | "FAIL"
-    verdict: str = ""   # one-sentence summary from LLM (or deterministic message)
+    score: float  # [0.0, 1.0]
+    label: str  # "PASS" | "WARN" | "FAIL"
+    verdict: str = ""  # one-sentence summary from LLM (or deterministic message)
     notes: list[str] = field(default_factory=list)
 
 
@@ -136,12 +136,14 @@ def _fill(template: str, **kwargs: str) -> str:
 
 def _get_llm():
     from config.settings import get_llm
+
     return get_llm("game_master")
 
 
 def _judge_call(prompt_text: str) -> tuple[dict, bool]:
     """Call the LLM judge; return (parsed_dict, success)."""
     from langchain_core.messages import HumanMessage
+
     try:
         llm = _get_llm()
         response = llm.invoke([HumanMessage(content=prompt_text)])
@@ -218,6 +220,7 @@ def _solution_text(world: "GameWorld") -> str:
 
 def _eval_narrative_quality(world: "GameWorld") -> DimensionResult:
     from prompts import load_prompt
+
     prompt = _fill(
         load_prompt("narrative_eval", "narrative_quality"),
         scenario=world.scenario or "(empty)",
@@ -242,7 +245,9 @@ def _eval_narrative_quality(world: "GameWorld") -> DimensionResult:
             prefix = "+" if key == "strengths" else "−"
             notes.append(f"{prefix} {item}")
 
-    return DimensionResult(score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes)
+    return DimensionResult(
+        score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +257,7 @@ def _eval_narrative_quality(world: "GameWorld") -> DimensionResult:
 
 def _eval_plot_twist(world: "GameWorld") -> DimensionResult:
     from prompts import load_prompt
+
     prompt = _fill(
         load_prompt("narrative_eval", "plot_twist"),
         scenario=world.scenario or "(empty)",
@@ -283,7 +289,9 @@ def _eval_plot_twist(world: "GameWorld") -> DimensionResult:
     for item in data.get("notes", []):
         notes.append(str(item))
 
-    return DimensionResult(score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes)
+    return DimensionResult(
+        score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +301,7 @@ def _eval_plot_twist(world: "GameWorld") -> DimensionResult:
 
 def _eval_tool_coherence(world: "GameWorld") -> DimensionResult:
     from prompts import load_prompt
+
     prompt = _fill(
         load_prompt("narrative_eval", "tool_coherence"),
         scenario=world.scenario or "(empty)",
@@ -319,7 +328,9 @@ def _eval_tool_coherence(world: "GameWorld") -> DimensionResult:
     for item in data.get("notes", []):
         notes.append(str(item))
 
-    return DimensionResult(score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes)
+    return DimensionResult(
+        score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,14 +369,20 @@ def _eval_required_tool_present(world: "GameWorld") -> DimensionResult:
         checked_tools += 1
         tool = by_id.get(tool_id)
         if tool is None:
-            issues.append(f"{obj.id}: requires_tool '{tool_id}' — object does not exist")
+            issues.append(
+                f"{obj.id}: requires_tool '{tool_id}' — object does not exist"
+            )
             continue
         if not tool.takeable:
             issues.append(f"{obj.id}: tool '{tool_id}' exists but is not takeable")
         if tool.location == obj.id:
-            issues.append(f"{obj.id}: tool '{tool_id}' is nested inside the gate it must open")
+            issues.append(
+                f"{obj.id}: tool '{tool_id}' is nested inside the gate it must open"
+            )
         elif not _is_reachable(tool_id):
-            issues.append(f"{obj.id}: tool '{tool_id}' is locked/hidden with no reveal path")
+            issues.append(
+                f"{obj.id}: tool '{tool_id}' is locked/hidden with no reveal path"
+            )
 
     # Check requires_code has a clue producer
     for obj in world.objects:
@@ -374,15 +391,22 @@ def _eval_required_tool_present(world: "GameWorld") -> DimensionResult:
             continue
         digits_code = re.sub(r"[^0-9]", "", code)
         producers = [
-            o for o in world.objects
-            if o.contains_info and (
+            o
+            for o in world.objects
+            if o.contains_info
+            and (
                 o.contains_info == code
                 or code in o.contains_info
-                or (digits_code and digits_code == re.sub(r"[^0-9]", "", o.contains_info))
+                or (
+                    digits_code
+                    and digits_code == re.sub(r"[^0-9]", "", o.contains_info)
+                )
             )
         ]
         if not producers:
-            issues.append(f"{obj.id}: requires_code '{code}' — no clue object produces this token")
+            issues.append(
+                f"{obj.id}: requires_code '{code}' — no clue object produces this token"
+            )
 
     if checked_tools == 0 and not any(o.requires_code for o in world.objects):
         return DimensionResult(
@@ -404,7 +428,11 @@ def _eval_required_tool_present(world: "GameWorld") -> DimensionResult:
         score=round(score, 3),
         label=_grade(score),
         verdict=verdict,
-        notes=issues if issues else ["All requires_tool and requires_code references resolve correctly"],
+        notes=(
+            issues
+            if issues
+            else ["All requires_tool and requires_code references resolve correctly"]
+        ),
     )
 
 
@@ -449,16 +477,22 @@ def _eval_solvability(world: "GameWorld") -> tuple[DimensionResult, list[str], i
         score = 1.0
         if result.chain_depth == 0:
             score = 0.8
-            notes.append("Chain depth 0 — puzzle may be trivially short or repair flattened it")
+            notes.append(
+                "Chain depth 0 — puzzle may be trivially short or repair flattened it"
+            )
         elif result.chain_depth == 1:
             score = 0.9
-            notes.append("Chain depth 1 — shallow puzzle (consider more dependent steps)")
+            notes.append(
+                "Chain depth 1 — shallow puzzle (consider more dependent steps)"
+            )
         notes.append(
             f"Solved in {result.ticks} tick(s), "
             f"{result.objects_resolved} object(s) resolved, "
             f"rooms visited: {result.rooms_visited}"
         )
-        verdict = f"Oracle wins in {result.ticks} tick(s), chain depth {result.chain_depth}"
+        verdict = (
+            f"Oracle wins in {result.ticks} tick(s), chain depth {result.chain_depth}"
+        )
     else:
         score = 0.0
         verdict = f"Oracle FAILED to win in {result.ticks} tick(s)"
@@ -469,7 +503,9 @@ def _eval_solvability(world: "GameWorld") -> tuple[DimensionResult, list[str], i
         )
 
     return (
-        DimensionResult(score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes),
+        DimensionResult(
+            score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes
+        ),
         result.history,
         result.chain_depth,
     )
@@ -486,9 +522,15 @@ def _world_json_compact(world: "GameWorld") -> str:
     Omits description/notes prose to keep prompt length under the model's
     context budget — the judge checks structure and references, not prose.
     """
+
     def _obj_fields(o) -> dict:
-        d: dict = {"id": o.id, "location": o.location, "state": o.state,
-                   "interactable": o.interactable, "takeable": o.takeable}
+        d: dict = {
+            "id": o.id,
+            "location": o.location,
+            "state": o.state,
+            "interactable": o.interactable,
+            "takeable": o.takeable,
+        }
         if o.scenic:
             d["scenic"] = True
         if o.requires_code:
@@ -511,10 +553,16 @@ def _world_json_compact(world: "GameWorld") -> str:
                 "id": r.id,
                 "adjacency": r.adjacency,
                 "goal": r.goal,
-                "goal_completion": r.goal_completion.model_dump(exclude_none=True) if r.goal_completion else None,
+                "goal_completion": (
+                    r.goal_completion.model_dump(exclude_none=True)
+                    if r.goal_completion
+                    else None
+                ),
                 "key_objects": r.key_objects,
                 "object_count": sum(1 for o in world.objects if o.location == r.id),
-                "scenic_count": sum(1 for o in world.objects if o.location == r.id and o.scenic),
+                "scenic_count": sum(
+                    1 for o in world.objects if o.location == r.id and o.scenic
+                ),
             }
             for r in world.rooms
         ],
@@ -568,6 +616,7 @@ def _instructions_for_world(world: "GameWorld") -> str:
 def _eval_prompt_compliance(world: "GameWorld") -> DimensionResult:
     """Judge how well the world_builder + puzzle_builder output follows the generation instructions."""
     from prompts import load_prompt
+
     instructions = _instructions_for_world(world)
     world_json = _world_json_compact(world)
 
@@ -605,7 +654,9 @@ def _eval_prompt_compliance(world: "GameWorld") -> DimensionResult:
     for p in data.get("passes", []):
         notes.append(f"✓ {p}")
 
-    return DimensionResult(score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes)
+    return DimensionResult(
+        score=round(score, 3), label=_grade(score), verdict=verdict, notes=notes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +664,9 @@ def _eval_prompt_compliance(world: "GameWorld") -> DimensionResult:
 # ---------------------------------------------------------------------------
 
 
-def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = None) -> DimensionResult:
+def _eval_solution_path(
+    world: "GameWorld", oracle_trace: list[str] | None = None
+) -> DimensionResult:
     """Check solution path object references and replay-solvability.
 
     Two deterministic checks, followed by an LLM judge when issues are found:
@@ -655,7 +708,9 @@ def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = Non
     # Find ids mentioned as words in the path that DON'T resolve
     # Strategy: tokenise path steps into snake_case-like tokens and check each
     tokens = set(re.findall(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", path_text.lower()))
-    ghost_ids = tokens - object_ids - room_ids - {"the_hidden", "hidden_code", "solution_path"}
+    ghost_ids = (
+        tokens - object_ids - room_ids - {"the_hidden", "hidden_code", "solution_path"}
+    )
     # Only flag tokens that look like real ids (not common words run together)
     plausible_ghosts = {t for t in ghost_ids if len(t) > 6 and "_" in t}
     if plausible_ghosts:
@@ -668,7 +723,16 @@ def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = Non
     # Parse solution_path steps into candidate engine actions.
     # Each step is e.g. "1. examine clue_note in room_1 to obtain the code"
     # We look for known action verbs followed by a known id.
-    _VERBS = ("examine", "take", "use_tool", "enter_code", "go", "flip_fuse", "insert_liquid", "open")
+    _VERBS = (
+        "examine",
+        "take",
+        "use_tool",
+        "enter_code",
+        "go",
+        "flip_fuse",
+        "insert_liquid",
+        "open",
+    )
     candidate_actions: list[str] = []
     for step in path:
         step_lower = step.lower()
@@ -685,6 +749,7 @@ def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = Non
     if candidate_actions:
         try:
             from benchmark.generate_bank import _replay_wins
+
             replay_ok = _replay_wins(world, candidate_actions)
             if replay_ok:
                 notes.append(
@@ -728,12 +793,16 @@ def _eval_solution_path(world: "GameWorld", oracle_trace: list[str] | None = Non
     if not issues:
         verdict = "All solution path references exist; path replay confirms solvability"
         if replay_ok is None:
-            verdict = "Object references look valid; replay skipped (no parseable steps)"
+            verdict = (
+                "Object references look valid; replay skipped (no parseable steps)"
+            )
     else:
         verdict = f"{len(issues)} solution path issue(s) found"
         notes = issues + notes
 
-    return DimensionResult(score=score, label=_grade(score), verdict=verdict, notes=notes)
+    return DimensionResult(
+        score=score, label=_grade(score), verdict=verdict, notes=notes
+    )
 
 
 def _eval_solution_path_llm(
@@ -749,14 +818,27 @@ def _eval_solution_path_llm(
     world_summary = json.dumps(
         {
             "rooms": [
-                {"id": r.id, "goal": r.goal,
-                 "goal_completion": r.goal_completion.model_dump(exclude_none=True) if r.goal_completion else None}
+                {
+                    "id": r.id,
+                    "goal": r.goal,
+                    "goal_completion": (
+                        r.goal_completion.model_dump(exclude_none=True)
+                        if r.goal_completion
+                        else None
+                    ),
+                }
                 for r in world.rooms
             ],
             "objects": [
-                {"id": o.id, "location": o.location, "state": o.state,
-                 "takeable": o.takeable, "requires_tool": o.requires_tool,
-                 "requires_code": o.requires_code, "contains_info": o.contains_info}
+                {
+                    "id": o.id,
+                    "location": o.location,
+                    "state": o.state,
+                    "takeable": o.takeable,
+                    "requires_tool": o.requires_tool,
+                    "requires_code": o.requires_code,
+                    "contains_info": o.contains_info,
+                }
                 for o in world.objects
             ],
             "win_condition": world.win_condition.model_dump(),
@@ -768,17 +850,23 @@ def _eval_solution_path_llm(
     replay_result_str = (
         "PASS — replay reached victory"
         if replay_ok is True
-        else "FAIL — replay did not reach victory"
-        if replay_ok is False
-        else "SKIPPED — no parseable engine actions found in solution path"
+        else (
+            "FAIL — replay did not reach victory"
+            if replay_ok is False
+            else "SKIPPED — no parseable engine actions found in solution path"
+        )
     )
 
     prompt = _fill(
         load_prompt("narrative_eval", "solution_path"),
         world=world_summary,
         solution_path="\n".join(path),
-        oracle_trace="\n".join(oracle_trace) if oracle_trace else "(oracle trace not available)",
-        parsed_actions="\n".join(candidate_actions) if candidate_actions else "(none extracted)",
+        oracle_trace=(
+            "\n".join(oracle_trace) if oracle_trace else "(oracle trace not available)"
+        ),
+        parsed_actions=(
+            "\n".join(candidate_actions) if candidate_actions else "(none extracted)"
+        ),
         replay_result=replay_result_str,
     )
 
@@ -822,6 +910,7 @@ class QuickEvalResult:
     whichever dimensions flagged issues.  ``score`` is the mean of the three
     dimension scores.
     """
+
     score: float
     solvable: bool
     violations: list[str]
@@ -890,8 +979,13 @@ def evaluate_world(world: "GameWorld") -> NarrativeEvalReport:
     solution_path = _eval_solution_path(world, oracle_trace=trace)
 
     scores = [
-        narr.score, twist.score, coherence.score, tool_present.score,
-        solvability.score, compliance.score, solution_path.score,
+        narr.score,
+        twist.score,
+        coherence.score,
+        tool_present.score,
+        solvability.score,
+        compliance.score,
+        solution_path.score,
     ]
     overall = round(sum(scores) / len(scores), 3)
 
@@ -940,8 +1034,14 @@ def _section(dim: str, result: DimensionResult) -> None:
 
 def report_to_dict(report: NarrativeEvalReport) -> dict:
     """Serialise a NarrativeEvalReport to a plain dict (JSON-safe)."""
+
     def _dim(d: DimensionResult) -> dict:
-        return {"score": d.score, "label": d.label, "verdict": d.verdict, "notes": d.notes}
+        return {
+            "score": d.score,
+            "label": d.label,
+            "verdict": d.verdict,
+            "notes": d.notes,
+        }
 
     return {
         "overall": report.overall,

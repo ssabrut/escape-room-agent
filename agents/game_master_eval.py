@@ -307,19 +307,31 @@ def game_master_eval_node(state: GameState) -> dict:
         ps.victory = True
         _gm_banner("VICTORY", char="*")
         _gm_stream(f"  Party achieved the win condition at tick {ps.tick}.")
-        new_messages.append(AIMessage(content=f"[game_master_eval] VICTORY at tick {ps.tick}"))
+        new_messages.append(
+            AIMessage(content=f"[game_master_eval] VICTORY at tick {ps.tick}")
+        )
         _render_eval_final(ps, world, MAX_TICKS)
-        print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
+        print(
+            f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s",
+            flush=True,
+        )
         return {"messages": new_messages, "party_state": ps}
 
     # --- Time-up check ---
     if ps.tick >= MAX_TICKS:
         ps.game_over = True
         _gm_banner("TIME UP", char="*")
-        _gm_stream(f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition.")
-        new_messages.append(AIMessage(content=f"[game_master_eval] Stopped at MAX_TICKS={MAX_TICKS}"))
+        _gm_stream(
+            f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition."
+        )
+        new_messages.append(
+            AIMessage(content=f"[game_master_eval] Stopped at MAX_TICKS={MAX_TICKS}")
+        )
         _render_eval_final(ps, world, MAX_TICKS)
-        print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
+        print(
+            f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s",
+            flush=True,
+        )
         return {"messages": new_messages, "party_state": ps}
 
     # --- Local room goal check ---
@@ -371,7 +383,10 @@ def game_master_eval_node(state: GameState) -> dict:
     # Consume the in-tick directive so a later tick can't reuse a stale one.
     ps.pending_directive = None
 
-    print(f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s", flush=True)
+    print(
+        f"[game_master_eval] tick {ps.tick} elapsed {time.perf_counter() - _eval_start:.2f}s",
+        flush=True,
+    )
     return {"messages": new_messages, "party_state": ps}
 
 

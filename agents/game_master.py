@@ -287,9 +287,8 @@ def world_builder_node(state: GameState) -> dict:
 
     messages: list[AIMessage] = []
     for entry in attempt_log:
-        header = (
-            f"=== ATTEMPT {entry['attempt']} (rejected) ===\n"
-            + "\n".join(f"  • {i}" for i in entry["issues"])
+        header = f"=== ATTEMPT {entry['attempt']} (rejected) ===\n" + "\n".join(
+            f"  • {i}" for i in entry["issues"]
         )
         messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
     messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))

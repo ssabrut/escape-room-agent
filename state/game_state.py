@@ -56,7 +56,9 @@ class WorldObject(BaseModel):
     contains_info: str | None = None
     slot_description: str | None = None
     note: str | None = None
-    scenic: bool = False  # pure atmosphere; never on solution path, exempt from orphan pruning
+    scenic: bool = (
+        False  # pure atmosphere; never on solution path, exempt from orphan pruning
+    )
 
 
 class WinCondition(BaseModel):

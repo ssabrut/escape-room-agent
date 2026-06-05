@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 09:42:37 WIB
+
+### What changed
+- Added a fifth synthetic contrastive DPO axis for `puzzle_builder`, `untakeable_tool`, which breaks the win chain at an *intermediate* dependency: it makes a tool the solution relies on impossible to pick up (re-introducing exactly what `_make_required_tools_takeable` repairs). As with the other axes, a pair is kept only after the corrupted copy is re-verified to genuinely fail the end-to-end oracle, and `untakeable_tool` is now a selectable value for `--dpo-axes`.
+- Synthetic DPO generation now caps how many pairs a single accepted world can contribute, via the new `--max-dpo-per-world` flag (default 2; 0 = no cap). Corruption axes are visited in a seeded-shuffled order and only the first N validated pairs are kept, so no single accepted world gets reinforced across every axis (which would invite memorizing its story) while the rotating subset keeps every axis globally balanced. The run header reports the per-world cap.
+- Added a `--stats` mode to the dataset generator that reports SFT/DPO counts per target and a per-axis breakdown (count and share) of puzzle DPO pairs from the existing dataset, then exits without any generation or LLM calls. Live-retry pairs (which carry no `axis` field) are bucketed as `live-retry`.
+
+### Why
+The dataset needed a contrastive signal for a common, subtle failure mode the existing axes missed — a required tool that exists but can't be carried — distinct from a fully unsolvable win object. Capping DPO pairs per world prevents over-reinforcing any single accepted story while keeping axis coverage balanced, and the `--stats` view makes the resulting axis distribution inspectable without re-running generation.
+
+---
+
 ## 2026-06-05 09:27:51 WIB
 
 ### What changed

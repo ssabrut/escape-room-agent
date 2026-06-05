@@ -73,9 +73,7 @@ def _generate_one(
     The repair/coherence warnings are captured (not swallowed) and returned so the caller
     can show them inline per attempt under --debug.
     """
-    prompt = BANK_PROMPT.format(
-        theme=theme, num_rooms=rooms, chain_depth=chain_depth
-    )
+    prompt = BANK_PROMPT.format(theme=theme, num_rooms=rooms, chain_depth=chain_depth)
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
