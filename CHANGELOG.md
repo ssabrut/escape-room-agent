@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-05 09:27:51 WIB
+
+### What changed
+- The dataset generator now builds fine-tuning data for both generation agents independently instead of treating world generation as a single step. Each accepted run emits training examples into two separate trees — `dataset/world/` (theme → rooms-only skeleton, owned by `world_builder`) and `dataset/puzzle/` (rooms skeleton → objects, locks, clues, and solution path, owned by `puzzle_builder`) — each with its own SFT and DPO files plus merged `sft_all.jsonl`/`dpo_all.jsonl`.
+- The pipeline now runs the two stages with independent validation and retry: the rooms skeleton is gated by the deterministic structural check and the full puzzle by the oracle-backed `_eval_puzzle`, each retrying up to the attempt budget and capturing a DPO pair on every real violation→fix transition with the exact correction prompt the model received.
+- Added synthetic contrastive DPO generation for `puzzle_builder`. From each accepted world, corruptors deliberately degrade a single named axis — `unsolvable` (re-lock the win object), `shallow` (open every gate so the chain collapses), `orphans` (inject objects gated by codes nothing produces), and `phantom` (reference object ids that don't exist in the solution path). A pair is kept only after the corrupted copy is re-verified to genuinely fail on its axis, so each chosen/rejected pair shares an identical prompt and teaches only the defect.
+- New CLI controls: `--target {world,puzzle,both}` selects which agent(s) to build data for, `--dpo-axes` selects which synthetic corruption axes to apply (or `none`), and `--seed` makes the synthetic corruption reproducible. The manifest and run summary now report per-theme world/puzzle SFT and DPO counts side by side, and `--resume` accounts for both targets when deciding whether a theme is complete.
+
+### Why
+The real game generates worlds in two stages owned by different agents, so a single combined dataset couldn't train either agent cleanly. Splitting the dataset per agent — and adding verified, single-axis synthetic DPO pairs that share the prompt with their accepted counterpart — gives each fine-tune a clean bad→good signal isolated to the exact defect rather than to incidental story differences.
+
+---
+
 ## 2026-06-05 08:45:38 WIB
 
 ### What changed
