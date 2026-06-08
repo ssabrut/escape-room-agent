@@ -312,12 +312,58 @@ def _parse_descriptions(text: str) -> dict[str, str]:
     return {k: v for k, v in descs.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
-    """Fill object descriptions from an LLM theming pass, with code fallbacks.
-
-    The structure of ``world`` is never touched — only ``description`` strings are
-    set. Objects the LLM omits keep a generated, role-appropriate description.
+def _parse_theming_response(text: str) -> dict[str, dict[str, str]]:
+    """Parse LLM theming response with both 'names' and 'descriptions' keys.
+    
+    Returns a dict with 'names' and 'descriptions' keys, each containing a mapping
+    of object_id to creative name/description. Handles both new format (with both
+    keys) and legacy format (descriptions only).
     """
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    raw = fence.group(1) if fence else text
+    data = None
+    for candidate in (raw, text):
+        try:
+            data = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            pass
+    
+    if data is None:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group())
+            except json.JSONDecodeError:
+                data = None
+    
+    if not isinstance(data, dict):
+        return {"names": {}, "descriptions": {}}
+    
+    # Extract names and descriptions with fallback for legacy format
+    names_dict = data.get("names", {})
+    descs_dict = data.get("descriptions", data)  # fallback to top-level for legacy
+    
+    if not isinstance(names_dict, dict):
+        names_dict = {}
+    if not isinstance(descs_dict, dict):
+        descs_dict = {}
+    
+    return {
+        "names": {k: v for k, v in names_dict.items() if isinstance(k, str) and isinstance(v, str)},
+        "descriptions": {k: v for k, v in descs_dict.items() if isinstance(k, str) and isinstance(v, str)},
+    }
+
+
+def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
+    """Fill object names and descriptions from an LLM theming pass, with code fallbacks.
+
+    The structure and puzzle mechanics of ``world`` are never touched — only ``id``
+    and ``description`` strings are updated. Objects the LLM omits keep generated,
+    role-appropriate values. LLM-suggested names are applied to objects and used
+    throughout the world (rooms and object references are updated accordingly).
+    """
+    names: dict[str, str] = {}  # original_id -> creative_name
     descs: dict[str, str] = {}
     if llm is not None:
         try:
@@ -335,11 +381,43 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
             resp = llm.invoke(
                 [SystemMessage(content=system), HumanMessage(content=prompt)]
             )
-            descs = _parse_descriptions(resp.content)
+            parsed = _parse_theming_response(resp.content)
+            names = parsed.get("names", {})
+            descs = parsed.get("descriptions", {})
         except Exception:
+            names = {}
             descs = {}
 
+    # Build old_id -> new_id mapping for updating references
+    id_mapping: dict[str, str] = {}
+    for obj in world.objects:
+        if obj.id in names:
+            new_id = names[obj.id]
+            id_mapping[obj.id] = new_id
+            obj.id = new_id
+
+    # Update references throughout the world
+    for obj in world.objects:
+        if obj.location in id_mapping:
+            obj.location = id_mapping[obj.location]
+        if obj.requires_tool and obj.requires_tool in id_mapping:
+            obj.requires_tool = id_mapping[obj.requires_tool]
+
+    for room in world.rooms:
+        room.key_objects = [id_mapping.get(oid, oid) for oid in room.key_objects]
+        if room.goal_completion and room.goal_completion.object_id:
+            if room.goal_completion.object_id in id_mapping:
+                room.goal_completion.object_id = id_mapping[
+                    room.goal_completion.object_id
+                ]
+
+    # Update win condition if present
+    if world.win_condition and world.win_condition.object_id in id_mapping:
+        world.win_condition.object_id = id_mapping[world.win_condition.object_id]
+
+    # Apply descriptions with fallback
     for obj in world.objects:
         themed = descs.get(obj.id)
         obj.description = themed if themed else _fallback_description(obj, world)
     return world
+

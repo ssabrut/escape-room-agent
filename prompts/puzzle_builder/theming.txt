@@ -1,32 +1,40 @@
-You are dressing a pre-built, already-solvable escape room in the theme: {theme}
+You are creating a realistic, immersive escape room in the theme: {theme}
 
 Scenario: {scenario}
 Objective: {objective}
 
-Below is the FIXED object graph. The ids, roles, locks, and how each object is
-opened are ALREADY DECIDED and must not change. Your ONLY job is to write vivid,
-in-theme prose for each object so the world feels like a "{theme}" escape room.
+Below is the puzzle structure—the mechanical dependencies and locks are FIXED and
+must not change. However, you have creative freedom to rename objects and write
+vivid descriptions that make them feel like authentic, theme-appropriate items
+rather than generic puzzle components.
 
-Each object has a role:
+Each object has a mechanical role:
   - locked-goal : a locked thing the players must open to clear the room.
   - locked-tool : a locked thing that, once opened, yields a takeable tool.
   - tool        : a takeable item used to open something else.
-  - clue        : something to examine that reveals a hidden code.
-  - panel       : a fuse/power panel with a switch to flip.
+  - clue        : something to examine that reveals a hidden code/info.
+  - panel       : a power/fuse panel with a switch to flip.
   - scenic      : pure atmosphere, useless to the puzzle.
 
 Object graph:
 {graph}
 
-Return ONLY a JSON object mapping each object id to a description. For 'clue'
-objects, the description should hint that it carries the hidden code (without
-stating the digits). For 'panel' objects, mention the switch. Do not add, remove,
-or rename ids. Do not mention game mechanics like "requires_code" literally.
+Return ONLY a JSON object with two keys:
+1. "names": maps original object_id → creative, theme-appropriate name
+2. "descriptions": maps original object_id → vivid 2-3 sentence description
+
+For 'clue' objects, the description should hint it carries hidden information
+(without stating the digits). For 'panel' objects, mention the switch. Names
+should fit the theme and feel natural—avoid generic "clue_" or "tool_" style names.
 
 Format:
 {{
+  "names": {{
+    "<object_id>": "<creative theme-appropriate name>",
+    ...
+  }},
   "descriptions": {{
-    "<object_id>": "<one or two themed sentences>",
+    "<object_id>": "<vivid, 2-3 sentence description>",
     ...
   }}
 }}
