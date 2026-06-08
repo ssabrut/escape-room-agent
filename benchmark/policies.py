@@ -163,6 +163,7 @@ def heuristic_policy(world, ps, action_space):
 # BFS policy
 # ---------------------------------------------------------------------------
 
+
 def bfs_policy(world: "GameWorld", max_states: int = 50_000):
     """Return a policy that replays the shortest winning action sequence found by BFS.
 
@@ -214,7 +215,6 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
                 "room_observations": dict(ps.room_observations),
                 "room_plans": dict(ps.room_plans),
                 "global_object_observations": dict(ps.global_object_observations),
-                "pending_directive": None,
                 "last_fingerprint": None,
             }
         )
@@ -307,6 +307,7 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
 # Static backward-chain solvability checker
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SolvabilityReport:
     solvable: bool
@@ -336,6 +337,9 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
     - requires_power with no fuse panel that can activate it
     - known_info goal tokens with no upstream contains_info
     - Room goal_completion targets that reference non-existent objects
+    - Goal objects that are not present/reachable in the room they gate
+      (object_state goal object must live in that room; has_item goal item
+      must live in a room reachable on the way to it)
     - Win condition object that does not exist
     - Rooms with no path to the win room (disconnected graph)
     """
@@ -361,14 +365,36 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                         queue.append(neighbor)
         for room in world.rooms:
             if room.id not in reachable:
-                issues.append(f"room '{room.id}' is disconnected — unreachable from start '{start}'")
+                issues.append(
+                    f"room '{room.id}' is disconnected — unreachable from start '{start}'"
+                )
 
-    # --- Win condition object must exist ---
+    # --- Win condition object must exist and require real effort ---
     win = world.win_condition
     if not win.object_id:
-        issues.append("win_condition has no object_id — final room has no object_state goal_completion")
+        issues.append(
+            "win_condition has no object_id — final room has no object_state goal_completion"
+        )
     elif win.object_id not in obj_by_id:
         issues.append(f"win_condition references non-existent object '{win.object_id}'")
+    else:
+        win_obj = obj_by_id[win.object_id]
+        # A win object that already starts in its target state means the world is
+        # won at tick 0 — every policy "wins" instantly with 0 ticks. Reject so
+        # puzzle_builder regenerates a goal that demands actual play.
+        if win.state and win_obj.state == win.state:
+            issues.append(
+                f"win_condition is trivially satisfied — '{win.object_id}' already "
+                f"starts in target state '{win.state}', so the world is won at tick 0"
+            )
+        # 'visible'/'fixed' are inert default states, never a meaningful WIN target
+        # (the goal should be an unlock/transform, e.g. 'unlocked').
+        if win.state in {"visible", "fixed"}:
+            issues.append(
+                f"win_condition target state '{win.state}' is a trivial/default state "
+                f"for '{win.object_id}' — a win goal must require a real change "
+                f"(e.g. 'unlocked')"
+            )
 
     # --- Build lookup tables for the backward walk ---
 
@@ -444,9 +470,7 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
         # requires_code: needs a contains_info token containing the code digits
         if obj.requires_code:
             code = obj.requires_code
-            matching = [
-                tok for tok in info_producers if code in tok
-            ]
+            matching = [tok for tok in info_producers if code in tok]
             if not matching:
                 issues.append(
                     f"object '{obj.id}' requires_code '{code}' but no contains_info "
@@ -473,9 +497,7 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     key = frozenset(cycle)
                     if key not in seen_cycles:
                         seen_cycles.add(key)
-                        issues.append(
-                            f"circular tool dependency: {' -> '.join(cycle)}"
-                        )
+                        issues.append(f"circular tool dependency: {' -> '.join(cycle)}")
 
         # requires_power: needs a fuse panel that can activate the token
         if obj.requires_power:
@@ -492,7 +514,8 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
         if obj.requires_liquid:
             token = obj.requires_liquid
             producers = [
-                o for o in world.objects
+                o
+                for o in world.objects
                 if (o.contains_info and token in o.contains_info) or o.id == token
             ]
             if not producers:
@@ -500,6 +523,47 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"object '{obj.id}' requires_liquid '{token}' but no object "
                     f"in the world supplies it"
                 )
+
+    # --- Resolve an object's home room by walking its location chain ---
+    # An object's `location` is a room id, or another object's id when nested.
+    # Walk up parent objects until we land on a room id. Returns None on a
+    # dangling/cyclic chain.
+    def _room_of(object_id: str) -> str | None:
+        seen: set[str] = set()
+        cur = object_id
+        while cur in obj_by_id:
+            if cur in seen:
+                return None  # cycle in nesting chain
+            seen.add(cur)
+            loc = obj_by_id[cur].location
+            if loc in room_ids:
+                return loc
+            cur = loc
+        return None
+
+    # --- Reachable-room set: every room on a path from start up to a target ---
+    # For a has_item goal the party may carry the item in from an earlier room,
+    # so the supplier may live in any room reachable on the way to the goal room.
+    def _rooms_up_to(target_room: str) -> set[str]:
+        if not world.rooms:
+            return set()
+        start_room = world.rooms[0].id
+        # BFS from start; any room from which target_room is still reachable counts.
+        adj: dict[str, set[str]] = {r.id: set() for r in world.rooms}
+        for r in world.rooms:
+            for n in r.adjacency.values():
+                if n in room_ids:
+                    adj[r.id].add(n)
+        # rooms reachable from start
+        from_start: set[str] = set()
+        q = [start_room]
+        while q:
+            c = q.pop()
+            if c in from_start:
+                continue
+            from_start.add(c)
+            q.extend(adj.get(c, ()))
+        return from_start if target_room in from_start else set()
 
     # --- Room goal_completion prerequisites ---
     for room in world.rooms:
@@ -512,6 +576,16 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"room '{room.id}' goal_completion references non-existent "
                     f"object '{gc.object_id}'"
                 )
+            elif gc.object_id:
+                # Goal achievability: an object_state goal is satisfied by acting on
+                # the object where it sits, so it MUST live in this room.
+                home = _room_of(gc.object_id)
+                if home != room.id:
+                    where = f"room '{home}'" if home else "no resolvable room"
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal object "
+                        f"'{gc.object_id}' is in {where}, not in this room"
+                    )
         elif gc.type == "known_info":
             if gc.info and gc.info not in info_producers:
                 issues.append(
@@ -529,6 +603,21 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"room '{room.id}' goal_completion requires has_item '{gc.object_id}' "
                     f"but that object is not takeable"
                 )
+            elif gc.object_id:
+                # Goal achievability: the party can carry the item in, so its home
+                # room only has to be reachable on a path leading to this room.
+                home = _room_of(gc.object_id)
+                if home is None:
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal item "
+                        f"'{gc.object_id}' has no resolvable room location"
+                    )
+                elif home not in _rooms_up_to(room.id):
+                    issues.append(
+                        f"room '{room.id}' goal unachievable — goal item "
+                        f"'{gc.object_id}' lives in room '{home}', which is not "
+                        f"reachable on the way to this room"
+                    )
         elif gc.type == "power_active":
             if gc.id:
                 satisfying = [p for p in panels if _panel_satisfies_power(p, gc.id)]

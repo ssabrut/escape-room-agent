@@ -2,6 +2,204 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 09:14:32 WIB
+
+### What changed
+- Removed the LLM-as-judge entirely. Deleted the `benchmark/narrative_eval.py` module and its `prompts/narrative_eval/` prompts, and dropped every entry point into it: the `--narrative-eval`/`--eval` and `--oracle-trace` flags (plus `_run_narrative_eval`/`_load_world_from_json`) from `main.py`, and the `--judge-dpo` revision-loop gate, the `--min-quality` post-filter (`quality_filter`), and `_judge_violations` from `benchmark/generate_dataset.py`. World and puzzle acceptance is now gated solely by the deterministic checks — `_eval_world_structure`, `check_solvable`, and `_eval_puzzle` (static solvability + key objects + object counts + oracle).
+- The fast, deterministic `--struct-eval` (alias `--trace-eval`) inline per-node check is unchanged and remains the only evaluator. Feedback/correction wording that called the deterministic checks an "automated judge" was corrected to "automated checks".
+
+### Why
+The deterministic gates already fully validate structural solvability and key-object presence, and the LLM judge added cost, latency, and non-determinism to generation and dataset building. Removing it makes both pipelines fully deterministic by default.
+
+## 2026-06-08 08:38:56 WIB
+
+### What changed
+- When a declared key object still can't be materialised after the puzzle budget is exhausted, `puzzle_builder` now surgically repairs just the offending room skeleton(s) and rebuilds the puzzle, instead of jumping straight to a full world regeneration. This new escalation tier (bounded by the world-regen budget) reuses the `repair` prompt via a public `repair_world` entry point, keeping every unaffected room intact, and the repair prompt now instructs the model to swap an unbuildable key-object anchor for a simpler, physically buildable one and re-point the room's goal at it.
+- The solvability check now rejects trivially-won worlds: a win condition whose object already starts in its target state (won at tick 0) or whose target state is an inert default (`visible`/`fixed`) is flagged as an issue, forcing `puzzle_builder` to regenerate a goal that demands real play. The world-builder generation prompts were updated to match — the win-condition room's goal state must be `unlocked`, never `visible`/`fixed`.
+- The evaluation CLI flags were renamed to make the two evaluators distinct: `--eval` → `--narrative-eval` (slow end-of-run LLM judge) and `--trace-eval` → `--struct-eval` (fast inline per-node structural check), with the old names kept as deprecated aliases. Help text and usage examples were clarified, including that `--oracle-trace` is only a verbosity modifier for the narrative evaluator.
+
+### Why
+Worlds were occasionally generated that the oracle "won" at tick 0 because the win object already sat in its target state (or targeted an inert default state), making the benchmark meaningless; rejecting these forces a goal that requires actual solving. The surgical key-object repair tier avoids throwing away an otherwise-good world just because one anchor proved unbuildable, repairing only the room at fault. The flag rename removes longstanding confusion between the cheap structural eval and the expensive narrative judge.
+
+---
+
+## 2026-06-05 16:20:11 WIB
+
+### What changed
+- `generate` mode now runs the full two-stage pipeline again — after `world_builder` produces the rooms skeleton, `puzzle_builder` runs immediately on it, and both stages are rendered, timed, logged, and structurally traced together (single runs, captured runs, smoke, and per-node tracing all now scope to both `world_builder` and `puzzle_builder` in generate mode, undoing the prior world-only restriction).
+- The win condition is now an explicitly stored field owned by `puzzle_builder` rather than a property computed on the fly from the final room's goal. `world_builder` leaves it empty, and once objects exist `puzzle_builder` derives and writes it (via a new shared `derive_win_condition` helper), so a rooms-only skeleton carries no win target until the puzzle stage assembles one. World repair no longer re-passes the win condition (it follows from the merged rooms).
+- A room's declared `key_objects` are now enforced as mandatory anchors throughout puzzle building: a new structural check rejects any world where a room's `key_objects` are not all materialised as real objects with matching ids (causing an automatic retry), and the generation prompt now lists each room's key objects and forbids dropping, renaming, or substituting them. To support this, key objects are no longer silently scrubbed from rooms and are always kept through orphan pruning even if not strictly reachable.
+
+### Why
+The two stages had been split apart so that generate mode produced only a rooms skeleton, but generating and evaluating a complete world in one pass is what the dataset pipeline needs, so the puzzle stage was rejoined to generate mode. Making the win condition a stored field owned by the puzzle stage removes the awkwardness of a "computed" win target that was meaningless for a rooms-only world and gives each stage a clear owner for it. Enforcing key objects as hard anchors prevents the puzzle builder from quietly dropping the headline objects a room's goal was designed around — previously such a drop could be masked instead of surfaced and retried.
+
+---
+
+## 2026-06-05 16:04:24 WIB
+
+### What changed
+- World generation now repairs failed rooms surgically instead of regenerating the whole world. When the structural eval flags issues that name specific rooms (e.g. `room '<id>': ...`), the world builder sends only those rooms — alongside the full world for context and a per-room list of their issues — to a new `repair` prompt, then merges the fixed rooms back in and re-runs adjacency repair. Only when an issue names no room (e.g. a missing scenario) does it fall back to a full regeneration. The retry log now prints whether each attempt is a targeted repair or a full regeneration.
+- World generation prompts moved to a dedicated `prompts/world_builder/` set (system, generation, generation_bank, plus the new repair prompt), replacing the prompts previously loaded from the `game_master` namespace.
+- Each generation node now records its per-attempt retry history (attempt number and issues) to a separate `attempts.json` under the node's log directory, and the rejected-attempt messages no longer embed the full raw LLM payload — keeping the message trail and `output.json` lean while the structured attempt log lives in its own file.
+- The `generate` mode now runs only the `world_builder` stage; the `puzzle_builder` stage no longer runs in generate-only mode (single runs, captured runs, smoke, and per-node structural tracing all scope their node set to `world_builder` when in generate mode).
+- When `--smoke` and `--node` are passed together, `--smoke` now takes precedence and `--node` is ignored, with the smoke runner using `--mode` to control which pipeline runs.
+
+### Why
+World skeletons were thrown away and regenerated wholesale even when only one or two rooms had structural defects, which was slow and discarded otherwise-valid rooms (and stories) on every retry. Targeted per-room repair keeps the good rooms and fixes only what failed, and moving the world-builder prompts into their own namespace plus restricting generate mode to that single stage reflects the now-independent world/puzzle split. Pulling the raw payload out of the retry messages into a dedicated attempts log keeps the conversation trail readable while preserving the full retry trace for inspection.
+
+---
+
+## 2026-06-05 14:45:08 WIB
+
+### What changed
+- Added a per-node structural eval trace (`--trace-eval`): as the pipeline runs, each stage's deterministic structural checks (world structure for `world_builder`, solvability for `puzzle_builder`) run inline and print PASS/FAIL plus the specific issues found, with a final summary listing any failed nodes. This is independent of `--eval`, which still runs the narrative LLM judge once at the end. The trace also works under `--smoke`, writing each run's per-node `eval.json` and a `trace_eval_summary.json` roll-up, and under `--log`.
+- When tracing, the fully-assembled world (after `puzzle_builder`) additionally gets the LLM-free policy benchmark emitted as `benchmark.json`, so the trace captures how baseline policies fare on the world.
+- Added the ability to run a single pipeline node in isolation (`--node NAME`): `world_builder` runs from a `--theme` alone, while every other node loads its upstream inputs from a saved `output.json`/`world.json` via `--from PATH`, validates that the inputs it depends on are present, runs the node, and writes the result to `logs/<node>/output.json`.
+- Added a `--theme` flag that supplies the generation theme directly and skips the interactive theme picker, for both the normal pipeline and single-node runs.
+- Solvability checking now flags goals that reference objects the party cannot actually act on: an `object_state` goal object must physically live in the room it gates, and a `has_item` goal item must live in a room reachable on the path leading to that room (so the party can carry it in). Object home rooms are resolved by walking nested-object location chains (guarding against cycles).
+- Renamed the oracle solve-trace flag from `--eval-trace` to `--oracle-trace` to free up `--trace-eval` for the new per-node structural trace.
+
+### Why
+The pipeline previously only surfaced quality problems via the end-of-run narrative judge, making it hard to tell which stage produced a structurally broken world; running each stage's structural eval inline gives fast, deterministic per-stage feedback and lets smoke runs roll up pass/fail rates. Being able to run and trace a single node against saved upstream state shortens the debug loop when iterating on one stage. The new goal-reachability checks close a solvability gap where a room's win condition could point at an object that was never present or reachable, which would make the room unwinnable.
+
+---
+
+## 2026-06-05 14:01:23 WIB
+
+### What changed
+- World structural validation now enforces that each room's goal revolves around a real key object: when a room's `goal_completion` names an `object_id`, that id MUST appear in the room's `key_objects` list, otherwise the world is flagged as invalid. The generation prompt and JSON template were tightened in lockstep — the `goal` sentence must explicitly name the key object the party obtains/uses/manipulates, that object must be listed in `key_objects`, and it must be the same object `goal_completion` references.
+- `solution_path` is no longer scrubbed of secrets. Because the path is an internal validation/debug artifact never shown to the player, the real object ids, clue tokens, and codes are now preserved in it (exactly what makes it useful for confirming solvability). The dedicated secret-token/spoiler redaction pass (`_secret_tokens`/`_scrub_spoilers`) was removed; only genuinely hallucinated ids that match nothing real are still scrubbed, with the valid-id set widened to include `contains_info` and `requires_code` tokens so legitimate clue/code references survive.
+- Serialized world JSON is now wrapped under a top-level `"world"` key instead of being the bare world object at the document root.
+
+### Why
+Goals could be authored around objects that weren't actually the room's key objects, letting the puzzle's win target drift from the items the prompt told the party to focus on; requiring the goal, `key_objects`, and `goal_completion` to all name the same object keeps the objective coherent. Since `solution_path` is internal-only, blanking its codes and ids to "the hidden code"/"the object" stripped exactly the information needed to confirm a world is solvable, so spoiler scrubbing was dropped in favor of preserving real references. Wrapping the JSON under `"world"` gives the output a stable envelope for downstream consumers.
+
+---
+
+## 2026-06-05 12:41:38 WIB
+
+### What changed
+- Dataset generation now mints **synthetic contrastive DPO pairs for `world_builder`** by corrupting an accepted room skeleton on the structural axes the world evaluator checks: a dangling exit pointing at a nonexistent room (`broken_adjacency`), a one-directional exit with no mirror (`unmirrored_adjacency`), a room stripped of its win condition (`missing_room_goal`), and a duplicated room id (`duplicate_room`). The accepted skeleton becomes `chosen` and the corrupted copy `rejected`, with the failed axis labelled on each pair. Each corruption is only kept if it actually trips `_eval_world_structure`, and the pairs honour the same per-world cap and shuffle as puzzle DPO.
+- A new `--world-dpo-axes` flag selects which world corruptors run (default `all`, or `none` to disable), mirroring the existing `--dpo-axes` for puzzles; the run header now reports puzzle and world DPO axes separately.
+- A new `--difficulty` preset (`easy` / `hard` / `env`) sets `HARD_MODE` before settings load, routes output to `dataset/<difficulty>/` so easy and hard runs never share files, and stamps a `difficulty` field onto every written example. `env` (default) preserves legacy behaviour: honour the existing `HARD_MODE` env and write to bare `dataset/`.
+
+### Why
+World skeletons almost always pass structural evaluation on the first try, so the live retry loop produced essentially zero natural preference pairs for `world_builder` — the synthetic corruptors give that half of the dataset real DPO signal, matching what was already done for puzzles. The difficulty preset and per-example tagging keep easy and hard datasets cleanly separated and self-describing so the two profiles can be generated and consumed without colliding.
+
+---
+
+## 2026-06-05 10:42:33 WIB
+
+### What changed
+- The default game-master model shipped in `.env.example` is now `qwen3:14b` (was `qwen3.5:9b-mlx`), so fresh checkouts generate worlds with the larger, non-MLX model out of the box.
+- Dataset generation now defaults to `HARD_MODE=false` in `.env.example`, making the easier generation profile the default for new setups.
+
+### Why
+The example environment was retargeted at a more capable game-master model for higher-quality world generation, and hard mode was turned off by default so the generator produces solvable worlds more reliably on a fresh setup. (Regenerated dataset artifacts — manifest counts and puzzle jsonl files — accompany this run but are produced output, not behavior changes.)
+
+---
+
+## 2026-06-05 10:14:55 WIB
+
+### What changed
+- The `--judge-dpo` flag is now a **hard gate** inside a single unified revision loop rather than a separate one-shot pass that ran after acceptance. When enabled, each puzzle world is revised until it satisfies BOTH the deterministic policy (solvable + deep) AND the LLM judge, or it is discarded — so any world written to the dataset is guaranteed to pass both. The deterministic check runs first and stays authoritative; the slow, stochastic judge runs only once a world is already structurally valid, saving a judge call on every broken attempt.
+- Every regen that clears all issues (both judges) now captures the bad→good transition as a real DPO pair, and the pair's `axis` is labelled `compliance` when the deterministic check was already clean (a narrative/prompt-compliance fix) versus `solvability` when structure was the failure — so compliance and solvability contrasts are distinguishable in the dataset.
+- The run header now reports the judge as an `llm judge gate` ("revise until policy+judge pass"), and a discarded world's message states that policy+judge were not both satisfied.
+
+### Why
+The previous design judged compliance only in a separate stage bolted on after the deterministic gate, which duplicated the regen logic and could let a world be kept as an SFT target without the judge and the policy ever being satisfied together. Folding the judge into one revision loop as a hard gate guarantees every kept world clears both checks, captures every fix as a labelled DPO pair, and removes the redundant second code path.
+
+---
+
+## 2026-06-05 09:56:18 WIB
+
+### What changed
+- The dataset generator can now mine *real* (non-synthetic) compliance DPO pairs via the new `--judge-dpo` flag. After a world clears the deterministic solvable+deep gate, an LLM-as-judge quick pass (`quick_eval_for_feedback`) runs once; if it flags narrative/prompt-compliance violations that a single feedback regen then fixes (re-verified to stay structurally valid AND clear the judge), the bad→good pair is captured on a new `compliance` axis and the judge-approved world replaces the original as the SFT target. A flaky or unavailable judge never blocks generation (failures return no violations).
+- Added a `--min-quality SCORE` post-generation filter that scores every accepted puzzle SFT world with the full `narrative_eval` and deletes any whose overall score falls below the threshold (0.0 = off). It runs once after generation so the generation pass stays deterministic, and only puzzle worlds (which carry objects and a solution path) are scored; the subsequent merge/manifest reflect the cut.
+- The run header now reports the judge-flagged-DPO and quality-post-filter settings.
+
+### Why
+The deterministic gate guarantees structural solvability but says nothing about narrative quality or prompt compliance, so the dataset lacked a contrastive signal for those failure modes. Routing the LLM judge into a single feedback-regen loop yields genuine bad→good compliance pairs, and the optional quality post-filter lets low-scoring worlds be dropped from the final SFT set without slowing or de-determinizing generation itself.
+
+---
+
+## 2026-06-05 09:42:37 WIB
+
+### What changed
+- Added a fifth synthetic contrastive DPO axis for `puzzle_builder`, `untakeable_tool`, which breaks the win chain at an *intermediate* dependency: it makes a tool the solution relies on impossible to pick up (re-introducing exactly what `_make_required_tools_takeable` repairs). As with the other axes, a pair is kept only after the corrupted copy is re-verified to genuinely fail the end-to-end oracle, and `untakeable_tool` is now a selectable value for `--dpo-axes`.
+- Synthetic DPO generation now caps how many pairs a single accepted world can contribute, via the new `--max-dpo-per-world` flag (default 2; 0 = no cap). Corruption axes are visited in a seeded-shuffled order and only the first N validated pairs are kept, so no single accepted world gets reinforced across every axis (which would invite memorizing its story) while the rotating subset keeps every axis globally balanced. The run header reports the per-world cap.
+- Added a `--stats` mode to the dataset generator that reports SFT/DPO counts per target and a per-axis breakdown (count and share) of puzzle DPO pairs from the existing dataset, then exits without any generation or LLM calls. Live-retry pairs (which carry no `axis` field) are bucketed as `live-retry`.
+
+### Why
+The dataset needed a contrastive signal for a common, subtle failure mode the existing axes missed — a required tool that exists but can't be carried — distinct from a fully unsolvable win object. Capping DPO pairs per world prevents over-reinforcing any single accepted story while keeping axis coverage balanced, and the `--stats` view makes the resulting axis distribution inspectable without re-running generation.
+
+---
+
+## 2026-06-05 09:27:51 WIB
+
+### What changed
+- The dataset generator now builds fine-tuning data for both generation agents independently instead of treating world generation as a single step. Each accepted run emits training examples into two separate trees — `dataset/world/` (theme → rooms-only skeleton, owned by `world_builder`) and `dataset/puzzle/` (rooms skeleton → objects, locks, clues, and solution path, owned by `puzzle_builder`) — each with its own SFT and DPO files plus merged `sft_all.jsonl`/`dpo_all.jsonl`.
+- The pipeline now runs the two stages with independent validation and retry: the rooms skeleton is gated by the deterministic structural check and the full puzzle by the oracle-backed `_eval_puzzle`, each retrying up to the attempt budget and capturing a DPO pair on every real violation→fix transition with the exact correction prompt the model received.
+- Added synthetic contrastive DPO generation for `puzzle_builder`. From each accepted world, corruptors deliberately degrade a single named axis — `unsolvable` (re-lock the win object), `shallow` (open every gate so the chain collapses), `orphans` (inject objects gated by codes nothing produces), and `phantom` (reference object ids that don't exist in the solution path). A pair is kept only after the corrupted copy is re-verified to genuinely fail on its axis, so each chosen/rejected pair shares an identical prompt and teaches only the defect.
+- New CLI controls: `--target {world,puzzle,both}` selects which agent(s) to build data for, `--dpo-axes` selects which synthetic corruption axes to apply (or `none`), and `--seed` makes the synthetic corruption reproducible. The manifest and run summary now report per-theme world/puzzle SFT and DPO counts side by side, and `--resume` accounts for both targets when deciding whether a theme is complete.
+
+### Why
+The real game generates worlds in two stages owned by different agents, so a single combined dataset couldn't train either agent cleanly. Splitting the dataset per agent — and adding verified, single-axis synthetic DPO pairs that share the prompt with their accepted counterpart — gives each fine-tune a clean bad→good signal isolated to the exact defect rather than to incidental story differences.
+
+---
+
+## 2026-06-05 08:45:38 WIB
+
+### What changed
+- World generation now self-validates and retries. After building the rooms-only skeleton, the world builder runs a deterministic structural check (room count, required metadata, duplicate ids, and mirrored adjacency topology) and regenerates the world up to the configured attempt budget when violations are found, emitting one message per attempt so the retry trail is captured.
+- The puzzle builder was rebuilt around a unified "eval B" gate that runs four deterministic passes with no LLM calls: static backward-chain solvability, a per-room object-count minimum, a per-room oracle that confirms each room's goal is achievable using only that room's local objects, and a global end-to-end oracle that confirms full solvability and chain depth. Violations are fed back into the next generation prompt as feedback.
+- When a puzzle remains genuinely unsolvable after the puzzle-attempt budget is exhausted, the builder now discards the entire world and regenerates it from scratch (world builder → puzzle builder) rather than shipping an unwinnable world, up to a world-regen budget. Cosmetic/structural issues no longer trigger a full world discard.
+- Rooms now enforce a minimum object count per room (1 in standard mode, 8 in hard mode). The generation prompt states this requirement explicitly, and after orphan-pruning the builder backfills any under-filled room with inert scenic props so the count survives pruning instead of fighting it across attempts.
+- Orphan pruning now seeds reachability from object ids mentioned in the solution path, so intermediate result objects referenced only in the solution narrative are no longer incorrectly pruned.
+- The separate Game Master eval node was removed from the pipeline. Room-exit gating is now a deterministic in-process check (no LLM call), and victory/time-up detection happens at the end of each gameplay tick with a conditional edge routing straight to END, eliminating an LLM round-trip and the `pending_directive` state field.
+- Smoke runs and single runs now emit a per-node timing table (elapsed time and percentage per stage), write a clean human-readable run summary, and serialize the final assembled world to a `.world.json` file alongside the raw stdout capture.
+
+### Why
+The world/puzzle generation pipeline was shipping broken or unwinnable worlds and wasting LLM calls on eval steps that could be done deterministically. Splitting validation into a structural "eval A" for the room skeleton and an oracle-backed "eval B" for the full puzzle — with feedback-driven retries and a world-discard fallback — makes generation reliable for the fine-tuning dataset. Collapsing the Game Master eval node into deterministic checks removes per-tick LLM latency, and the timing/summary output makes slow runs diagnosable.
+
+---
+
+## 2026-06-04 15:08:33 WIB
+
+### What changed
+- Per-node timing is now printed to stdout for all major pipeline stages: `character_master` logs how long character generation took and how many characters were produced; `player_agent` logs how long character selection took per agent; `gameplay_node` logs elapsed time at the end of each tick (both the observe+plan path and the full action path); `game_master_eval` logs elapsed time at every exit point (victory, time-up, and normal tick completion); `puzzle_builder` logs total time and attempt count together instead of just attempt count.
+- The puzzle builder now records a structured retry trail: each rejected attempt is captured with its attempt number, rejection reason, and violation list, then emitted as a sequence of `AIMessage` entries (one per attempt) so node logs contain the full retry history including why each attempt failed. The final accepted world is emitted as a separate message labelled `(final)`.
+- The `prompt_compliance` evaluation dimension description was updated to clarify it judges both world-builder and puzzle-builder output (not just game master output), matching the split-phase architecture introduced in the prior session.
+
+### Why
+The pipeline was opaque about where time was being spent — a slow run could be caused by LLM latency in any of several nodes and there was no way to diagnose which. Adding per-node timing to stdout gives immediate visibility during live runs and smoke tests. The retry trail in puzzle builder messages was added so the fine-tuning dataset pipeline can capture rejected attempts as DPO negative examples rather than silently discarding them.
+
+---
+
+## 2026-06-04 14:26:51 WIB
+
+### What changed
+- A new `puzzle_builder_node` graph step has been introduced. The world-builder now produces only the room layout and goals; all puzzle objects and the solution path are constructed by the separate puzzle builder in the next pipeline step. This splits world generation into two focused phases.
+- The `game_master` agent no longer generates `WorldObject` entries directly — the `WorldObject` import and the `_OPTIONAL_OBJECT_FIELDS` allow-list it relied on have been removed, and object construction responsibility is fully delegated downstream.
+- A fine-tuning dataset generator (`benchmark/generate_dataset.py`) has been added. It drives the same generation + solvability-check + LLM-judge retry loop used in the live pipeline, iterating per story theme until a target count of validated worlds is reached. Each run produces SFT examples (instruction-tuning pairs) and DPO preference pairs (chosen = accepted world, rejected = a world that had violations corrected into the accepted one), with per-theme JSONL files, merged flat files, and a manifest.
+- Generation prompts (`prompts/game_master/generation.txt` and `generation_bank.txt`) have been updated to reflect the narrowed scope of the world-builder (rooms and goals only, no objects).
+- The graph wiring and `main.py` entry point have been updated to include the new `puzzle_builder_node` in the execution sequence.
+
+### Why
+Generating rooms, objects, and puzzle logic in a single LLM call produced worlds where the solution chain and object graph were often inconsistent. Splitting into world-builder (rooms + goals) and puzzle-builder (objects + solution path) allows each phase to be validated, retried, and fine-tuned independently — which also enables the DPO dataset to capture clean before/after correction pairs for training.
+
+---
+
+## 2026-06-04 14:13:13 WIB
+
+### What changed
+- The world-building node has been renamed from `game_master` to `world_builder` throughout the system — the graph entry point, all edges, log-node lists, direct invocation paths, and internal documentation now use the new name.
+
+### Why
+The `game_master` name was ambiguous given the separate `game_master_eval` node that also exists in the graph. Renaming to `world_builder` makes the node's role — generating the escape room world — explicit and distinguishable from the eval node that judges whether the generated world is acceptable.
+
+---
+
 ## 2026-06-04 11:54:10 WIB
 
 ### What changed

@@ -26,7 +26,7 @@ Each room must have:
     - {{"type": "power_active", "id": "<token>"}}
 - key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects you expect in this room (e.g. "room1_safe", "room1_clue_note"). These will be concretely placed during puzzle generation.
 
-The SECOND room's goal_completion will become the win condition.
+The SECOND room's goal_completion will become the win condition. Its target state MUST be a state the object reaches only after real effort — use "unlocked". NEVER use "visible" or "fixed" as a win target: those are inert default starting states, so the game would be won at tick 0 with no puzzle solved.
 
 Adjacency rules:
 - Connect the two rooms with exactly one mirrored direction pair (north<->south or east<->west).

@@ -1,6 +1,6 @@
 """Player Agent — picks one character from the roster.
 
-Two instances run sequentially so agent 2 cannot pick the same character as agent 1.
+A single instance runs and selects one character for the party.
 """
 
 from __future__ import annotations
@@ -62,6 +62,8 @@ def _format_teammate_context(party: list[PartyMember]) -> str:
 
 
 def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
+    import time
+
     world = state.world
 
     taken_names = {member.character.name for member in state.party}
@@ -78,12 +80,14 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
         teammate_context=_format_teammate_context(state.party),
     )
 
+    start = time.perf_counter()
     response = llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]
     )
+    elapsed = time.perf_counter() - start
 
     data = _parse_json(response.content) or {}
     chosen_name = data.get("chosen_character_name", "")
@@ -93,6 +97,8 @@ def _select_character(agent_id: str, state: GameState) -> PartyMember | None:
     if chosen is None:
         chosen = available[0]
         reasoning = reasoning or "(fallback) selected first available character"
+
+    print(f"[{agent_id}] selected character in {elapsed:.2f}s", flush=True)
 
     return PartyMember(
         agent_id=agent_id,
@@ -124,5 +130,9 @@ def _make_player_node(agent_id: str):
     return node
 
 
+def make_player_node(agent_id: str):
+    """Public factory: build a player node for a given agent id."""
+    return _make_player_node(agent_id)
+
+
 player_agent_1_node = _make_player_node("agent_1")
-player_agent_2_node = _make_player_node("agent_2")

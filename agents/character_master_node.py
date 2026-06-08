@@ -55,6 +55,8 @@ def _build_characters(data: dict) -> list[Character]:
 
 
 def character_master_node(state: GameState) -> dict:
+    import time
+
     llm = get_llm("game_master")
     world = state.world
 
@@ -67,15 +69,22 @@ def character_master_node(state: GameState) -> dict:
         room_names=room_names,
     )
 
+    start = time.perf_counter()
     response = llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]
     )
+    elapsed = time.perf_counter() - start
 
     data = _parse_json(response.content) or {}
     characters = _build_characters(data)
+
+    print(
+        f"[character_master] generated {len(characters)} character(s) in {elapsed:.2f}s",
+        flush=True,
+    )
 
     return {
         "messages": [AIMessage(content=response.content)],

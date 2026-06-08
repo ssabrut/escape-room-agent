@@ -1,0 +1,111 @@
+You are given a pre-built escape room setting. Your job is to populate it with objects, locks, clues, and a solution path that form a deep, coherent puzzle chain.
+
+SETTING:
+Scenario: {scenario}
+Objective: {objective}
+
+ROOMS (do NOT modify these — only reference their ids):
+{rooms}
+
+ROOM GOALS AND COMPLETION CONDITIONS (your objects must make these satisfiable):
+{room_goals}
+
+KEY OBJECTS (MANDATORY ANCHORS — failing this causes automatic rejection and retry):
+{key_objects}
+Every id listed above MUST appear as an object in your output with that EXACT id, placed in (or nested under something in) the room it is listed for. These are the headline puzzle objects the room was designed around — the room's goal and goal_completion revolve around them. You may add supporting objects (clue notes, hidden tools, intermediate locks, scenic props) to make the chain solvable, but you may NOT drop, rename, or substitute any key object.
+
+YOUR TASK:
+Design all objects for every room. Every object must be load-bearing — either on the solution path or a scenic prop. Build the deepest chain you can: clue -> code -> unlock -> tool -> unlock -> clue -> ... Each step must depend on the previous result.
+
+DEPTH REQUIREMENT: the solution path must require at least {chain_depth} dependent sequential steps. A step counts when it is gated by the result of a previous step. Aim for: examine object -> learn code/clue -> use on lock -> reveals tool -> use tool on gate -> reveals next clue -> ...
+
+OBJECT COUNT REQUIREMENT (MANDATORY — failing this causes automatic rejection and retry):
+- Every room MUST contain at least {min_objects_per_room} objects total (puzzle objects + scenic props combined).
+- No room may be left empty or near-empty. Distribute objects across ALL rooms — do not front-load one room.
+
+Object rules:
+- Every object has a unique snake_case id
+- An object id MUST NOT equal any room id
+- location must be an existing room id OR another existing object id (for nesting, e.g. a key inside a safe)
+- state examples: "visible", "fixed", "hidden", "locked", "locked_bolt", "locked_room", "unlocked"
+- interactable: true if the player can act on it; takeable: true only for portable items
+- Scenic props (furniture, fixtures, ambient details) MUST have "scenic": true, "interactable": false, "takeable": false, and NO contains_info — they are flavor only. Each room must have 2–4 scenic props.
+- Optional precondition fields (include only when relevant):
+    - requires_code (string) and code_digits (int) — for keypads/safes
+    - requires_tool (object id) — must reference an existing takeable object
+    - requires_liquid (string identifier) — for chemical slots
+    - requires_power (string identifier, e.g. "sekring_C_ON") — for powered doors
+    - fuses (object mapping fuse label to "ON"/"OFF") — for electrical panels
+    - contains_info (string identifier) — for objects whose inspection reveals a fact
+    - slot_description (string) — extra detail for insertion slots
+    - note (string) — meta hint about access constraints
+
+Solvability rules (CRITICAL — the runtime ignores solution_path entirely):
+- Every requires_code MUST be produced by some object's contains_info whose token contains the code substring (e.g. contains_info "safe_code_742" produces code "742").
+- Every known_info prerequisite token MUST appear verbatim as some upstream object's contains_info.
+- Every requires_tool MUST reference a takeable: true object that starts in a reachable state (visible, not locked behind the very lock it opens). NO circular tool dependencies.
+- NO DANGLING CLUES: every contains_info token must be consumed downstream by a requires_code or known_info goal. Every object must be on the solution path or be scenic.
+- NO DUPLICATE CLUES: each info token carried by exactly ONE object.
+- NO REDUNDANT OBJECTS: do not emit both a container and a separate lock object with the same requirement — fold it into one.
+- STATE VOCABULARY: for any open/unlock goal, the target state MUST be the literal string "unlocked". Never use synonyms (open, opened, dissolved, unsealed).
+- Self-check before responding:
+    1. For every requires_code / known_info / requires_tool — point to the specific object that supplies it.
+    2. For every contains_info token — point to the specific consumer that needs it.
+    3. Confirm every tool chain terminates at an immediately-takeable object with no prerequisite.
+    4. Confirm no circular dependencies.
+    5. Confirm every open/unlock goal_completion uses state exactly "unlocked".
+
+Rules (include these verbatim):
+- "Agent only reveals information already discovered in the game state."
+- "Codes and numbers must come from the game state, never invented."
+- "If information is not yet found, agent must say 'not yet known' instead of guessing."
+- "Actions are only valid if the object is visible and within reach."
+
+Solution path:
+- Ordered numbered steps from initial state to win.
+- Only reference room ids and object ids that exist in your output.
+- SPOILER RULE: NEVER write a literal code, combination, or password in solution_path. Refer to it as "the hidden code" or "the clue you found".
+
+Respond ONLY with raw JSON. No prose, no markdown fences.
+
+{{
+    "objects": [
+        {{
+            "id": "object_id_here",
+            "location": "room_id_or_object_id",
+            "description": "object description",
+            "state": "visible",
+            "interactable": true,
+            "takeable": false
+        }},
+        {{
+            "id": "locked_container_example",
+            "location": "room_id_here",
+            "description": "a wall safe with a 3-digit keypad",
+            "state": "locked",
+            "interactable": true,
+            "requires_code": "327",
+            "code_digits": 3
+        }},
+        {{
+            "id": "scenic_prop_example",
+            "location": "room_id_here",
+            "description": "a worn wooden chair pushed against the wall",
+            "state": "visible",
+            "interactable": false,
+            "takeable": false,
+            "scenic": true
+        }}
+    ],
+    "rules": [
+        "Agent only reveals information already discovered in the game state.",
+        "Codes and numbers must come from the game state, never invented.",
+        "If information is not yet found, agent must say 'not yet known' instead of guessing.",
+        "Actions are only valid if the object is visible and within reach."
+    ],
+    "solution_path": [
+        "1. First step referencing real object ids",
+        "2. Second step",
+        "3. Final step that satisfies the win_condition"
+    ]
+}}

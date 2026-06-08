@@ -4,7 +4,7 @@ from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 
 
 class Prerequisite(BaseModel):
@@ -56,23 +56,40 @@ class WorldObject(BaseModel):
     contains_info: str | None = None
     slot_description: str | None = None
     note: str | None = None
-    scenic: bool = False  # pure atmosphere; never on solution path, exempt from orphan pruning
+    scenic: bool = (
+        False  # pure atmosphere; never on solution path, exempt from orphan pruning
+    )
 
 
 class WinCondition(BaseModel):
-    """The target object state that ends the game in victory.
-
-    Not stored on its own anymore — :attr:`GameWorld.win_condition` derives this
-    from the final room's ``goal_completion`` so the win target lives in exactly
-    one place and cannot drift from the room it belongs to.
-    """
+    """The target object state that ends the game in victory."""
 
     object_id: str = ""
     state: str = ""
 
 
+def derive_win_condition(rooms: list["Room"]) -> WinCondition:
+    """Build the win condition from the final room's object_state goal_completion.
+
+    The win condition is, by construction (see the generation prompt), the last
+    room's ``object_state`` goal. puzzle_builder calls this once the world is
+    fully assembled to populate :attr:`GameWorld.win_condition`. Returns an empty
+    WinCondition when there is no usable final ``object_state`` goal.
+    """
+    for room in reversed(rooms):
+        gc = room.goal_completion
+        if gc is not None and gc.type == "object_state" and gc.object_id:
+            return WinCondition(object_id=gc.object_id, state=gc.state or "")
+    return WinCondition()
+
+
 class GameWorld(BaseModel):
-    """The frozen dungeon blueprint produced by the game master."""
+    """The frozen dungeon blueprint produced by the game master.
+
+    ``win_condition`` is a stored field populated by puzzle_builder (via
+    :func:`derive_win_condition`) once objects exist. world_builder leaves it at
+    its empty default, so a rooms-only skeleton has no win target yet.
+    """
 
     scenario: str = ""
     objective: str = ""
@@ -80,22 +97,7 @@ class GameWorld(BaseModel):
     objects: list[WorldObject] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
     solution_path: list[str] = Field(default_factory=list)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def win_condition(self) -> WinCondition:
-        """The game-ending target, derived from the final room's goal_completion.
-
-        The win condition is, by construction (see the generation prompt), the
-        last room's ``object_state`` goal. Deriving it here keeps a single source
-        of truth instead of storing the same object_id/state twice. Falls back to
-        an empty WinCondition when there is no usable final ``object_state`` goal.
-        """
-        for room in reversed(self.rooms):
-            gc = room.goal_completion
-            if gc is not None and gc.type == "object_state" and gc.object_id:
-                return WinCondition(object_id=gc.object_id, state=gc.state or "")
-        return WinCondition()
+    win_condition: WinCondition = Field(default_factory=WinCondition)
 
 
 class Character(BaseModel):
@@ -168,12 +170,6 @@ class PartyState(BaseModel):
         default_factory=dict
     )  # room_id -> escape-plan bullets
     last_fingerprint: str | None = None  # room snapshot from end of previous tick
-    # When the current room's goal is already satisfied at tick start, the GM
-    # computes its "advance to <dest>" directive once, in-tick, so the agents see
-    # it while choosing (not one tick late). Stored here as (dest_room, narration)
-    # so game_master_eval_node can reuse it instead of re-calling the LLM. Cleared
-    # once consumed. Plain tuple to avoid a state->agents import dependency.
-    pending_directive: tuple[str, str] | None = None
     global_object_observations: dict[str, ObjectObservation] = Field(
         default_factory=dict
     )  # object_id -> latest structured observation across all rooms

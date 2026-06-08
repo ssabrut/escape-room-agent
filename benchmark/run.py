@@ -114,7 +114,11 @@ def run_policy(name, policy, worlds, episodes: int) -> dict:
         ep = HeadlessEpisode(world)
         for _ in range(episodes):
             # Detect factory: bfs_policy(world) returns a callable, not a string.
-            resolved = policy(world) if callable(policy) and _is_factory(policy, world) else policy
+            resolved = (
+                policy(world)
+                if callable(policy) and _is_factory(policy, world)
+                else policy
+            )
             results.append(ep.run(resolved))
     summary = _summarize(results)
     summary["policy"] = name
@@ -128,12 +132,15 @@ def _is_factory(policy, world) -> bool:
     twice just to detect the type. A factory has exactly one required parameter.
     """
     import inspect
+
     try:
         sig = inspect.signature(policy)
         params = [
-            p for p in sig.parameters.values()
+            p
+            for p in sig.parameters.values()
             if p.default is inspect.Parameter.empty
-            and p.kind not in (
+            and p.kind
+            not in (
                 inspect.Parameter.VAR_POSITIONAL,
                 inspect.Parameter.VAR_KEYWORD,
             )

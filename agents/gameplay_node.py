@@ -14,12 +14,6 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agents.game_master_eval import (
-    GMDirective,
-    GMVerdict,
-    announce_room_cleared,
-    evaluate_room_exit,
-)
 from config.settings import get_llm
 from prompts import load_prompt
 from state import (
@@ -405,26 +399,13 @@ def _build_action_space(
                 seen.add(v)
                 space.append(v)
     current_room = next((r for r in world.rooms if r.id == ps.current_room), None)
-    # The GM blocks every exit from a room while its goal_completion is unmet (see
-    # _gm_gate_exit). When that gate is currently unsatisfiable, offering 'go' is a
-    # guaranteed dead end the party would spin on — so we hold the exits back while
-    # there is other productive work (examine/unlock/take) to do in this room. If
-    # nothing else is productive, the exits are offered anyway (as a last resort)
-    # so the GM block narration surfaces exactly what the room still needs.
-    gate_blocks_exits = (
-        current_room is not None
-        and current_room.goal_completion is not None
-        and not _goal_completion_satisfied(current_room.goal_completion, ps)
-    )
-    exits: list[str] = []
+    # Exits are always offered — the party may leave any room freely (no GM gate).
     if current_room:
         for direction, neighbor in current_room.adjacency.items():
             move = f"go {neighbor}"
             if move not in seen:
                 seen.add(move)
-                exits.append(move)
-    if not gate_blocks_exits or not space:
-        space.extend(exits)
+                space.append(move)
     # Only offer 'wait' as a true last resort — when no productive action exists.
     # Otherwise agents idle instead of examining, applying clues, or moving.
     if not space:
@@ -574,18 +555,6 @@ def _format_goal_completion(completion) -> str:
     return completion.type
 
 
-def _gm_gate_exit(world: GameWorld, ps: PartyState, room, dest: str) -> GMVerdict:
-    """Ask the Game Master to adjudicate leaving `room` for `dest`.
-
-    The room's goal_completion is checked deterministically here; the GM only
-    decides+narrates around that fact.
-    """
-    completion = room.goal_completion
-    satisfied = completion is None or _goal_completion_satisfied(completion, ps)
-    completion_str = _format_goal_completion(completion)
-    return evaluate_room_exit(world, ps, room, dest, satisfied, completion_str)
-
-
 def _resolve_action(
     action: str, world: GameWorld, ps: PartyState
 ) -> tuple[str, str | None]:
@@ -605,10 +574,6 @@ def _resolve_action(
         if dest in rooms_by_id:
             current = rooms_by_id.get(ps.current_room)
             if current and dest in current.adjacency.values():
-                verdict = _gm_gate_exit(world, ps, current, dest)
-                _render_gm_verdict(current.id, dest, verdict)
-                if not verdict.allow:
-                    return (f"GM blocked move to {dest} — {verdict.missing}", None)
                 ps.current_room = dest
                 ps.visited.add(dest)
                 return (f"moved to {dest}", None)
@@ -956,9 +921,7 @@ def _global_observation_panel_lines(ps: PartyState) -> list[str]:
 
     # Current room first, then the rest alphabetically, so the acting view leads
     # with where the party is.
-    room_order = sorted(
-        by_room, key=lambda r: (r != ps.current_room, r)
-    )
+    room_order = sorted(by_room, key=lambda r: (r != ps.current_room, r))
     lines: list[str] = []
     for room in room_order:
         marker = " (here)" if room == ps.current_room else ""
@@ -1351,42 +1314,10 @@ def _compute_map_flow(world: GameWorld, ps: PartyState) -> list[str]:
     return graph.path(ps.current_room, target_room)
 
 
-def _next_room_toward_win(world: GameWorld, ps: PartyState) -> str | None:
-    """The adjacent room the party should step into next on the way to the win room.
-
-    Returns None when the party is already in the win room (or no route exists).
-    """
-    flow = _compute_map_flow(world, ps)
-    # flow[0] is the current room; flow[1] is the next hop, if any.
-    if len(flow) >= 2:
-        return flow[1]
-    return None
-
-
-def _gm_room_directive(world: GameWorld, ps: PartyState) -> GMDirective | None:
-    """If the current room's goal is done and a next room exists, the GM directs onward.
-
-    Returns None when the room has no completion condition, the goal is not yet
-    satisfied, or the party is already in the final (win) room — in those cases the
-    GM stays quiet and lets the party keep working / win.
-    """
-    room = next((r for r in world.rooms if r.id == ps.current_room), None)
-    if room is None or room.goal_completion is None:
-        return None
-    if not _goal_completion_satisfied(room.goal_completion, ps):
-        return None
-    dest = _next_room_toward_win(world, ps)
-    if dest is None:
-        return None
-    completion_str = _format_goal_completion(room.goal_completion)
-    return announce_room_cleared(world, ps, room, dest, completion_str)
-
-
 def _render_tick_header(
     world: GameWorld,
     ps: PartyState,
     party: list[PartyMember],
-    directive: GMDirective | None = None,
 ) -> None:
     _stream()
     _rule(f"TICK {ps.tick} / {MAX_TICKS}")
@@ -1440,17 +1371,8 @@ def _render_tick_header(
     # Refresh first so a lock opened last tick shows as unlocked here, then render.
     _update_global_observations(world, ps)
     _panel("OBSERVED RESULT", _global_observation_panel_lines(ps))
-    # When this room's goal is already done, the room plan is stale (every step is
-    # solved). Show the GM's advance directive instead so the agents are steered to
-    # the next room at the moment they choose, not the room they just finished.
-    if directive is not None:
-        plan_lines = [
-            f"### {ps.current_room} — GOAL COMPLETE",
-            f"- ADVANCE: go {directive.dest_room} (nothing left to do here)",
-        ]
-    else:
-        plan = ps.room_plans.get(ps.current_room, [])
-        plan_lines = [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)")
+    plan = ps.room_plans.get(ps.current_room, [])
+    plan_lines = [f"### {ps.current_room}"] + _bullet_lines(plan, "(not yet planned)")
     _panel("ESCAPE PLAN", plan_lines)
 
     # Cumulative log of actions already performed by the party (most recent last).
@@ -1497,25 +1419,6 @@ def _render_agent_action(
     )
 
 
-def _render_gm_verdict(room_id: str, dest: str, verdict: GMVerdict) -> None:
-    decision = "ALLOW ->" if verdict.allow else "BLOCK XX"
-    body = [
-        f"{decision} leave {room_id} for {dest}",
-        f'"{verdict.narration}"',
-    ]
-    if not verdict.allow and verdict.missing:
-        body.append(f"({verdict.missing})")
-    _panel("GAME MASTER", body)
-
-
-def _render_gm_directive(room_id: str, directive: GMDirective) -> None:
-    body = [
-        f"ADVANCE -> goal of {room_id} complete; head to {directive.dest_room}",
-        f'"{directive.narration}"',
-    ]
-    _panel("GAME MASTER", body)
-
-
 def _render_final(ps: PartyState, world: GameWorld) -> None:
     _banner("FINAL RESULT")
     outcome = "VICTORY" if ps.victory else f"ENDED (final room: {ps.current_room})"
@@ -1541,16 +1444,26 @@ def _render_final(ps: PartyState, world: GameWorld) -> None:
 # ---------- main node ----------
 
 
-def gameplay_node(state: GameState) -> dict:
-    """Run exactly one tick of gameplay and return.
+def route_after_gameplay(state: GameState) -> str:
+    """Conditional edge: END when game is over, otherwise loop back to gameplay."""
+    if state.party_state and state.party_state.game_over:
+        return "end"
+    return "gameplay"
 
-    The graph loops back here from game_master_eval_node until the game is over
-    (victory, time-up, or GM declares the run complete).
+
+def gameplay_node(state: GameState) -> dict:
+    """Run exactly one tick of gameplay, check for end conditions, and return.
+
+    Sets ps.game_over (and ps.victory) in place so route_after_gameplay can
+    branch to END without a separate eval node.
     """
+    import time
+
     world = state.world
     if not world or not state.party:
         return {}
 
+    _tick_start = time.perf_counter()
     is_first_tick = state.party_state is None
     ps = state.party_state or _build_initial_party_state(world)
     new_messages: list[AIMessage] = []
@@ -1566,18 +1479,7 @@ def gameplay_node(state: GameState) -> dict:
     visible = _objects_in_room(world, ps)
     action_space = _build_action_space(world, ps, visible)
 
-    # If this room's goal is already satisfied (from a prior tick), the GM speaks
-    # up NOW — before the agents choose — so they advance this tick instead of
-    # re-working the finished room and drifting back. Returns None on entry ticks
-    # (goal not yet met) and in the final room. The directive is also stashed on
-    # ps so game_master_eval_node can reuse it without a second LLM call.
-    directive = _gm_room_directive(world, ps)
-    if directive is not None:
-        ps.pending_directive = (directive.dest_room, directive.narration)
-
-    _render_tick_header(world, ps, state.party, directive)
-    if directive is not None:
-        _render_gm_directive(ps.current_room, directive)
+    _render_tick_header(world, ps, state.party)
 
     # Entry observation+planning: the first tick in a newly-entered room is
     # spent (1) OBSERVING — agents enumerate the objects present — then
@@ -1588,7 +1490,9 @@ def gameplay_node(state: GameState) -> dict:
         lead = state.party[0]
         merged_notes: dict[str, list[str]] = {}
         for member in state.party:
-            observation, object_notes = _agent_observe(member.agent_id, member, world, ps)
+            observation, object_notes = _agent_observe(
+                member.agent_id, member, world, ps
+            )
             for obj_id, notes in object_notes.items():
                 merged_notes.setdefault(obj_id, []).extend(notes)
             ps.log.append(
@@ -1626,6 +1530,11 @@ def gameplay_node(state: GameState) -> dict:
 
         ps.observed_rooms.add(ps.current_room)
         ps.last_fingerprint = _room_fingerprint(world, ps)
+        elapsed = time.perf_counter() - _tick_start
+        print(
+            f"[gameplay] tick {ps.tick} (observe+plan) elapsed {elapsed:.2f}s",
+            flush=True,
+        )
         return {"messages": new_messages, "party_state": ps}
 
     # If last tick changed the room picture (revealed an object, took an item,
@@ -1677,17 +1586,8 @@ def gameplay_node(state: GameState) -> dict:
             ),
             None,
         )
-        # When the room goal is done, steer with the GM directive and a plan that
-        # points at the next room; otherwise use this room's escape plan.
-        if directive is not None:
-            plan = f"- ADVANCE: go {directive.dest_room} (this room's goal is done)"
-            gm_directive_text = (
-                f"The goal of {ps.current_room} is COMPLETE. "
-                f"{directive.narration} Choose 'go {directive.dest_room}' this tick."
-            )
-        else:
-            plan = "\n".join(f"- {b}" for b in ps.room_plans.get(ps.current_room, []))
-            gm_directive_text = ""
+        plan = "\n".join(f"- {b}" for b in ps.room_plans.get(ps.current_room, []))
+        gm_directive_text = ""
         _render_action_space(member, action_space)
         decided = _agent_act(
             member.agent_id,
@@ -1780,6 +1680,28 @@ def gameplay_node(state: GameState) -> dict:
     # Refresh global observations after every action tick so state changes
     # (unlocked, taken, power on) are reflected without needing an observe pass.
     _update_global_observations(world, ps)
+
+    # --- end-of-tick: victory / time-up check ---
+    if _check_victory(world, ps):
+        ps.victory = True
+        ps.game_over = True
+        _banner("VICTORY", char="*")
+        _stream(f"  Party achieved the win condition at tick {ps.tick}.")
+        _render_final(ps, world)
+        new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
+    elif ps.tick >= MAX_TICKS:
+        ps.game_over = True
+        _banner("TIME UP", char="*")
+        _stream(
+            f"  Reached MAX_TICKS={MAX_TICKS} without satisfying the win condition."
+        )
+        _render_final(ps, world)
+        new_messages.append(
+            AIMessage(content=f"[gameplay] stopped at MAX_TICKS={MAX_TICKS}")
+        )
+
+    elapsed = time.perf_counter() - _tick_start
+    print(f"[gameplay] tick {ps.tick} elapsed {elapsed:.2f}s", flush=True)
 
     return {
         "messages": new_messages,
