@@ -21,27 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from agents import gameplay_node as gp
-from agents.game_master_eval import GMVerdict
 from state import GameWorld, PartyState, TickAction
-
-
-def _deterministic_exit_gate(
-    world, ps, room, dest, satisfied, completion_str
-) -> GMVerdict:
-    """Model-free stand-in for ``evaluate_room_exit`` used during benchmarking.
-
-    Allows the move exactly when the room's goal_completion is satisfied (the
-    same fact the live GM is told); skips the narration LLM call entirely.
-    """
-    if satisfied:
-        return GMVerdict(
-            allow=True, narration="(headless) goal met — proceed", missing=""
-        )
-    return GMVerdict(
-        allow=False,
-        narration="(headless) goal not met",
-        missing=f"needs: {completion_str}",
-    )
 
 
 @dataclass
@@ -85,25 +65,14 @@ class HeadlessEpisode:
         history: list[str] = []
         chain_depth = 0
 
-        # Patch the GM exit gate to the deterministic verdict for the duration of
-        # this episode, then restore — keeps the run model-free without editing
-        # the engine module.
-        orig_gate = gp._gm_gate_exit
-
-        def _patched_gate(w, p, room, dest):
-            completion = room.goal_completion
-            satisfied = completion is None or gp._goal_completion_satisfied(
-                completion, p
-            )
-            completion_str = gp._format_goal_completion(completion)
-            return _deterministic_exit_gate(w, p, room, dest, satisfied, completion_str)
-
-        # The engine renders GM verdict panels inside _resolve_action; silence
-        # all engine stdout for the headless run.
+        # The engine renders panels inside _resolve_action; silence all engine
+        # stdout for the headless run, then restore in the finally below.
+        # Movement is free in the current model (the party may leave any room
+        # without a GM exit gate), so there is no gate to patch — the policy
+        # drives action selection and _resolve_action mutates state directly.
         orig_stream = gp._stream
         gp._stream = lambda line="": None
 
-        gp._gm_gate_exit = _patched_gate
         try:
             while not ps.game_over and ps.tick < self.max_ticks:
                 if gp._check_victory(world, ps):
@@ -140,7 +109,6 @@ class HeadlessEpisode:
                 if record_history:
                     history.append(f"t{ps.tick} {action} -> {note}")
         finally:
-            gp._gm_gate_exit = orig_gate
             gp._stream = orig_stream
 
         resolved = gp._resolved_object_ids(world, ps)

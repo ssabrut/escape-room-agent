@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 09:39:47 WIB
+
+### What changed
+- Solvability evaluation now actually plays the world to victory with a complete search instead of relying on a greedy policy. A new `oracle_solve` helper runs an exhaustive breadth-first search of the reachable state space first (so a win that exists within the search budget is always found, never falsely reported "unsolvable" because a greedy policy stalled), falling back to the heuristic policy only when BFS can't enumerate the state space in budget. This oracle now backs the puzzle builder's `_eval_puzzle` gate and the dynamic verdict in `main.py`'s eval node, complementing the static solvability walk.
+- Smoke runs now emit a per-run `bfs_path.txt` diagnostic alongside the world/benchmark files, recording whether the world was solved, the path source (BFS shortest vs heuristic best-effort), tick/chain-depth counts, and the full winning action sequence (or the action trace when no win was reached).
+- Headless episodes and the BFS/heuristic policies no longer patch a deterministic Game Master exit gate. Because movement is now free in the current model (the party may leave any room without a GM exit-gate check), the gate-patching machinery (`_deterministic_exit_gate` and the per-episode/per-search gate overrides) was removed; routing toward the win room is now a plain BFS over the room adjacency graph, implemented locally in `policies.py`.
+
+### Why
+A greedy heuristic policy could stall and make a genuinely solvable world look unsolvable, producing false rejections during generation; running a complete BFS first makes the solvability verdict authoritative. The GM exit-gate patching was dead weight once movement became free in the world model, so it was removed and replaced with a straightforward adjacency BFS for routing. The per-run BFS path file gives a concrete, replayable winning trace for inspecting smoke-generated worlds.
+
+---
+
 ## 2026-06-08 09:14:32 WIB
 
 ### What changed

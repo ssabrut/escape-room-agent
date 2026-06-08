@@ -1276,10 +1276,11 @@ def _eval_puzzle(
         return issues
 
     try:
-        from benchmark.engine import HeadlessEpisode
-        from benchmark.policies import heuristic_policy
+        from benchmark.policies import oracle_solve
 
-        result = HeadlessEpisode(world).run(heuristic_policy)
+        # BFS-first solve: complete search within budget (no false "unsolvable"
+        # from a greedy policy stalling), with heuristic fallback for huge worlds.
+        result = oracle_solve(world)
         if not result.victory:
             issues.append(
                 f"oracle failed to win in {result.ticks} tick(s) "

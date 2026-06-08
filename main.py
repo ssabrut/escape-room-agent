@@ -548,9 +548,18 @@ def _eval_node(
         if world is None:
             issues.append("no world to check (puzzle_builder produced nothing)")
         else:
-            from benchmark.policies import check_solvable
+            from benchmark.policies import check_solvable, oracle_solve
 
             issues += check_solvable(world).issues
+            # Dynamic verdict: actually play start->escape (BFS-first, complete
+            # within its budget) — catches solvability gaps the static walk misses.
+            result = oracle_solve(world)
+            if not result.victory:
+                issues.append(
+                    f"oracle failed to win in {result.ticks} tick(s) "
+                    f"(last room: {result.last_room}, "
+                    f"win object state: {result.win_object_state!r})"
+                )
     else:
         # No structural eval defined for this node (e.g. character_master,
         # player agents, gameplay). Nothing to trace.
@@ -724,6 +733,42 @@ def _write_benchmark(world, path: Path) -> str:
     return f" + {path.name}"
 
 
+def _write_bfs_path(world, path: Path) -> str:
+    """Solve `world` with the no-LLM oracle and write the winning action path.
+
+    Uses `bfs_policy` — an exhaustive breadth-first search that returns the
+    SHORTEST winning action sequence (or the greedy heuristic as a fallback when
+    no win is found within the search budget). The path is replayed through the
+    headless engine with history recording and written to `path`. Diagnostic
+    only, so failures are swallowed rather than aborting the smoke run.
+
+    Returns a short suffix for the per-run console line, or "" on no usable world.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        from benchmark.engine import HeadlessEpisode
+        from benchmark.policies import bfs_policy, heuristic_policy
+
+        policy = bfs_policy(world)
+        is_bfs = policy is not heuristic_policy  # bfs falls back to heuristic on miss
+        result = HeadlessEpisode(world).run(policy, record_history=True)
+
+        kind = "BFS shortest" if is_bfs else "heuristic best-effort (BFS found no path in budget)"
+        lines = [
+            f"solvable (oracle won): {result.victory}",
+            f"path source: {kind}",
+            f"ticks: {result.ticks}    chain_depth: {result.chain_depth}",
+            "",
+            "winning action path:" if result.victory else "action trace (no win reached):",
+            *(f"  {h}" for h in result.history),
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return ""
+    return f" + {path.name}"
+
+
 def smoke(
     n: int,
     log_nodes: list[str] | None = None,
@@ -759,9 +804,13 @@ def smoke(
             bench_note = _write_benchmark(
                 result.get("world"), run_dir / f"run_{i:03d}.benchmark.json"
             )
+            bfs_note = _write_bfs_path(
+                result.get("world"), run_dir / f"run_{i:03d}.bfs_path.txt"
+            )
             total_elapsed = sum(node_times.values())
             print(
-                f"done in {total_elapsed:.1f}s → {out_file.name}{world_note}{bench_note}"
+                f"done in {total_elapsed:.1f}s → "
+                f"{out_file.name}{world_note}{bench_note}{bfs_note}"
             )
             _print_timing_table(node_times)
             if trace_eval:

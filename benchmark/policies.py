@@ -123,6 +123,55 @@ def first_policy(world, ps, action_space):
     return action_space[0]
 
 
+def _win_room(world: "GameWorld") -> str | None:
+    """Room id that (transitively) holds the win-condition object, or None."""
+    win = world.win_condition
+    if not win.object_id:
+        return None
+    by_id = {o.id: o for o in world.objects}
+    obj = by_id.get(win.object_id)
+    seen: set[str] = set()
+    while obj is not None and obj.id not in seen:
+        seen.add(obj.id)
+        if obj.location in by_id:
+            obj = by_id[obj.location]  # object nested inside another — walk up
+        else:
+            return obj.location  # location is a room id
+    return None
+
+
+def _next_room_toward_win(world: "GameWorld", ps) -> str | None:
+    """First room-id hop on the shortest adjacency path from the party's current
+    room to the win room. None when already there or no path exists.
+
+    Movement is free in the current model, so routing is a plain BFS over the
+    room adjacency graph (no goal gates to consider).
+    """
+    from collections import deque
+
+    target = _win_room(world)
+    if target is None or target == ps.current_room:
+        return None
+    rooms = {r.id: r for r in world.rooms}
+    prev: dict[str, str | None] = {ps.current_room: None}
+    queue = deque([ps.current_room])
+    while queue:
+        cur = queue.popleft()
+        if cur == target:
+            break
+        for neighbor in rooms.get(cur).adjacency.values() if cur in rooms else []:
+            if neighbor not in prev:
+                prev[neighbor] = cur
+                queue.append(neighbor)
+    if target not in prev:
+        return None  # unreachable
+    # Walk back from target to the first hop out of the current room.
+    hop = target
+    while prev[hop] is not None and prev[hop] != ps.current_room:
+        hop = prev[hop]
+    return hop
+
+
 def heuristic_policy(world, ps, action_space):
     """Greedy, win-directed action selection over the legal space.
 
@@ -140,7 +189,7 @@ def heuristic_policy(world, ps, action_space):
     if not action_space:
         return gp.IDLE_ACTION
 
-    next_hop = gp._next_room_toward_win(world, ps)
+    next_hop = _next_room_toward_win(world, ps)
 
     def _rank(action: str):
         verb = _verb_of(action)
@@ -219,20 +268,9 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
             }
         )
 
-    # Patch the GM gate to the deterministic headless verdict for the duration.
-    from benchmark.engine import _deterministic_exit_gate
-
-    orig_gate = _gp._gm_gate_exit
+    # Movement is free in the current model (no GM exit gate), so there is
+    # nothing to patch — just silence engine stdout for the search.
     orig_stream = _gp._stream
-
-    def _patched_gate(w, p, room, dest):
-        completion = room.goal_completion
-        satisfied = completion is None or _gp._goal_completion_satisfied(completion, p)
-        return _deterministic_exit_gate(
-            w, p, room, dest, satisfied, _gp._format_goal_completion(completion)
-        )
-
-    _gp._gm_gate_exit = _patched_gate
     _gp._stream = lambda line="": None
 
     plan: list[str] = []
@@ -281,7 +319,6 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
             plan = path
 
     finally:
-        _gp._gm_gate_exit = orig_gate
         _gp._stream = orig_stream
 
     if not plan:
@@ -301,6 +338,24 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
         return _gp.IDLE_ACTION
 
     return _bfs_policy
+
+
+def oracle_solve(world: "GameWorld"):
+    """Deterministic best-effort solve (no LLM): exhaustive BFS first, greedy fallback.
+
+    `bfs_policy` does a complete breadth-first search of the reachable state space
+    and replays the shortest winning path — so if a win exists within its state
+    budget, the run WILL escape (no false "unsolvable" verdict from a greedy policy
+    getting stuck). When BFS finds no win in budget (state space too large to
+    enumerate), fall back to `heuristic_policy` for a best-effort second opinion.
+
+    Returns the EpisodeResult; `.victory` is the authoritative solvability verdict
+    and `.chain_depth` is the depth of the (shortest, when BFS succeeds) solution.
+    """
+    from benchmark.engine import HeadlessEpisode
+
+    policy = bfs_policy(world) or heuristic_policy
+    return HeadlessEpisode(world).run(policy)
 
 
 # ---------------------------------------------------------------------------
