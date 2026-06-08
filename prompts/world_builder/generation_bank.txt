@@ -26,7 +26,7 @@ Each room must have:
     - {{"type": "power_active", "id": "<token>"}}
 - key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects expected in this room. These will be placed during puzzle generation.
 
-The FINAL room's goal_completion will become the win condition.
+The FINAL room's goal_completion will become the win condition. Its target state MUST require real effort — use "unlocked". NEVER use "visible" or "fixed" as a win target: those are inert default starting states, so the game would be won at tick 0 with no puzzle solved.
 
 Difficulty target: the puzzle chain built on top of this setting must support at least {chain_depth} dependent sequential steps. Design room goals and goal_completion conditions that naturally demand a deep chain (e.g. a goal_completion that requires a code, which requires a tool, which requires another clue...).
 

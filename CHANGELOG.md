@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 08:38:56 WIB
+
+### What changed
+- When a declared key object still can't be materialised after the puzzle budget is exhausted, `puzzle_builder` now surgically repairs just the offending room skeleton(s) and rebuilds the puzzle, instead of jumping straight to a full world regeneration. This new escalation tier (bounded by the world-regen budget) reuses the `repair` prompt via a public `repair_world` entry point, keeping every unaffected room intact, and the repair prompt now instructs the model to swap an unbuildable key-object anchor for a simpler, physically buildable one and re-point the room's goal at it.
+- The solvability check now rejects trivially-won worlds: a win condition whose object already starts in its target state (won at tick 0) or whose target state is an inert default (`visible`/`fixed`) is flagged as an issue, forcing `puzzle_builder` to regenerate a goal that demands real play. The world-builder generation prompts were updated to match — the win-condition room's goal state must be `unlocked`, never `visible`/`fixed`.
+- The evaluation CLI flags were renamed to make the two evaluators distinct: `--eval` → `--narrative-eval` (slow end-of-run LLM judge) and `--trace-eval` → `--struct-eval` (fast inline per-node structural check), with the old names kept as deprecated aliases. Help text and usage examples were clarified, including that `--oracle-trace` is only a verbosity modifier for the narrative evaluator.
+
+### Why
+Worlds were occasionally generated that the oracle "won" at tick 0 because the win object already sat in its target state (or targeted an inert default state), making the benchmark meaningless; rejecting these forces a goal that requires actual solving. The surgical key-object repair tier avoids throwing away an otherwise-good world just because one anchor proved unbuildable, repairing only the room at fault. The flag rename removes longstanding confusion between the cheap structural eval and the expensive narrative judge.
+
+---
+
 ## 2026-06-05 16:20:11 WIB
 
 ### What changed

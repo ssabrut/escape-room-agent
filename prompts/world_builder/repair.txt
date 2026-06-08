@@ -14,6 +14,7 @@ Rules you must satisfy for each fixed room:
 - adjacency must use only valid directions (north/south/east/west) and reference only existing room ids
 - Each mirrored direction pair must be consistent with the rooms NOT being changed
 - goal_completion.state must use the literal "unlocked" for any open/unlock goal
+- If an issue says a key object could not be materialised (missing key object), replace that id in key_objects with a simpler, concrete, physically buildable anchor, and update goal and goal_completion.object_id to reference the new anchor
 
 Respond ONLY with raw JSON — no prose, no markdown fences.
 

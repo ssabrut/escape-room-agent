@@ -369,7 +369,7 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
                     f"room '{room.id}' is disconnected — unreachable from start '{start}'"
                 )
 
-    # --- Win condition object must exist ---
+    # --- Win condition object must exist and require real effort ---
     win = world.win_condition
     if not win.object_id:
         issues.append(
@@ -377,6 +377,24 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
         )
     elif win.object_id not in obj_by_id:
         issues.append(f"win_condition references non-existent object '{win.object_id}'")
+    else:
+        win_obj = obj_by_id[win.object_id]
+        # A win object that already starts in its target state means the world is
+        # won at tick 0 — every policy "wins" instantly with 0 ticks. Reject so
+        # puzzle_builder regenerates a goal that demands actual play.
+        if win.state and win_obj.state == win.state:
+            issues.append(
+                f"win_condition is trivially satisfied — '{win.object_id}' already "
+                f"starts in target state '{win.state}', so the world is won at tick 0"
+            )
+        # 'visible'/'fixed' are inert default states, never a meaningful WIN target
+        # (the goal should be an unlock/transform, e.g. 'unlocked').
+        if win.state in {"visible", "fixed"}:
+            issues.append(
+                f"win_condition target state '{win.state}' is a trivial/default state "
+                f"for '{win.object_id}' — a win goal must require a real change "
+                f"(e.g. 'unlocked')"
+            )
 
     # --- Build lookup tables for the backward walk ---
 

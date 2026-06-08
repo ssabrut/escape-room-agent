@@ -489,7 +489,7 @@ def _run_once_captured(
 def _write_policy_benchmark(world, out_path: Path) -> None:
     """Run the LLM-free policy benchmark for `world` and write it to `out_path`.
 
-    Diagnostic only — used by the --trace-eval flow so the per-node trace also
+    Diagnostic only — used by the --struct-eval flow so the per-node trace also
     captures how the baseline policies fare on the assembled world. Failures are
     swallowed so a benchmark hiccup never aborts the eval trace.
     """
@@ -850,10 +850,10 @@ if __name__ == "__main__":
             "  python main.py --mode full              # full pipeline (default)\n"
             "  python main.py --mode generate --smoke 5\n"
             "  python main.py --mode generate --log world_builder --log puzzle_builder\n"
-            "  python main.py --eval path/to/output.json   # evaluate a saved world\n"
-            "  python main.py --mode generate --eval        # generate then evaluate\n"
-            "  python main.py --mode generate --smoke 3 --eval  # smoke + eval each run\n"
-            "  python main.py --mode generate --trace-eval  # per-node eval trace\n"
+            "  python main.py --narrative-eval path/to/output.json  # judge a saved world\n"
+            "  python main.py --mode generate --narrative-eval      # generate then judge\n"
+            "  python main.py --mode generate --smoke 3 --narrative-eval  # judge each run\n"
+            "  python main.py --mode generate --struct-eval  # fast per-node structural eval\n"
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
         ),
@@ -898,27 +898,35 @@ if __name__ == "__main__":
         help="Number of rooms in hard mode (implies --hard). Default: 4.",
     )
     parser.add_argument(
-        "--eval",
+        "--narrative-eval",
+        "--eval",  # deprecated alias
+        dest="eval",
         nargs="?",
-        const=True,  # --eval with no arg: evaluate freshly generated world
+        const=True,  # no arg: evaluate the freshly generated world
         metavar="PATH",
         help=(
-            "Evaluate world narrative quality (LLM-as-judge + oracle). "
-            "Supply a path to an existing output.json to evaluate it directly, "
-            "or omit the path to evaluate the world produced by the current run."
+            "NARRATIVE evaluator (slow, one LLM-as-judge call at the END). Scores "
+            "the assembled world's prose, atmosphere, and plot twist, and runs an "
+            "internal oracle solve. Supply a PATH to judge a saved output.json, or "
+            "omit it to judge the world this run produces. (alias: --eval)"
         ),
+    )
+    parser.add_argument(
+        "--struct-eval",
+        "--trace-eval",  # deprecated alias
+        dest="trace_eval",
+        action="store_true",
+        help="STRUCTURAL evaluator (fast, deterministic, no LLM). Runs inline as "
+        "each node finishes: world_builder is checked for room count/adjacency/goal "
+        "coherence; puzzle_builder is checked for SOLVABILITY (object-graph walk). "
+        "Independent of --narrative-eval. (alias: --trace-eval)",
     )
     parser.add_argument(
         "--oracle-trace",
         action="store_true",
-        help="When --eval is active, also print the oracle's tick-by-tick solve trace.",
-    )
-    parser.add_argument(
-        "--trace-eval",
-        action="store_true",
-        help="Run each node's structural eval inline (PASS/FAIL + issues) as the "
-        "pipeline progresses, for per-stage tracing. Independent of --eval (which "
-        "runs the narrative LLM judge once at the end).",
+        help="VERBOSITY modifier for --narrative-eval (not an evaluator on its own). "
+        "Prints the oracle's tick-by-tick solve trace. No effect unless "
+        "--narrative-eval is active.",
     )
     parser.add_argument(
         "--theme",

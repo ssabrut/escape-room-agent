@@ -1358,6 +1358,16 @@ def _is_unsolvable_issue(issue: str) -> bool:
     return issue.startswith("oracle failed to win") or "no win condition" in issue
 
 
+def _is_missing_key_object_issue(issue: str) -> bool:
+    """True when an issue means a declared key object was never materialised.
+
+    These are mandatory anchors world_builder promised; if puzzle_builder still
+    can't build one after the puzzle budget, the anchor itself is likely
+    unbuildable — surgically repairing the room skeleton is the right move.
+    """
+    return "missing key object" in issue
+
+
 def _build_puzzle_for_world(
     llm,
     base_world: GameWorld,
@@ -1412,7 +1422,7 @@ def puzzle_builder_node(state: GameState) -> dict:
     # Imported here to avoid a circular import at module load time.
     import time
 
-    from agents.game_master import world_builder_node
+    from agents.game_master import repair_world, world_builder_node
 
     s = Settings()
     llm = get_llm("game_master")
@@ -1429,6 +1439,36 @@ def puzzle_builder_node(state: GameState) -> dict:
     world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
         llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
     )
+
+    # Escalation tier 1 — surgical room repair for unbuildable key objects.
+    # If a declared key object still isn't materialised after the puzzle budget,
+    # the anchor world_builder picked is likely unbuildable; revise just those
+    # room skeletons and rebuild the puzzle, keeping every other room intact.
+    key_obj_repairs = 0
+    while (
+        any(_is_missing_key_object_issue(i) for i in issues)
+        and key_obj_repairs < max_world_regens
+    ):
+        key_obj_repairs += 1
+        ko_issues = [i for i in issues if _is_missing_key_object_issue(i)]
+        print(
+            f"[puzzle_builder] key object(s) unbuildable after {attempts} puzzle "
+            f"attempt(s) — surgically repairing room skeleton "
+            f"(repair {key_obj_repairs}/{max_world_regens})...",
+            flush=True,
+        )
+        repaired, repair_raw = repair_world(base_world, ko_issues, llm)
+        if not repaired.rooms or repaired is base_world:
+            # No targetable room — let it fall through to warning / regen below.
+            break
+        base_world = repaired
+        if repair_raw:
+            world_messages.append(
+                AIMessage(content=f"=== WORLD REPAIR (key objects) ===\n\n{repair_raw}")
+            )
+        world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
+            llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
+        )
 
     world_regens = 0
     while (

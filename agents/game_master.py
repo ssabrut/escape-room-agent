@@ -260,6 +260,18 @@ def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, 
     return repaired, response.content
 
 
+def repair_world(world: GameWorld, issues: list[str], llm=None) -> tuple[GameWorld, str]:
+    """Public entry to surgically repair the rooms named in `issues`.
+
+    Lets other nodes (e.g. puzzle_builder, when a declared key object cannot be
+    materialised) revise just the offending room skeletons without importing the
+    private helper or wiring up an LLM themselves.
+    """
+    if llm is None:
+        llm = get_llm("game_master")
+    return _repair_world(llm, world, issues)
+
+
 # ---------------------------------------------------------------------------
 # Eval A — deterministic structural check on the rooms-only world skeleton
 # ---------------------------------------------------------------------------
