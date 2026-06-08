@@ -29,8 +29,7 @@ from langchain_ollama import ChatOllama
 
 from agents import world_builder as gm
 from agents.puzzle_graph import apply_theming, build_solvable_world
-from benchmark.engine import HeadlessEpisode
-from benchmark.policies import bfs_solution_path, heuristic_policy
+from benchmark.policies import bfs_solution_path, oracle_solve
 from config.settings import Settings
 from prompts import load_prompt
 from state import GameWorld
@@ -91,19 +90,15 @@ def _generate_one(
 
 
 def _oracle_solve(world: GameWorld):
-    """Run the heuristic oracle once; return (victory, measured_chain_depth, history).
+    """BFS-first solve (with heuristic fallback); return (victory, chain_depth, history).
 
-    chain_depth is the count of ordered dependency links the oracle had to clear
-    (unlocks / power / room moves) — the real difficulty measure used to reject
-    worlds the repair pipeline flattened to a trivial grab-the-nearby-tool win.
-    `history` is the tick-by-tick solve trace (empty unless trace=True).
+    Mirrors puzzle_builder_node: exhaustive BFS finds the shortest winning path within
+    budget so a solvable world is never falsely rejected due to a greedy policy stalling.
     """
     if not world.win_condition.object_id or len(world.rooms) < 1:
         return False, 0, []
-    # Record history for the debug trace; the canonical solution_path itself is
-    # derived separately via bfs_solution_path once a world is accepted.
-    result = HeadlessEpisode(world).run(heuristic_policy, record_history=True)
-    return result.victory, result.chain_depth, result.history
+    result = oracle_solve(world)
+    return result.victory, result.chain_depth, getattr(result, "history", [])
 
 
 def _world_signature(world: GameWorld) -> tuple:

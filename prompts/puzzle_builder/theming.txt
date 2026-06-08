@@ -26,8 +26,10 @@ Dependency annotations ("|" separated after the role):
 Use these dependencies to write *causally coherent* names and descriptions:
   - If object A is unlocked-by=B, A and B should feel like they belong together
     (e.g. B is a "rusted crowbar" and A is "iron grate sealed with corroded bolts").
-  - If a clue reveals a code, its description should hint it contains hidden numbers
-    (without stating the digits) — ink, carvings, a cipher, a pattern.
+  - If a clue reveals a code, its description must make clear that *this object itself*
+    holds the secret — "numbers scratched into the back", "a cipher etched into the
+    surface", "ink that forms a pattern when held to light". Do NOT redirect to another
+    location ("the code is in the tower") — the clue IS the source.
   - If a panel controls power, its description should mention the physical switch
     and what it might control.
 

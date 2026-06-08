@@ -2,6 +2,21 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 23:55:59 WIB
+
+### What changed
+- The LLM solver now tracks a permanent **dead-ends set** — objects confirmed to hold no hidden info are remembered and the solver is explicitly told never to examine them again. Both the direct policy and the ReAct policy maintain this set by scanning the engine log for "no hidden info" notes.
+- The **ReAct policy** was substantially strengthened: it now carries a sticky **plan field** (one sentence written by the model each tick summarising current multi-step intent) that is prepended to the scratchpad so the model re-reads its own goal before reasoning, even when older scratchpad entries age out. The scratchpad retention window was raised from 16 to 30 entries.
+- Every solver prompt now includes **ROOM PROGRESS** (each room's status — DONE or what goal condition remains — with the current room marked) so the agent knows which rooms still need work.
+- **CLUES KNOWN** are now annotated with which object or room door needs each clue (`→ needed by: ...`), so the agent applies a code immediately rather than searching for where to use it.
+- The theming prompt rule for clue objects was tightened: clue descriptions must make clear that *the object itself* holds the secret (e.g. "numbers scratched into the back"), rather than redirecting the player to another location.
+- The benchmark generator's `_oracle_solve` now delegates to `oracle_solve` (the BFS-first solver already used in the puzzle builder), replacing the old `heuristic_policy`-backed `HeadlessEpisode` run. This means a solvable world is never falsely rejected during bank generation because a greedy policy stalled.
+
+### Why
+The LLM solver was wasting ticks re-examining dead objects, losing track of its own multi-step plans across scratchpad rollover, and failing to connect known clues to the locks that need them. The improvements give the agent persistent memory of dead ends, a durable intent signal, and annotated clue-to-consumer mappings so it can reason across ticks without losing context. The theming fix prevents the clue description from directing the player elsewhere, which would make the puzzle unsolvable. The oracle change in the bank generator ensures generation uses the same authoritative, complete-search oracle as the rest of the pipeline.
+
+---
+
 ## 2026-06-08 23:27:29 WIB
 
 ### What changed

@@ -45,12 +45,71 @@ SOLVER_SYSTEM = (
     "escaping. Prefer examining un-inspected objects, applying a known clue/code, "
     "and using tools to unlock things over waiting. To move to another room you must "
     "FIRST unlock that room's locked door (its goal). "
+    "DEAD ENDS lists objects already confirmed to hold no info — never examine them again. "
     'Respond ONLY with JSON: {"action": "<one action copied EXACTLY from the list>"}.'
 )
 
+REACT_SYSTEM = (
+    "You are an expert escape-room solver using the ReAct method: you REASON about "
+    "the situation, then ACT. Each turn you see the current room, visible objects, "
+    "your inventory, clues learned, the legal actions, and a SCRATCHPAD of your "
+    "previous thoughts, actions, and their observations. "
+    "RULES: "
+    "(1) Never examine an object listed in DEAD ENDS — it has no hidden info. "
+    "(2) Check ROOM PROGRESS before deciding what to do — a DONE room needs no more work. "
+    "(3) If a clue is listed in CLUES KNOWN with a '→ needed by' annotation, apply it "
+    "to that object immediately rather than searching for where to use it. "
+    "(4) Keep your thought to 1-2 sentences — state what you will do and why, then act. "
+    "(5) Write a 'plan' field: one sentence summarising your current multi-step intent "
+    "(e.g. 'take obsidian_lens then unlock recovery_door'). Update it whenever your "
+    "intent changes. This plan persists across ticks so you stay on track. "
+    'Respond ONLY with JSON: {"thought": "<1-2 sentence reasoning>", '
+    '"plan": "<current intent>", "action": "<one action copied EXACTLY from the list>"}.'
+)
+
+
+def _room_progress(world: GameWorld, ps: PartyState) -> str:
+    """One line per room: DONE or what remains, so the agent knows what's solved."""
+    lines = []
+    for r in world.rooms:
+        if r.goal_completion is None:
+            status = "DONE (no condition)"
+        elif _goal_completion_satisfied(r.goal_completion, ps):
+            status = "DONE"
+        else:
+            status = f"PENDING — need {_format_goal_completion(r.goal_completion)}"
+        marker = " ← YOU ARE HERE" if r.id == ps.current_room else ""
+        lines.append(f"  {r.id}: {status}{marker}")
+    return "\n".join(lines)
+
+
+def _annotated_clues(world: GameWorld, ps: PartyState) -> str:
+    """List known clues annotated with which object needs each one."""
+    if not ps.known_info:
+        return "(none)"
+    # Build a map: clue token -> list of object ids that consume it
+    consumers: dict[str, list[str]] = {}
+    for obj in world.objects:
+        if obj.requires_code:
+            consumers.setdefault(obj.requires_code, []).append(obj.id)
+    for room in world.rooms:
+        gc = room.goal_completion
+        if gc and gc.type == "known_info" and gc.info:
+            consumers.setdefault(gc.info, []).append(f"room:{room.id}")
+
+    parts = []
+    for clue in sorted(ps.known_info):
+        needed_by = consumers.get(clue, [])
+        if needed_by:
+            parts.append(f"{clue}  (→ needed by: {', '.join(needed_by)})")
+        else:
+            parts.append(clue)
+    return ", ".join(parts)
+
 
 def _build_prompt(
-    world: GameWorld, ps: PartyState, action_space: list[str], visible
+    world: GameWorld, ps: PartyState, action_space: list[str], visible,
+    dead_ends: set[str] | None = None,
 ) -> str:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
@@ -73,10 +132,14 @@ def _build_prompt(
         else "(none)"
     )
     space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
+    dead_str = (
+        ", ".join(sorted(dead_ends)) if dead_ends else "(none)"
+    )
     return (
         f"SCENARIO: {world.scenario}\n"
         f"OBJECTIVE: {world.objective}\n"
         f"WIN WHEN: {win_str}\n\n"
+        f"ROOM PROGRESS (all rooms):\n{_room_progress(world, ps)}\n\n"
         f"TICK: {ps.tick + 1}\n"
         f"CURRENT ROOM: {ps.current_room}\n"
         f"{room.description if room else ''}\n"
@@ -84,7 +147,8 @@ def _build_prompt(
         f"EXITS: {exits}  (a locked door blocks the exit until this room's goal is met)\n\n"
         f"OBJECTS YOU CAN SEE:\n{_format_objects(visible, ps)}\n\n"
         f"INVENTORY: {', '.join(ps.inventory) if ps.inventory else '(empty)'}\n"
-        f"CLUES KNOWN: {', '.join(ps.known_info) if ps.known_info else '(none)'}\n\n"
+        f"CLUES KNOWN: {_annotated_clues(world, ps)}\n"
+        f"DEAD ENDS (no info here — do NOT examine these): {dead_str}\n\n"
         f"LEGAL ACTIONS (choose exactly one, copy it verbatim):\n{space_str}\n"
     )
 
@@ -96,12 +160,22 @@ def llm_solver_policy(role: str = "solver"):
     never crashes (it just makes a non-ideal move that tick).
     """
     llm = get_llm(role)
+    dead_ends: set[str] = set()
+    state = {"seen_log": 0}
 
     def _policy(world: GameWorld, ps: PartyState, action_space: list[str]) -> str:
         if not action_space:
             return IDLE_ACTION
+        # Track objects that yielded no hidden info.
+        while state["seen_log"] < len(ps.log):
+            entry = ps.log[state["seen_log"]]
+            if entry.note and "no hidden info" in entry.note:
+                parts = entry.action.split()
+                if len(parts) >= 2:
+                    dead_ends.add(parts[1])
+            state["seen_log"] += 1
         visible = _objects_in_room(world, ps)
-        prompt = _build_prompt(world, ps, action_space, visible)
+        prompt = _build_prompt(world, ps, action_space, visible, dead_ends)
         try:
             response = llm.invoke(
                 [SystemMessage(content=SOLVER_SYSTEM), HumanMessage(content=prompt)]
@@ -114,47 +188,50 @@ def llm_solver_policy(role: str = "solver"):
     return _policy
 
 
-REACT_SYSTEM = (
-    "You are an expert escape-room solver using the ReAct method: you REASON about "
-    "the situation, then ACT. Each turn you see the current room, visible objects, "
-    "your inventory, clues learned, the legal actions, and a SCRATCHPAD of your "
-    "previous thoughts, actions, and their observations. Use the scratchpad to avoid "
-    "repeating dead-end moves and to chain steps: examine to find clues, apply "
-    "clues/codes/tools to unlock things, and unlock a room's door before moving on. "
-    'Respond ONLY with JSON: {"thought": "<brief reasoning>", "action": '
-    '"<one action copied EXACTLY from the list>"}.'
-)
 
 
 def react_solver_policy(
-    role: str = "solver", scratchpad_limit: int = 16, trace: list | None = None
+    role: str = "solver", scratchpad_limit: int = 30, trace: list | None = None
 ):
     """ReAct policy: Thought -> Action each tick, carrying a running scratchpad of
     (Thought -> Action -> Observation) across ticks.
 
-    The observation of the previous action is read back from ``ps.log`` (the engine
-    appends each resolved action's note there), so the agent reasons over its own
-    history. If ``trace`` is given, each tick's thought is appended to it for display.
+    Improvements over naive ReAct:
+    - Dead-ends set: objects confirmed to hold no info never age out of context.
+    - Sticky plan: the agent writes a short current plan each tick; it is prepended
+      to the scratchpad so the model re-reads its own intent before reasoning.
+    - scratchpad_limit raised to 30 so ~10 full ticks of history stay in context.
+    - Annotated clues and room progress are injected by _build_prompt.
     """
     llm = get_llm(role)
     scratchpad: list[str] = []
+    dead_ends: set[str] = set()
+    current_plan: list[str] = ["(none yet)"]
     state = {"seen_log": 0}
 
     def _policy(world: GameWorld, ps: PartyState, action_space: list[str]) -> str:
         if not action_space:
             return IDLE_ACTION
-        # Ingest the observation(s) of prior action(s) from the engine log.
+
+        # Ingest observations from the engine log; record dead-ends permanently.
         while state["seen_log"] < len(ps.log):
-            note = ps.log[state["seen_log"]].note
+            entry = ps.log[state["seen_log"]]
+            note = entry.note
             if note:
                 scratchpad.append(f"Observation: {note}")
+                if "no hidden info" in note:
+                    parts = entry.action.split()
+                    if len(parts) >= 2:
+                        dead_ends.add(parts[1])
             state["seen_log"] += 1
 
         visible = _objects_in_room(world, ps)
-        pad = "\n".join(scratchpad[-scratchpad_limit:]) or "(nothing yet)"
+        # Prepend the sticky plan so it is always in context regardless of scratchpad age.
+        pad_lines = [f"Current plan: {current_plan[0]}"] + scratchpad[-scratchpad_limit:]
+        pad = "\n".join(pad_lines)
         prompt = (
-            _build_prompt(world, ps, action_space, visible)
-            + f"\nSCRATCHPAD (your recent thought -> action -> observation):\n{pad}\n"
+            _build_prompt(world, ps, action_space, visible, dead_ends)
+            + f"\nSCRATCHPAD (plan + recent thought → action → observation):\n{pad}\n"
         )
         try:
             response = llm.invoke(
@@ -162,10 +239,13 @@ def react_solver_policy(
             )
             data = _parse_json(response.content) or {}
             thought = str(data.get("thought", "")).strip()
+            plan = str(data.get("plan", "")).strip()
             action = _resolve_choice(str(data.get("action", "")).strip(), action_space)
         except Exception:
-            thought, action = "(parse error)", action_space[0]
+            thought, plan, action = "(parse error)", "", action_space[0]
 
+        if plan:
+            current_plan[0] = plan
         if thought:
             scratchpad.append(f"Thought: {thought}")
             if trace is not None:
