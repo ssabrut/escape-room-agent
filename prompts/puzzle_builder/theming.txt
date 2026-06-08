@@ -1,0 +1,32 @@
+You are dressing a pre-built, already-solvable escape room in the theme: {theme}
+
+Scenario: {scenario}
+Objective: {objective}
+
+Below is the FIXED object graph. The ids, roles, locks, and how each object is
+opened are ALREADY DECIDED and must not change. Your ONLY job is to write vivid,
+in-theme prose for each object so the world feels like a "{theme}" escape room.
+
+Each object has a role:
+  - locked-goal : a locked thing the players must open to clear the room.
+  - locked-tool : a locked thing that, once opened, yields a takeable tool.
+  - tool        : a takeable item used to open something else.
+  - clue        : something to examine that reveals a hidden code.
+  - panel       : a fuse/power panel with a switch to flip.
+  - scenic      : pure atmosphere, useless to the puzzle.
+
+Object graph:
+{graph}
+
+Return ONLY a JSON object mapping each object id to a description. For 'clue'
+objects, the description should hint that it carries the hidden code (without
+stating the digits). For 'panel' objects, mention the switch. Do not add, remove,
+or rename ids. Do not mention game mechanics like "requires_code" literally.
+
+Format:
+{{
+  "descriptions": {{
+    "<object_id>": "<one or two themed sentences>",
+    ...
+  }}
+}}

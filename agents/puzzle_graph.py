@@ -1,0 +1,345 @@
+"""Constructive puzzle-graph generator — builds a solvable object graph in code.
+
+Instead of asking the LLM for a finished, hopefully-solvable world and then
+validating/repairing it, this module *constructs* each room's dependency chain
+backward from its goal object using only the four mechanics the engine actually
+executes (code, tool, power, liquid). Because every clue/tool is placed on an
+object that is reachable strictly before its consumer, the resulting world is
+solvable by construction — ``check_solvable`` and the BFS oracle cannot fail on
+structure. The LLM is used afterwards only to theme (describe) the nodes.
+
+Engine contract this generator targets (see agents/gameplay_node.py):
+  - HIDDEN_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
+  - a locked object is opened by exactly one mechanism:
+      requires_code   -> a known contains_info token containing the code digits
+      requires_tool   -> a takeable, visible object held in inventory
+      requires_power  -> "sekring_<LABEL>_ON" produced by flipping a fuse panel
+      requires_liquid -> a held item whose id/description contains the token
+  - examine learns contains_info; take grabs a visible takeable object.
+  - win = final room's goal object reaching its (non-trivial) target state.
+"""
+
+from __future__ import annotations
+
+import random
+
+import json
+import re
+
+from state import GameWorld, Prerequisite, Room, WorldObject
+
+# States the engine treats as "needs unlocking". The goal/win target is always
+# "unlocked" — never a trivial default ("visible"/"fixed") that check_solvable
+# rejects, and never the object's own start state (which would win at tick 0).
+LOCKED_STATE = "locked"
+TARGET_STATE = "unlocked"
+
+# The mechanics the constructive generator uses. Liquid is intentionally excluded:
+# the engine matches it by fuzzy id/description substring while check_solvable
+# requires an exact contains_info/id token, so the two disagree on supply — code,
+# tool, and power give clean, statically-verifiable chains that fully cover play.
+MECHANICS = ("code", "tool", "power")
+_MECHANIC_WEIGHTS = (0.5, 0.3, 0.2)
+
+MIN_OBJECTS_PER_ROOM_DEFAULT = 1
+
+
+class _Builder:
+    """Accumulates objects for one world with collision-free ids."""
+
+    def __init__(self, rng: random.Random) -> None:
+        self.rng = rng
+        self.objects: list[WorldObject] = []
+        self._counts: dict[str, int] = {}
+
+    def _new_id(self, stem: str, room_id: str) -> str:
+        key = f"{stem}_{room_id}"
+        n = self._counts.get(key, 0) + 1
+        self._counts[key] = n
+        return f"{stem}_{room_id}_{n}"
+
+    def add(self, obj: WorldObject) -> WorldObject:
+        self.objects.append(obj)
+        return obj
+
+    def _code(self) -> str:
+        return "".join(str(self.rng.randint(0, 9)) for _ in range(self.rng.choice((3, 4))))
+
+    # -- one unlocking mechanism applied to `target`, returns helper objects --
+
+    def _gate_with_code(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+        code = self._code()
+        target.requires_code = code
+        target.code_digits = len(code)
+        clue = WorldObject(
+            id=self._new_id("clue", room_id),
+            location=room_id,
+            description="",
+            state="visible",
+            interactable=True,
+            takeable=False,
+            contains_info=code,
+        )
+        return [clue]
+
+    def _gate_with_tool(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+        tool = WorldObject(
+            id=self._new_id("tool", room_id),
+            location=room_id,
+            description="",
+            state="visible",  # reachable before the thing it opens — no cycle
+            interactable=True,
+            takeable=True,
+        )
+        target.requires_tool = tool.id
+        return [tool]
+
+    def _gate_with_power(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+        label = self.rng.choice("ABCDEFGH")
+        token = f"sekring_{label}_ON"
+        panel = WorldObject(
+            id=self._new_id("panel", room_id),
+            location=room_id,
+            description="",
+            state="visible",  # must be reachable to flip the fuse
+            interactable=True,
+            takeable=False,
+            fuses={label: "OFF"},
+        )
+        target.requires_power = token
+        return [panel]
+
+    def gate(self, target: WorldObject, room_id: str, mechanic: str) -> list[WorldObject]:
+        return {
+            "code": self._gate_with_code,
+            "tool": self._gate_with_tool,
+            "power": self._gate_with_power,
+        }[mechanic](target, room_id)
+
+    def pick_mechanic(self) -> str:
+        return self.rng.choices(MECHANICS, weights=_MECHANIC_WEIGHTS, k=1)[0]
+
+
+def _build_room_chain(
+    builder: _Builder, room: Room, chain_depth: int
+) -> tuple[WorldObject, list[WorldObject]]:
+    """Construct a backward dependency chain ending at this room's goal object.
+
+    Returns (goal_object, all_room_objects). The goal object starts LOCKED and is
+    opened by a mechanic; that mechanic's helper may itself be a locked object
+    opened by a deeper mechanic, up to ``chain_depth`` links. Every helper is
+    reachable strictly before its consumer, so the chain is solvable in order.
+    """
+    room_objs: list[WorldObject] = []
+
+    goal = builder.add(
+        WorldObject(
+            id=builder._new_id("goal", room.id),
+            location=room.id,
+            description="",
+            state=LOCKED_STATE,
+            interactable=True,
+            takeable=False,
+        )
+    )
+    room_objs.append(goal)
+
+    depth = max(1, chain_depth)
+    target = goal
+    for link in range(depth):
+        is_last_link = link == depth - 1
+        # Only the non-final links may deepen through a takeable helper (which gets
+        # locked and gated on the next iteration). On the final link we MUST pick a
+        # terminating mechanic so its helper stays directly reachable — never lock a
+        # helper we won't subsequently gate, or it becomes un-takeable (deadlock).
+        mechanic = builder.pick_mechanic()
+        if is_last_link and mechanic == "tool":
+            # Terminate cleanly: a code clue / fuse panel needs no further unlocking.
+            mechanic = builder.rng.choice(("code", "power"))
+
+        helpers = builder.gate(target, room.id, mechanic)
+        for h in helpers:
+            builder.add(h)
+            room_objs.append(h)
+
+        if is_last_link:
+            break
+        # Deepen the chain through a takeable tool/liquid by locking it behind the
+        # next mechanic. The take verb is only offered once the helper is unlocked,
+        # and the next iteration installs that unlocking mechanism.
+        nxt = next((h for h in helpers if h.takeable), None)
+        if nxt is None:
+            break  # mechanic was code/power (terminating) — chain ends here
+        target = nxt
+        target.state = LOCKED_STATE
+
+    return goal, room_objs
+
+
+def _backfill_scenic(
+    builder: _Builder, room_id: str, have: int, min_per_room: int
+) -> None:
+    for _ in range(max(0, min_per_room - have)):
+        builder.add(
+            WorldObject(
+                id=builder._new_id("scenic", room_id),
+                location=room_id,
+                description="",
+                state="visible",
+                interactable=False,
+                takeable=False,
+                scenic=True,
+            )
+        )
+
+
+def build_solvable_world(
+    skeleton: GameWorld,
+    chain_depth: int,
+    min_objects_per_room: int = MIN_OBJECTS_PER_ROOM_DEFAULT,
+    seed: int | None = None,
+) -> GameWorld:
+    """Build a fully-formed, solvable GameWorld from a rooms-only skeleton.
+
+    ``skeleton`` supplies scenario/objective/rooms/adjacency (from world_builder).
+    This function discards any goal_completion the skeleton carried and installs a
+    constructed, guaranteed-solvable goal chain per room. Object descriptions are
+    left blank for the theming pass to fill in.
+    """
+    rng = random.Random(seed)
+    builder = _Builder(rng)
+
+    rooms: list[Room] = []
+    for room in skeleton.rooms:
+        goal, room_objs = _build_room_chain(builder, room, chain_depth)
+        _backfill_scenic(builder, room.id, len(room_objs), min_objects_per_room)
+        rooms.append(
+            Room(
+                id=room.id,
+                description=room.description,
+                adjacency=room.adjacency,
+                goal=f"Get {goal.id} into the '{TARGET_STATE}' state.",
+                goal_completion=Prerequisite(
+                    type="object_state", object_id=goal.id, state=TARGET_STATE
+                ),
+                key_objects=[goal.id],
+            )
+        )
+
+    from state.game_state import derive_win_condition
+
+    return GameWorld(
+        scenario=skeleton.scenario,
+        objective=skeleton.objective,
+        rooms=rooms,
+        objects=builder.objects,
+        rules=list(skeleton.rules),
+        solution_path=[],
+        win_condition=derive_win_condition(rooms),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Theming pass — the only LLM call. It cannot alter structure: it returns a
+# {id: description} map that we merge onto the already-solvable objects. Any id
+# the LLM drops or renames falls back to a generated description, so the world
+# ships solvable regardless of theming quality or an LLM failure.
+# ---------------------------------------------------------------------------
+
+
+def classify_role(obj: WorldObject, world: GameWorld) -> str:
+    """Human-readable role label for an object, for the theming prompt and fallbacks."""
+    if obj.scenic:
+        return "scenic"
+    if obj.fuses:
+        return "panel"
+    if obj.contains_info:
+        return "clue"
+    win_ids = {r.goal_completion.object_id for r in world.rooms if r.goal_completion}
+    if obj.id in win_ids:
+        return "locked-goal"
+    if obj.takeable:
+        return "locked-tool" if obj.state in ("locked", "hidden") else "tool"
+    return "locked-goal"
+
+
+_FALLBACK = {
+    "scenic": "Nondescript clutter that fills the space — of no use to anyone.",
+    "panel": "A fuse panel with a switch that controls power to the room.",
+    "clue": "A scrap of writing — study it and a hidden code reveals itself.",
+    "tool": "A handy implement, just the thing for prying something open.",
+    "locked-tool": "A sealed cache; force it open and a useful tool is inside.",
+    "locked-goal": "A stubbornly locked fixture — the heart of this room's puzzle.",
+}
+
+
+def _fallback_description(obj: WorldObject, world: GameWorld) -> str:
+    return _FALLBACK.get(classify_role(obj, world), _FALLBACK["locked-goal"])
+
+
+def _graph_spec(world: GameWorld) -> str:
+    lines: list[str] = []
+    for room in world.rooms:
+        lines.append(f'Room "{room.id}":')
+        for obj in world.objects:
+            if obj.location != room.id:
+                continue  # constructor anchors every object directly in a room
+            lines.append(f"  - {obj.id} [{classify_role(obj, world)}]")
+    return "\n".join(lines)
+
+
+def _parse_descriptions(text: str) -> dict[str, str]:
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    raw = fence.group(1) if fence else text
+    for candidate in (raw, text):
+        try:
+            data = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            data = None
+    if data is None:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group())
+            except json.JSONDecodeError:
+                data = None
+    if not isinstance(data, dict):
+        return {}
+    descs = data.get("descriptions", data)
+    if not isinstance(descs, dict):
+        return {}
+    return {k: v for k, v in descs.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
+    """Fill object descriptions from an LLM theming pass, with code fallbacks.
+
+    The structure of ``world`` is never touched — only ``description`` strings are
+    set. Objects the LLM omits keep a generated, role-appropriate description.
+    """
+    descs: dict[str, str] = {}
+    if llm is not None:
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            from prompts import load_prompt
+
+            system = load_prompt("puzzle_builder", "system")
+            prompt = load_prompt("puzzle_builder", "theming").format(
+                theme=theme,
+                scenario=world.scenario,
+                objective=world.objective,
+                graph=_graph_spec(world),
+            )
+            resp = llm.invoke(
+                [SystemMessage(content=system), HumanMessage(content=prompt)]
+            )
+            descs = _parse_descriptions(resp.content)
+        except Exception:
+            descs = {}
+
+    for obj in world.objects:
+        themed = descs.get(obj.id)
+        obj.description = themed if themed else _fallback_description(obj, world)
+    return world

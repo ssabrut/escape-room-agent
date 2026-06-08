@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 14:37:32 WIB
+
+### What changed
+- Puzzle generation is now **solvable by construction**. The dependency chain (locks, keys, clues, and the object graph) is assembled deterministically in code, and the LLM is used only to *theme* the objects — describe and flavor them — so it can no longer produce an unwinnable world. The previous flow generated the entire puzzle graph with the LLM and relied on a retry/repair loop to catch breakage.
+- The expensive recovery machinery is now a fallback rather than the main path. Surgical room-skeleton repair for unbuildable key objects and full world regeneration are no longer run on every build; the deterministic + oracle eval still runs as a safety net, and only if it flags an issue does the system fall back to the legacy LLM generation loop.
+- Build logging reflects the new path: a successful build reports that the puzzle was built constructively, along with its object count and elapsed time, instead of attempt and world-regen counts.
+
+### Why
+Generating the puzzle graph with the LLM made solvability probabilistic, requiring retries, key-object repairs, and whole-world regenerations to salvage broken worlds. Moving graph construction into deterministic code (`agents.puzzle_graph`) guarantees winnability up front and relegates the LLM to theming, where it can't break the puzzle; the old loop is retained only as a safety net.
+
+---
+
 ## 2026-06-08 14:19:54 WIB
 
 ### What changed

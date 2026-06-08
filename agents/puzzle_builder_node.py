@@ -1371,115 +1371,76 @@ def _build_puzzle_for_world(
 
 
 def puzzle_builder_node(state: GameState) -> dict:
-    """Generate objects and solution path for the rooms built by world_builder.
+    """Populate the room skeleton with a *constructively solvable* puzzle graph.
 
-    Retries when eval B (deterministic + oracle) finds issues, feeding violations
-    back into the next LLM prompt. If the puzzle is still *unsolvable* after the
-    puzzle-attempt budget is spent, the whole world is discarded and regenerated
-    from scratch (world_builder → puzzle_builder) rather than shipping a broken,
-    unwinnable world into gameplay/benchmark.
+    The dependency chain is built in code (agents.puzzle_graph), so the world is
+    solvable by construction — the LLM is used only to theme (describe) the
+    objects, and cannot break solvability. The deterministic + oracle eval
+    (``_eval_puzzle``) still runs as a safety net; if it ever finds an issue we
+    fall back to the legacy LLM-generated repair loop (kept below) to recover.
     """
     if not state.world or not state.world.rooms:
         return {}
 
-    # Imported here to avoid a circular import at module load time.
     import time
 
-    from agents.world_builder import repair_world, world_builder_node
+    from agents.puzzle_graph import apply_theming, build_solvable_world
 
     s = Settings()
     llm = get_llm("game_master")
     chain_depth = _default_chain_depth(s)
     chain_depth_target = chain_depth if s.hard_mode else 0
     min_objs = _min_objects_per_room(s)
-    max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
-    max_world_regens = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
 
     start = time.perf_counter()
 
     base_world = state.world
-    world_messages: list[AIMessage] = []
-    world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
-        llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
+
+    # --- Constructive build: solvable by construction, then themed by the LLM ---
+    world = build_solvable_world(
+        base_world, chain_depth=chain_depth, min_objects_per_room=min_objs
     )
+    world = apply_theming(world, state.theme, llm)
 
-    # Escalation tier 1 — surgical room repair for unbuildable key objects.
-    # If a declared key object still isn't materialised after the puzzle budget,
-    # the anchor world_builder picked is likely unbuildable; revise just those
-    # room skeletons and rebuild the puzzle, keeping every other room intact.
-    key_obj_repairs = 0
-    while (
-        any(_is_missing_key_object_issue(i) for i in issues)
-        and key_obj_repairs < max_world_regens
-    ):
-        key_obj_repairs += 1
-        ko_issues = [i for i in issues if _is_missing_key_object_issue(i)]
+    issues = _eval_puzzle(world, chain_depth_target, min_objs)
+    messages: list[AIMessage] = []
+
+    if issues:
+        # Should be rare-to-never: the graph is built solvable. If a check still
+        # fires (e.g. chain-depth target unmet), fall back to the legacy LLM loop.
         print(
-            f"[puzzle_builder] key object(s) unbuildable after {attempts} puzzle "
-            f"attempt(s) — surgically repairing room skeleton "
-            f"(repair {key_obj_repairs}/{max_world_regens})...",
+            f"[puzzle_builder] constructive build flagged {len(issues)} issue(s) — "
+            f"falling back to LLM generation loop:",
             flush=True,
         )
-        repaired, repair_raw = repair_world(base_world, ko_issues, llm)
-        if not repaired.rooms or repaired is base_world:
-            # No targetable room — let it fall through to warning / regen below.
-            break
-        base_world = repaired
-        if repair_raw:
-            world_messages.append(
-                AIMessage(content=f"=== WORLD REPAIR (key objects) ===\n\n{repair_raw}")
-            )
-        world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
+        for issue in issues:
+            print(f"  • {issue}", flush=True)
+        max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
+        world, raw, issues, attempt_log, _ = _build_puzzle_for_world(
             llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
         )
-
-    world_regens = 0
-    while (
-        any(_is_unsolvable_issue(i) for i in issues) and world_regens < max_world_regens
-    ):
-        world_regens += 1
-        print(
-            f"[puzzle_builder] world still unsolvable after {attempts} puzzle attempt(s) — "
-            f"regenerating WORLD (regen {world_regens}/{max_world_regens})...",
-            flush=True,
-        )
-        regen = world_builder_node(GameState(theme=state.theme))
-        new_world = regen.get("world")
-        if not new_world or not new_world.rooms:
-            print(
-                "[puzzle_builder] world regeneration produced no world — keeping current.",
-                flush=True,
+        for entry in attempt_log:
+            messages.append(
+                AIMessage(content=f"=== LLM ATTEMPT {entry['attempt']} ===\n\n{entry['raw']}")
             )
-            break
-        base_world = new_world
-        world_messages.extend(
-            m for m in regen.get("messages", []) if isinstance(m, AIMessage)
-        )
-        world, raw, issues, attempt_log, attempts = _build_puzzle_for_world(
-            llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
-        )
+        messages.append(AIMessage(content=f"=== LLM FINAL ===\n\n{raw}"))
 
     elapsed = time.perf_counter() - start
 
     if issues:
         print(
-            f"[puzzle_builder] WARNING: {len(issues)} issue(s) remain after "
-            f"{attempts} attempt(s) and {world_regens} world regen(s):",
-            flush=True,
+            f"[puzzle_builder] WARNING: {len(issues)} issue(s) remain:", flush=True
         )
         for issue in issues:
             print(f"  • {issue}", flush=True)
     else:
         print(
-            f"[puzzle_builder] built puzzle in {attempts} attempt(s)"
-            + (f" and {world_regens} world regen(s)" if world_regens else "")
-            + f" in {elapsed:.2f}s",
+            f"[puzzle_builder] built solvable puzzle constructively in {elapsed:.2f}s "
+            f"({len(world.objects)} object(s))",
             flush=True,
         )
 
-    # The solution path is ground truth derived from the oracle's actual winning
-    # solve over the finalized object graph — never authored by the LLM. Empty
-    # when the world is unsolvable (issues above already flag that case).
+    # Ground-truth solution path from the oracle's actual winning solve.
     from benchmark.policies import bfs_solution_path
 
     world.solution_path = bfs_solution_path(world)
@@ -1493,15 +1454,7 @@ def puzzle_builder_node(state: GameState) -> dict:
     _print_solvability_check(world)
     _print_policy_benchmark(world)
 
-    messages: list[AIMessage] = list(world_messages)
-    for entry in attempt_log:
-        header = (
-            f"=== ATTEMPT {entry['attempt']} (rejected) ===\n"
-            "Issues / feedback sent to next attempt:\n"
-            + "\n".join(f"  • {i}" for i in entry["issues"])
-        )
-        messages.append(AIMessage(content=f"{header}\n\n{entry['raw']}"))
-    messages.append(AIMessage(content=f"=== ATTEMPT {attempts} (final) ===\n\n{raw}"))
+    messages.append(AIMessage(content="=== CONSTRUCTIVE PUZZLE (themed) ==="))
 
     return {
         "messages": messages,
