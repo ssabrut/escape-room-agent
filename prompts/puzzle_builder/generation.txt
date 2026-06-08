@@ -1,4 +1,4 @@
-You are given a pre-built escape room setting. Your job is to populate it with objects, locks, clues, and a solution path that form a deep, coherent puzzle chain.
+You are given a pre-built escape room setting. Your job is to populate it with objects, locks, and clues that form a deep, coherent, solvable puzzle chain.
 
 SETTING:
 Scenario: {scenario}
@@ -15,9 +15,9 @@ KEY OBJECTS (MANDATORY ANCHORS — failing this causes automatic rejection and r
 Every id listed above MUST appear as an object in your output with that EXACT id, placed in (or nested under something in) the room it is listed for. These are the headline puzzle objects the room was designed around — the room's goal and goal_completion revolve around them. You may add supporting objects (clue notes, hidden tools, intermediate locks, scenic props) to make the chain solvable, but you may NOT drop, rename, or substitute any key object.
 
 YOUR TASK:
-Design all objects for every room. Every object must be load-bearing — either on the solution path or a scenic prop. Build the deepest chain you can: clue -> code -> unlock -> tool -> unlock -> clue -> ... Each step must depend on the previous result.
+Design all objects for every room. Every object must be load-bearing — either part of the dependency chain or a scenic prop. Build the deepest chain you can: clue -> code -> unlock -> tool -> unlock -> clue -> ... Each step must depend on the previous result.
 
-DEPTH REQUIREMENT: the solution path must require at least {chain_depth} dependent sequential steps. A step counts when it is gated by the result of a previous step. Aim for: examine object -> learn code/clue -> use on lock -> reveals tool -> use tool on gate -> reveals next clue -> ...
+DEPTH REQUIREMENT: solving the world must require at least {chain_depth} dependent sequential steps. A step counts when it is gated by the result of a previous step. Aim for: examine object -> learn code/clue -> use on lock -> reveals tool -> use tool on gate -> reveals next clue -> ...
 
 OBJECT COUNT REQUIREMENT (MANDATORY — failing this causes automatic rejection and retry):
 - Every room MUST contain at least {min_objects_per_room} objects total (puzzle objects + scenic props combined).
@@ -40,11 +40,11 @@ Object rules:
     - slot_description (string) — extra detail for insertion slots
     - note (string) — meta hint about access constraints
 
-Solvability rules (CRITICAL — the runtime ignores solution_path entirely):
+Solvability rules (CRITICAL):
 - Every requires_code MUST be produced by some object's contains_info whose token contains the code substring (e.g. contains_info "safe_code_742" produces code "742").
 - Every known_info prerequisite token MUST appear verbatim as some upstream object's contains_info.
 - Every requires_tool MUST reference a takeable: true object that starts in a reachable state (visible, not locked behind the very lock it opens). NO circular tool dependencies.
-- NO DANGLING CLUES: every contains_info token must be consumed downstream by a requires_code or known_info goal. Every object must be on the solution path or be scenic.
+- NO DANGLING CLUES: every contains_info token must be consumed downstream by a requires_code or known_info goal. Every object must be load-bearing in the dependency chain or be scenic.
 - NO DUPLICATE CLUES: each info token carried by exactly ONE object.
 - NO REDUNDANT OBJECTS: do not emit both a container and a separate lock object with the same requirement — fold it into one.
 - STATE VOCABULARY: for any open/unlock goal, the target state MUST be the literal string "unlocked". Never use synonyms (open, opened, dissolved, unsealed).
@@ -60,11 +60,6 @@ Rules (include these verbatim):
 - "Codes and numbers must come from the game state, never invented."
 - "If information is not yet found, agent must say 'not yet known' instead of guessing."
 - "Actions are only valid if the object is visible and within reach."
-
-Solution path:
-- Ordered numbered steps from initial state to win.
-- Only reference room ids and object ids that exist in your output.
-- SPOILER RULE: NEVER write a literal code, combination, or password in solution_path. Refer to it as "the hidden code" or "the clue you found".
 
 Respond ONLY with raw JSON. No prose, no markdown fences.
 
@@ -102,10 +97,5 @@ Respond ONLY with raw JSON. No prose, no markdown fences.
         "Codes and numbers must come from the game state, never invented.",
         "If information is not yet found, agent must say 'not yet known' instead of guessing.",
         "Actions are only valid if the object is visible and within reach."
-    ],
-    "solution_path": [
-        "1. First step referencing real object ids",
-        "2. Second step",
-        "3. Final step that satisfies the win_condition"
     ]
 }}

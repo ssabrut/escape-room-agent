@@ -359,6 +359,101 @@ def oracle_solve(world: "GameWorld"):
 
 
 # ---------------------------------------------------------------------------
+# Ground-truth solution path — derived from the oracle's winning trace
+# ---------------------------------------------------------------------------
+
+
+def _action_of(trace_line: str) -> str:
+    """Extract the raw action ('enter_code safe_3') from a 'tN <action> -> note' line."""
+    body = (
+        trace_line.split(" ", 1)[1]
+        if trace_line[:1] == "t" and " " in trace_line
+        else trace_line
+    )
+    return body.split(" -> ", 1)[0].strip()
+
+
+def _replay_wins(world: "GameWorld", actions: list[str]) -> bool:
+    """Replay a fixed action sequence through the engine; True if it reaches victory.
+
+    A scripted policy emits the given actions in order (skipping any not currently
+    legal), so we can test whether a *subset* of the trace still solves the world.
+    """
+    from benchmark.engine import HeadlessEpisode
+
+    pending = list(actions)
+
+    def _scripted(_world, _ps, action_space):
+        while pending:
+            nxt = pending.pop(0)
+            if nxt in action_space:
+                return nxt
+        return gp.IDLE_ACTION
+
+    return HeadlessEpisode(world).run(_scripted).victory
+
+
+def _minimal_actions(world: "GameWorld", actions: list[str]) -> list[str]:
+    """Greedy leave-one-out minimization of a winning action sequence.
+
+    A step is necessary iff dropping it makes the remaining sequence fail to win.
+    One in-order pass removes every individually-droppable step (dead-end opens,
+    redundant examines) while preserving a still-winning path.
+    """
+    kept = list(actions)
+    i = 0
+    while i < len(kept):
+        trial = kept[:i] + kept[i + 1 :]
+        if _replay_wins(world, trial):
+            kept = trial
+        else:
+            i += 1
+    return kept
+
+
+def _annotate_path(world: "GameWorld", actions: list[str]) -> list[str]:
+    """Replay the minimal winning actions, annotating each with the room it happens
+    in and the engine's outcome note — i.e. action + context.
+
+    e.g. "3. [cargo_hold] use_tool door_1 — used brass_key on door_1 → unlocked"
+    The room shown is where the party stands when the action is taken (for a 'go'
+    that is the room being left).
+    """
+    orig_stream = gp._stream
+    gp._stream = lambda line="": None
+    steps: list[str] = []
+    try:
+        ps = gp._build_initial_party_state(world)
+        for action in actions:
+            room = ps.current_room
+            note, _ = gp._resolve_action(action, world, ps)
+            steps.append(f"{len(steps) + 1}. [{room}] {action} — {note}")
+    finally:
+        gp._stream = orig_stream
+    return steps
+
+
+def bfs_solution_path(world: "GameWorld") -> list[str]:
+    """Ground-truth solution path for `world`, derived from a deterministic solve.
+
+    Solves with `bfs_policy` (the shortest winning path, or the greedy heuristic
+    fallback when the state space exceeds the BFS budget), minimises the winning
+    trace leave-one-out, then annotates each step with its room and outcome note.
+    The result is a numbered, hallucination-free path over the world's ACTUAL
+    object graph — the canonical answer key. Returns [] if the world is unsolvable.
+    """
+    from benchmark.engine import HeadlessEpisode
+
+    policy = bfs_policy(world)
+    result = HeadlessEpisode(world).run(policy, record_history=True)
+    if not result.victory:
+        return []
+    actions = [_action_of(line) for line in result.history if line.strip()]
+    minimal = _minimal_actions(world, actions)
+    return _annotate_path(world, minimal)
+
+
+# ---------------------------------------------------------------------------
 # Static backward-chain solvability checker
 # ---------------------------------------------------------------------------
 

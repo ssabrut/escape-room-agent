@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 13:24:52 WIB
+
+### What changed
+- The recorded solution path is now always ground truth derived from the oracle's actual winning solve over the finalized object graph, never authored by the LLM. The puzzle builder ignores any `solution_path` the model emits and instead derives one via a new shared `bfs_solution_path` helper (BFS-shortest, leave-one-out minimised, annotated with each step's room and the engine's outcome note). This single helper now backs the puzzle builder, the bank generator, and the dataset generator, replacing the per-script trace-rebuilding logic and the hallucinated-id scrubbing pass (`_scrub_ghost_ids`), which were removed.
+- Rooms now gate travel to the next room behind their own goal: advancing to a not-yet-visited room requires the current room's `goal_completion` to be satisfied (its locked exit door opened), while backtracking to an already-visited room is always allowed so the party can never softlock. Exits are still always offered so the locked door is visible as an option; the gate is enforced at resolution time.
+- World generation prompts now mandate a locked exit door as each non-final room's goal: the door id must appear in `key_objects` and its `goal_completion` must be an `object_state` unlock, making each door the gate that turns its room into a required, sequential step. Puzzle-builder prompts and system prompt were updated to drop solution-path authoring (the runtime no longer reads an LLM path) while keeping the solvability/dependency-chain rules.
+- Ollama inference is now tunable via `OLLAMA_KEEP_ALIVE` (model residency; `-1` = never unload) and `OLLAMA_NUM_PREDICT` (max tokens per call), wired through settings and applied to the game LLMs and the bank generator. The `.env.example` defaults also flip dataset generation to `HARD_MODE=true` with `GEN_MAX_ATTEMPTS=3`.
+
+### Why
+The LLM-authored solution path referenced hallucinated or repair-drifted object ids and couldn't be trusted to replay; deriving it from the oracle's guaranteed-winning solve over the actual object graph makes it a hallucination-free answer key, so the model no longer needs to author (or have scrubbed) a path at all. The per-room exit-door gate makes every non-final room a required step in the chain rather than something the party can walk past. Keeping models resident and capping tokens per call avoids per-call reloads of multi-GB models and stops a runaway model from burning minutes on one response.
+
+---
+
 ## 2026-06-08 09:39:47 WIB
 
 ### What changed

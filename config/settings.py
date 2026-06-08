@@ -11,6 +11,17 @@ def _env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _parse_keep_alive(val: str) -> "int | str":
+    """Ollama keep_alive accepts an int (seconds; -1 = never unload) OR a duration
+    string like "30m". A bare "-1" string is NOT a valid duration, so coerce plain
+    integers to int and leave duration strings ("30m", "1h") untouched."""
+    val = val.strip()
+    try:
+        return int(val)
+    except ValueError:
+        return val
+
+
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     game_master_model: str = os.getenv("GAME_MASTER_MODEL", "llama3.2")
@@ -19,6 +30,11 @@ class Settings:
     )
     game_master_temperature: float = float(os.getenv("GAME_MASTER_TEMPERATURE", "0.8"))
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
+    # Inference tuning. keep_alive "-1" never unloads the model (no per-call reload
+    # of a multi-GB model); num_predict caps tokens generated per call so a model
+    # that runs away can't burn minutes on a single response.
+    ollama_keep_alive = _parse_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
+    ollama_num_predict: int = int(os.getenv("OLLAMA_NUM_PREDICT", "4096"))
 
     def __init__(self) -> None:
         # Hard-mode world generation: multi-room worlds with deep puzzle chains,
@@ -53,7 +69,8 @@ def get_llm(role: str = "game_master") -> ChatOllama:
         model=model,
         base_url=s.ollama_base_url,
         temperature=temperature,
-        num_predict=4096,
+        num_predict=s.ollama_num_predict,
         reasoning=False,
         extra_body={"think": False},
+        keep_alive=s.ollama_keep_alive,
     )

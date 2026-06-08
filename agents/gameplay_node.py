@@ -399,7 +399,9 @@ def _build_action_space(
                 seen.add(v)
                 space.append(v)
     current_room = next((r for r in world.rooms if r.id == ps.current_room), None)
-    # Exits are always offered — the party may leave any room freely (no GM gate).
+    # Exits are always offered so the locked door is visible as an option; whether
+    # the move actually succeeds is enforced in _resolve_action (the exit gate:
+    # advancing to a new room needs this room's goal satisfied).
     if current_room:
         for direction, neighbor in current_room.adjacency.items():
             move = f"go {neighbor}"
@@ -574,6 +576,20 @@ def _resolve_action(
         if dest in rooms_by_id:
             current = rooms_by_id.get(ps.current_room)
             if current and dest in current.adjacency.values():
+                # Exit gate: advancing to a NOT-yet-visited room requires the
+                # current room's goal to be satisfied — its locked door must be
+                # opened first. Backtracking to an already-visited room is always
+                # allowed, so the party can never softlock itself.
+                if (
+                    dest not in ps.visited
+                    and current.goal_completion is not None
+                    and not _goal_completion_satisfied(current.goal_completion, ps)
+                ):
+                    needs = _format_goal_completion(current.goal_completion)
+                    return (
+                        f"the way to {dest} is locked — {current.goal} ({needs})",
+                        None,
+                    )
                 ps.current_room = dest
                 ps.visited.add(dest)
                 return (f"moved to {dest}", None)

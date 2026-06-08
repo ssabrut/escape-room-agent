@@ -25,6 +25,7 @@ Each room must have:
     - {{"type": "has_item", "object_id": "<id>"}}
     - {{"type": "power_active", "id": "<token>"}}
 - key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects you expect in this room (e.g. "room1_safe", "room1_clue_note"). These will be concretely placed during puzzle generation.
+- LOCKED EXIT DOOR (MANDATORY for the FIRST room): its goal_completion MUST be an object_state unlock of a locked exit door — {{"type": "object_state", "object_id": "<room>_door", "state": "unlocked"}} — and that "<room>_door" id MUST appear in key_objects. The engine BLOCKS travel to the next room until this door is unlocked, so the door is the gate that makes the room a required step. The SECOND (final) room has no exit door — its goal_completion is the win condition.
 
 The SECOND room's goal_completion will become the win condition. Its target state MUST be a state the object reaches only after real effort — use "unlocked". NEVER use "visible" or "fixed" as a win target: those are inert default starting states, so the game would be won at tick 0 with no puzzle solved.
 

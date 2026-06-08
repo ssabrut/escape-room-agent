@@ -810,28 +810,6 @@ def _prune_orphan_objects(
     return kept, dropped
 
 
-def _scrub_ghost_ids(
-    solution_path: list[str], valid_ids: set[str]
-) -> tuple[list[str], list[str]]:
-    replacements: list[str] = []
-    _SAFE = {"the_hidden", "hidden_code", "solution_path", "the_object"}
-
-    def _replace_ghosts(text: str) -> str:
-        def _sub(m: re.Match) -> str:
-            tok = m.group(0)
-            if tok in valid_ids or tok in _SAFE:
-                return tok
-            if len(tok) <= 4 or "_" not in tok:
-                return tok
-            replacements.append(tok)
-            return "the object"
-
-        return re.sub(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", _sub, text)
-
-    cleaned = [_replace_ghosts(step) for step in solution_path]
-    return cleaned, replacements
-
-
 # ---------------------------------------------------------------------------
 # Core build function
 # ---------------------------------------------------------------------------
@@ -953,9 +931,12 @@ def _build_puzzle(
         )
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
-    solution_path = [s for s in data.get("solution_path", []) if isinstance(s, str)]
+    # The LLM no longer authors the solution path — it is derived from the oracle's
+    # actual winning solve once the world is finalized (see bfs_solution_path),
+    # which is hallucination-free and guaranteed to win. So we ignore any
+    # solution_path the model may emit and leave it empty here.
 
-    objects, orphans = _prune_orphan_objects(rooms, objects, solution_path)
+    objects, orphans = _prune_orphan_objects(rooms, objects)
     if orphans:
         print(
             f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True
@@ -972,25 +953,6 @@ def _build_puzzle(
             flush=True,
         )
 
-    # solution_path is an internal validation/debug artifact — it is never shown
-    # to the player (no gameplay node reads it). So we keep the REAL object ids,
-    # clue tokens, and codes in it: that is exactly what makes it useful for
-    # confirming the world is solvable. We still scrub genuinely hallucinated ids
-    # (tokens that match nothing real), but legitimate clue/code references and
-    # object ids are preserved rather than blanked to "the object".
-    valid_ids = (
-        {o.id for o in objects}
-        | {r.id for r in rooms}
-        | {o.contains_info for o in objects if o.contains_info}
-        | {o.requires_code for o in objects if o.requires_code}
-    )
-    solution_path, ghost_replacements = _scrub_ghost_ids(solution_path, valid_ids)
-    if ghost_replacements:
-        print(
-            f"[puzzle_builder] scrubbed hallucinated ids from solution_path: {', '.join(set(ghost_replacements))}",
-            flush=True,
-        )
-
     coherence = _check_coherence(rooms, objects)
     if coherence:
         print(
@@ -1003,7 +965,7 @@ def _build_puzzle(
         rooms=rooms,
         objects=objects,
         rules=rules,
-        solution_path=solution_path,
+        solution_path=[],  # derived from the oracle solve once finalized
         # win_condition is owned by puzzle_builder: now that objects exist and the
         # final room's goal_completion is settled, derive the game-ending target.
         win_condition=derive_win_condition(rooms),
@@ -1512,6 +1474,19 @@ def puzzle_builder_node(state: GameState) -> dict:
             f"[puzzle_builder] built puzzle in {attempts} attempt(s)"
             + (f" and {world_regens} world regen(s)" if world_regens else "")
             + f" in {elapsed:.2f}s",
+            flush=True,
+        )
+
+    # The solution path is ground truth derived from the oracle's actual winning
+    # solve over the finalized object graph — never authored by the LLM. Empty
+    # when the world is unsolvable (issues above already flag that case).
+    from benchmark.policies import bfs_solution_path
+
+    world.solution_path = bfs_solution_path(world)
+    if world.solution_path:
+        print(
+            f"[puzzle_builder] derived solution path from oracle "
+            f"({len(world.solution_path)} step(s))",
             flush=True,
         )
 

@@ -33,7 +33,7 @@ from langchain_ollama import ChatOllama
 from agents import game_master as gm
 from agents import puzzle_builder_node as pb
 from benchmark.engine import HeadlessEpisode
-from benchmark.policies import heuristic_policy
+from benchmark.policies import bfs_solution_path, heuristic_policy
 from config.settings import Settings
 from prompts import load_prompt
 from state import GameWorld
@@ -61,6 +61,7 @@ def _make_llm(model: str, temperature: float) -> ChatOllama:
         base_url=s.ollama_base_url,
         temperature=temperature,
         reasoning=False,
+        keep_alive=-1
     )
 
 
@@ -101,75 +102,10 @@ def _oracle_solve(world: GameWorld):
     """
     if not world.win_condition.object_id or len(world.rooms) < 1:
         return False, 0, []
-    # Always record history: the trace of a winning solve is rewritten back onto
-    # the world as a hallucination-free solution_path (see _solution_from_trace).
+    # Record history for the debug trace; the canonical solution_path itself is
+    # derived separately via bfs_solution_path once a world is accepted.
     result = HeadlessEpisode(world).run(heuristic_policy, record_history=True)
     return result.victory, result.chain_depth, result.history
-
-
-def _action_of(trace_line: str) -> str:
-    """Extract the raw action ('enter_code safe_3') from a 'tN <action> -> note' line."""
-    body = (
-        trace_line.split(" ", 1)[1]
-        if trace_line[:1] == "t" and " " in trace_line
-        else trace_line
-    )
-    return body.split(" -> ", 1)[0].strip()
-
-
-def _replay_wins(world: GameWorld, actions: list[str]) -> bool:
-    """Replay a fixed action sequence through the engine; True if it reaches victory.
-
-    Uses a scripted policy that emits the given actions in order (skipping any not
-    currently legal), so we can test whether a *subset* of the oracle's trace still
-    solves the world — the basis for minimizing the solution path.
-    """
-    from agents.gameplay_node import IDLE_ACTION
-
-    pending = list(actions)
-
-    def _scripted(_world, _ps, action_space):
-        # Emit the next scripted action that is currently legal; idle if exhausted.
-        while pending:
-            nxt = pending.pop(0)
-            if nxt in action_space:
-                return nxt
-        return IDLE_ACTION
-
-    return HeadlessEpisode(world).run(_scripted).victory
-
-
-def _minimal_actions(world: GameWorld, actions: list[str]) -> list[str]:
-    """Greedy leave-one-out minimization of a winning action sequence.
-
-    A step is necessary iff dropping it makes the remaining sequence fail to win.
-    Iterating once in order removes every individually-droppable step (dead-end
-    drawer opens, redundant examines) while preserving a still-winning
-    path. O(n) replays — cheap for ~15-step traces.
-    """
-    kept = list(actions)
-    i = 0
-    while i < len(kept):
-        trial = kept[:i] + kept[i + 1 :]
-        if _replay_wins(world, trial):
-            kept = trial  # step i was unnecessary
-        else:
-            i += 1  # step i is required; keep it, move on
-    return kept
-
-
-def _solution_from_trace(world: GameWorld, history: list[str]) -> list[str]:
-    """Rebuild a MINIMAL, numbered solution_path from the oracle's winning trace.
-
-    The oracle's history is a guaranteed-valid walk over the ACTUAL (post-repair)
-    object graph, so deriving the path from it eliminates the LLM-hallucinated /
-    repair-drifted object refs the model's own solution_path carried. We then
-    minimise via leave-one-out, leaving only steps actually required to win —
-    the optimal path (and the target a trained policy should converge to).
-    """
-    actions = [_action_of(line) for line in history if line.strip()]
-    minimal = _minimal_actions(world, actions)
-    return [f"{i}. {a}" for i, a in enumerate(minimal, 1)]
 
 
 def _world_signature(world: GameWorld) -> tuple:
@@ -263,8 +199,9 @@ def generate_bank(
         kept += 1
         # Replace the LLM's solution_path (which references hallucinated /
         # repair-drifted object ids) with one derived from the oracle's actual
-        # winning trace over the final object graph — guaranteed consistent.
-        world.solution_path = _solution_from_trace(world, history)
+        # winning solve over the final object graph — BFS-shortest, minimised,
+        # and guaranteed consistent.
+        world.solution_path = bfs_solution_path(world)
         out = WORLDS_DIR / f"world_{kept:03d}.json"
         out.write_text(
             json.dumps(

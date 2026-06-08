@@ -293,8 +293,8 @@ def _write_run_summary(
             lines.append(" | ".join(parts))
         if world.solution_path:
             _h2("Solution path")
-            for i, step in enumerate(world.solution_path, 1):
-                lines.append(f"  {i}. {step}")
+            for step in world.solution_path:
+                lines.append(f"  {step}")
     else:
         lines.append("  (no objects generated)")
 

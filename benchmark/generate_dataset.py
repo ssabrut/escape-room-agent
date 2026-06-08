@@ -76,6 +76,7 @@ from agents.puzzle_builder_node import (
     _generate_puzzle_with_feedback,
     _min_objects_per_room,
 )
+from benchmark.policies import bfs_solution_path
 from config.settings import Settings, get_llm
 from state import GameWorld
 
@@ -278,8 +279,8 @@ def _corrupt_phantom_solution(
 ) -> tuple[GameWorld, str] | None:
     """Inject solution_path steps that reference object ids which do not exist.
 
-    Re-introduces what `_scrub_ghost_ids` removes: a narrated step naming a
-    phantom object id. Returns None if the world has no solution_path.
+    Corrupts the oracle-derived ground-truth path by splicing in a narrated step
+    that names a phantom object id. Returns None if the world has no solution_path.
     """
     if not world.solution_path:
         return None
@@ -752,6 +753,12 @@ def generate_theme(
             print(" duplicate, skipped")
             continue
         seen.add(sig)
+
+        # Ground-truth solution path: derive it from the oracle's actual winning
+        # solve over the finalized object graph (never the LLM's own). This is the
+        # canonical path baked into the SFT target and the basis the phantom-path
+        # corruptor mutates for DPO, so it must be set before either runs.
+        full.solution_path = bfs_solution_path(full)
 
         # --- Both stages accepted: write SFT examples for enabled targets ---
         notes = []
