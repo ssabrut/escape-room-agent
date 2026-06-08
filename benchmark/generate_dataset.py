@@ -2,7 +2,7 @@
 
 The real game runs world generation in two stages, each owned by a different agent:
 
-  world_builder  (agents.game_master)
+  world_builder  (agents.world_builder)
       Theme  ->  rooms-only skeleton (scenario, objective, rooms, room goals).
       Validated by `_eval_world_structure` (deterministic topology check).
 
@@ -60,9 +60,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents.game_master import MAX_ROOMS
-from agents.game_master import SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT
-from agents.game_master import (
+from agents.world_builder import MAX_ROOMS
+from agents.world_builder import SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT
+from agents.world_builder import (
     _eval_world_structure,
     _generate_world,
     _generation_prompt,

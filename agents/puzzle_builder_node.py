@@ -1385,7 +1385,7 @@ def puzzle_builder_node(state: GameState) -> dict:
     # Imported here to avoid a circular import at module load time.
     import time
 
-    from agents.game_master import repair_world, world_builder_node
+    from agents.world_builder import repair_world, world_builder_node
 
     s = Settings()
     llm = get_llm("game_master")

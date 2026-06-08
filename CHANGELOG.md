@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 14:03:21 WIB
+
+### What changed
+- The live multi-agent gameplay pipeline has been removed. Character generation, player-agent character selection, the tick-driven gameplay loop, and the in-loop Game Master adjudication node are all gone (along with their prompts and the `--mode`/`--player` CLI flags). The LangGraph pipeline is now strictly generation: `world_builder -> puzzle_builder -> END`, and `main.py` only generates and displays a world. Solving a finished world is now the job of the deterministic oracle and the new LLM solver agent instead of the in-graph party.
+- Added a standalone LLM solver agent (`agents.solver_agent`) that drives a finished world to escape through the same `(world, ps, action_space) -> action` policy seam as the deterministic `heuristic_policy`/`bfs_policy`, so it runs under `HeadlessEpisode` and is directly comparable to the BFS optimum. It plays under partial observability (only the current room's visible objects, inventory, and discovered clues) with gated movement, and can be run on a saved world via `python -m agents.solver_agent --world <path>`.
+- The solver agent has its own model and temperature, configurable via `SOLVER_MODEL` and `SOLVER_TEMPERATURE` (both falling back to the game-master model; solver temperature defaults to a low 0.2 for determinism) and selectable through the new `solver` role in settings.
+- The world-generation agent module was renamed from `agents.game_master` to `agents.world_builder` (the file and all imports), removing the long-standing name clash with the now-deleted runtime Game Master eval node.
+
+### Why
+The project has pivoted away from running an in-graph LLM party toward generating worlds and then solving them separately: the deterministic oracle proves solvability, and the new LLM solver agent plays the world through the same policy interface as the baselines so its performance can be benchmarked head-to-head against the BFS optimum. Stripping the gameplay/character/player machinery leaves a clean generation-only pipeline, and giving the solver its own model/temperature lets the (small, deterministic) solving model be tuned independently of the (large, creative) generation model. Renaming `game_master` to `world_builder` removes the ambiguity left over now that the runtime Game Master no longer exists.
+
+---
+
 ## 2026-06-08 13:24:52 WIB
 
 ### What changed

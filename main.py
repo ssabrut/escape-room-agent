@@ -1,10 +1,7 @@
-"""Main entrypoint — runs the escape room pipeline.
+"""Main entrypoint — runs the world-generation pipeline.
 
-Modes (--mode):
-  generate  Run the game master node only — generate and display the world, skip
-            characters and gameplay. Fast for testing world generation in isolation.
-  full      Run the complete pipeline: world generation, character creation,
-            player agent selection, and gameplay (default).
+Generates and displays a world (world_builder -> puzzle_builder). Solving is handled
+separately by the deterministic oracle and the LLM solver agent (agents.solver_agent).
 """
 
 from __future__ import annotations
@@ -22,22 +19,8 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
-from graph import build_graph
-
-# Cache compiled graphs by player count so repeated runs (e.g. --smoke N) don't
-# rebuild the same graph each iteration.
-_GRAPH_CACHE: dict[int, object] = {}
-
-
-def _get_graph(num_players: int = 1):
-    if num_players not in _GRAPH_CACHE:
-        _GRAPH_CACHE[num_players] = build_graph(num_players)
-    return _GRAPH_CACHE[num_players]
 from state import GameState, GameWorld
 from visualization import render_room_layout
-
-MODE_GENERATE = "generate"
-MODE_FULL = "full"
 
 THEMES = [
     "Haunted House",
@@ -73,9 +56,6 @@ LOG_DIR = Path("logs")
 NODE_NAMES = (
     "world_builder",
     "puzzle_builder",
-    "character_master",
-    "player_agent_1",
-    "gameplay",
 )
 
 
@@ -131,21 +111,6 @@ def _write_node_log(node: str, update: dict, root: Path = LOG_DIR) -> Path:
     return node_dir
 
 
-def _render_characters(characters: list) -> None:
-    if not characters:
-        print("  [No characters could be generated]\n")
-        return
-
-    print("\n" + "=" * 94)
-    print(" CHOOSE YOUR CHARACTER")
-    print("=" * 94 + "\n")
-
-    for i, char in enumerate(characters, 1):
-        print(f"  [{i}] {char.name}  —  {char.role}")
-        print(f"       {char.backstory}")
-        print()
-
-
 def _render(result: dict) -> None:
     world = result.get("world")
     rooms = world.rooms if world else []
@@ -173,41 +138,6 @@ def _render(result: dict) -> None:
             for step in world.solution_path:
                 print(f"    {step}")
             print()
-
-    characters = result.get("characters", [])
-    _render_characters(characters)
-
-    party = result.get("party", [])
-    if party:
-        print("\n" + "=" * 94)
-        print(" PARTY SELECTIONS")
-        print("=" * 94 + "\n")
-        for member in party:
-            print(f"  {member.agent_id}")
-            print(f"    Chose    : {member.character.name} — {member.character.role}")
-            print(f"    Reasoning: {member.reasoning}")
-            print()
-
-    party_state = result.get("party_state")
-    if party_state:
-        print("\n" + "=" * 94)
-        print(" FINAL RESULT")
-        print("=" * 94 + "\n")
-        outcome = (
-            "VICTORY"
-            if party_state.victory
-            else f"ENDED (final room: {party_state.current_room})"
-        )
-        inv = ", ".join(party_state.inventory) if party_state.inventory else "(empty)"
-        known = (
-            ", ".join(party_state.known_info) if party_state.known_info else "(none)"
-        )
-        print(f"  Result    : {outcome}")
-        print(f"  Ticks used: {party_state.tick}")
-        print(f"  Inventory : {inv}")
-        print(f"  Known     : {known}")
-        print(f"  Visited   : {', '.join(party_state.visited)}")
-        print()
 
 
 def _format_timing_table(node_times: dict[str, float]) -> list[str]:
@@ -298,59 +228,11 @@ def _write_run_summary(
     else:
         lines.append("  (no objects generated)")
 
-    # --- character_master ---
-    characters = result.get("characters", [])
-    lines.append("")
-    _h1("CHARACTER MASTER")
-    if characters:
-        for c in characters:
-            lines.append(f"  {c.name} — {c.role}")
-            lines.append(f"    {c.backstory}")
-    else:
-        lines.append("  (no characters generated)")
-
-    # --- player agents ---
-    party = result.get("party", [])
-    lines.append("")
-    _h1("PLAYER AGENTS")
-    if party:
-        for m in party:
-            lines.append(f"  {m.agent_id} → {m.character.name} ({m.character.role})")
-            lines.append(f"    Reasoning: {m.reasoning}")
-    else:
-        lines.append("  (no party formed)")
-
-    # --- gameplay / final result ---
-    party_state = result.get("party_state")
-    lines.append("")
-    _h1("FINAL RESULT")
-    if party_state:
-        outcome = (
-            "VICTORY"
-            if party_state.victory
-            else f"ENDED (final room: {party_state.current_room})"
-        )
-        lines.append(f"  Result    : {outcome}")
-        lines.append(f"  Ticks used: {party_state.tick}")
-        lines.append(f"  Inventory : {', '.join(party_state.inventory) or '(empty)'}")
-        lines.append(f"  Known     : {', '.join(party_state.known_info) or '(none)'}")
-        lines.append(f"  Visited   : {', '.join(sorted(party_state.visited))}")
-    else:
-        lines.append("  (gameplay did not run)")
-
     if node_times:
         lines.extend(_format_timing_table(node_times))
 
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _merge_update(result: dict, update: dict) -> None:
-    for key, value in update.items():
-        if key == "messages":
-            result.setdefault("messages", []).extend(value or [])
-        elif key != "_attempt_log":
-            result[key] = value
 
 
 def _report_eval_failures(eval_failures: list[str]) -> None:
@@ -364,11 +246,9 @@ def _report_eval_failures(eval_failures: list[str]) -> None:
 
 
 def run(
-    mode: str = MODE_FULL,
     log_nodes: list[str] | None = None,
     theme: str = "",
     trace_eval: bool = False,
-    num_players: int = 1,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -379,54 +259,32 @@ def run(
     eval_failures: list[str] = []
     eval_root = LOG_DIR if trace_eval else None
 
-    if mode == MODE_GENERATE:
-        from agents.game_master import world_builder_node
-        from agents.puzzle_builder_node import puzzle_builder_node
-        from state import GameState as _GS
+    from agents.world_builder import world_builder_node
+    from agents.puzzle_builder_node import puzzle_builder_node
+    from state import GameState as _GS
 
-        state = _GS(theme=theme)
-        t0 = time.perf_counter()
-        wb_update = world_builder_node(state)
-        node_times["world_builder"] = time.perf_counter() - t0
-        if "world_builder" in log_set:
-            node_dir = _write_node_log("world_builder", wb_update)
-            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
-        if trace_eval and not _eval_node("world_builder", wb_update, eval_root):
-            eval_failures.append("world_builder")
+    state = _GS(theme=theme)
+    t0 = time.perf_counter()
+    wb_update = world_builder_node(state)
+    node_times["world_builder"] = time.perf_counter() - t0
+    if "world_builder" in log_set:
+        node_dir = _write_node_log("world_builder", wb_update)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+    if trace_eval and not _eval_node("world_builder", wb_update, eval_root):
+        eval_failures.append("world_builder")
 
-        state = state.model_copy(update={"world": wb_update.get("world")})
-        t0 = time.perf_counter()
-        pb_update = puzzle_builder_node(state)
-        node_times["puzzle_builder"] = time.perf_counter() - t0
-        if "puzzle_builder" in log_set:
-            node_dir = _write_node_log("puzzle_builder", pb_update)
-            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+    state = state.model_copy(update={"world": wb_update.get("world")})
+    t0 = time.perf_counter()
+    pb_update = puzzle_builder_node(state)
+    node_times["puzzle_builder"] = time.perf_counter() - t0
+    if "puzzle_builder" in log_set:
+        node_dir = _write_node_log("puzzle_builder", pb_update)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-        result = {**wb_update, **pb_update}
-        if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
-            eval_failures.append("puzzle_builder")
+    result = {**wb_update, **pb_update}
+    if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
+        eval_failures.append("puzzle_builder")
 
-        _render(result)
-        _print_timing_table(node_times)
-        _report_eval_failures(eval_failures)
-        return
-
-    result: dict = {}
-    game_graph = _get_graph(num_players)
-    _step_start = time.perf_counter()
-    for step in game_graph.stream(GameState(theme=theme), stream_mode="updates"):
-        _step_end = time.perf_counter()
-        for node, update in step.items():
-            node_times[node] = node_times.get(node, 0.0) + (_step_end - _step_start)
-            _merge_update(result, update)
-            if node in log_set:
-                node_dir = _write_node_log(node, update)
-                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
-            # Trace per node against the merged result (so puzzle_builder sees
-            # the assembled world, not just its own partial update).
-            if trace_eval and not _eval_node(node, result, eval_root):
-                eval_failures.append(node)
-        _step_start = time.perf_counter()
     _render(result)
     _print_timing_table(node_times)
     _report_eval_failures(eval_failures)
@@ -435,11 +293,9 @@ def run(
 def _run_once_captured(
     log_nodes: list[str] | None,
     log_root: Path | None,
-    mode: str = MODE_FULL,
     theme: str = "pirate",
-    num_players: int = 1,
 ) -> tuple[str, dict, dict[str, float]]:
-    """Run the pipeline once with stdout captured.
+    """Run the generation pipeline once with stdout captured.
 
     If log_nodes is set, write per-node logs under log_root. Returns the captured
     text, the merged result dict, and a per-node elapsed-time mapping.
@@ -450,49 +306,33 @@ def _run_once_captured(
     orig_stdout = sys.stdout
     sys.stdout = buf
     try:
-        if mode == MODE_GENERATE:
-            # Time each sub-node manually for generate-only mode.
-            from agents.game_master import world_builder_node
-            from agents.puzzle_builder_node import puzzle_builder_node
-            from state import GameState as _GS
+        from agents.world_builder import world_builder_node
+        from agents.puzzle_builder_node import puzzle_builder_node
+        from state import GameState as _GS
 
-            state = _GS(theme=theme)
+        state = _GS(theme=theme)
 
-            t0 = time.perf_counter()
-            wb_update = world_builder_node(state)
-            node_times["world_builder"] = time.perf_counter() - t0
-            if log_set and "world_builder" in log_set:
-                node_dir = _write_node_log(
-                    "world_builder", wb_update, root=log_root or LOG_DIR
-                )
-                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+        t0 = time.perf_counter()
+        wb_update = world_builder_node(state)
+        node_times["world_builder"] = time.perf_counter() - t0
+        if log_set and "world_builder" in log_set:
+            node_dir = _write_node_log(
+                "world_builder", wb_update, root=log_root or LOG_DIR
+            )
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-            state = state.model_copy(update={"world": wb_update.get("world")})
+        state = state.model_copy(update={"world": wb_update.get("world")})
 
-            t0 = time.perf_counter()
-            pb_update = puzzle_builder_node(state)
-            node_times["puzzle_builder"] = time.perf_counter() - t0
-            if log_set and "puzzle_builder" in log_set:
-                node_dir = _write_node_log(
-                    "puzzle_builder", pb_update, root=log_root or LOG_DIR
-                )
-                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+        t0 = time.perf_counter()
+        pb_update = puzzle_builder_node(state)
+        node_times["puzzle_builder"] = time.perf_counter() - t0
+        if log_set and "puzzle_builder" in log_set:
+            node_dir = _write_node_log(
+                "puzzle_builder", pb_update, root=log_root or LOG_DIR
+            )
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
-            result = {**wb_update, **pb_update}
-        else:
-            result = {}
-            game_graph = _get_graph(num_players)
-            _step_start = time.perf_counter()
-            for step in game_graph.stream(GameState(theme=theme), stream_mode="updates"):
-                _step_end = time.perf_counter()
-                for node, update in step.items():
-                    node_times[node] = node_times.get(node, 0.0) + (
-                        _step_end - _step_start
-                    )
-                    _merge_update(result, update)
-                    if node in log_set and log_root is not None:
-                        _write_node_log(node, update, root=log_root)
-                _step_start = time.perf_counter()
+        result = {**wb_update, **pb_update}
         _render(result)
     finally:
         sys.stdout = orig_stdout
@@ -536,7 +376,7 @@ def _eval_node(
         if world is None:
             issues.append("no world produced")
         else:
-            from agents.game_master import _eval_world_structure, MAX_ROOMS
+            from agents.world_builder import _eval_world_structure, MAX_ROOMS
             from benchmark.policies import check_solvable
 
             issues += _eval_world_structure(world, len(world.rooms) or MAX_ROOMS)
@@ -561,8 +401,7 @@ def _eval_node(
                     f"win object state: {result.win_object_state!r})"
                 )
     else:
-        # No structural eval defined for this node (e.g. character_master,
-        # player agents, gameplay). Nothing to trace.
+        # No structural eval defined for this node. Nothing to trace.
         return True
 
     passed = not issues
@@ -636,18 +475,12 @@ def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None
 # Maps a node name to (entry function, required GameState fields it reads).
 # world_builder needs nothing but a theme, so its requirements are empty.
 def _node_registry() -> dict:
-    from agents.character_master_node import character_master_node
-    from agents.game_master import world_builder_node
-    from agents.gameplay_node import gameplay_node
-    from agents.player_agent_node import player_agent_1_node
+    from agents.world_builder import world_builder_node
     from agents.puzzle_builder_node import puzzle_builder_node
 
     return {
         "world_builder": (world_builder_node, ()),
         "puzzle_builder": (puzzle_builder_node, ("world",)),
-        "character_master": (character_master_node, ("world",)),
-        "player_agent_1": (player_agent_1_node, ("characters",)),
-        "gameplay": (gameplay_node, ("world", "party")),
     }
 
 
@@ -772,17 +605,15 @@ def _write_bfs_path(world, path: Path) -> str:
 def smoke(
     n: int,
     log_nodes: list[str] | None = None,
-    mode: str = MODE_FULL,
     trace_eval: bool = False,
     theme: str = "pirate",
-    num_players: int = 1,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = SMOKE_DIR / timestamp
     run_dir.mkdir()
 
-    print(f"Smoke test ({mode}, theme: {theme}): {n} run(s) → {run_dir}/")
+    print(f"Smoke test (theme: {theme}): {n} run(s) → {run_dir}/")
     if log_nodes:
         print(f"  [log] per-run node logs under {run_dir}/run_<NNN>_logs/")
 
@@ -794,7 +625,7 @@ def smoke(
             log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
             out_file = run_dir / f"run_{i:03d}.txt"
             output, result, node_times = _run_once_captured(
-                log_nodes, log_root, mode=mode, theme=theme, num_players=num_players
+                log_nodes, log_root, theme=theme
             )
             _write_run_summary(result, out_file, node_times=node_times)
             (run_dir / f"run_{i:03d}_stdout.txt").write_text(output, encoding="utf-8")
@@ -872,23 +703,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  python main.py --mode generate          # world generation only\n"
-            "  python main.py --mode full              # full pipeline (default)\n"
-            "  python main.py --mode generate --smoke 5\n"
-            "  python main.py --mode generate --log world_builder --log puzzle_builder\n"
-            "  python main.py --mode generate --struct-eval  # fast per-node structural eval\n"
+            "  python main.py                          # generate a world\n"
+            "  python main.py --smoke 5\n"
+            "  python main.py --log world_builder --log puzzle_builder\n"
+            "  python main.py --struct-eval            # fast per-node structural eval\n"
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
-        ),
-    )
-    parser.add_argument(
-        "--mode",
-        choices=[MODE_GENERATE, MODE_FULL],
-        default=MODE_FULL,
-        help=(
-            f"'{MODE_GENERATE}': run world_builder + puzzle_builder only; "
-            f"'{MODE_FULL}': run the complete pipeline including characters and gameplay "
-            f"(default: {MODE_FULL})"
         ),
     )
     parser.add_argument(
@@ -946,14 +766,6 @@ if __name__ == "__main__":
         "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
     )
     parser.add_argument(
-        "--player",
-        type=int,
-        default=1,
-        metavar="N",
-        help="Number of player agents in the party (default: 1). Each picks one "
-        "distinct character.",
-    )
-    parser.add_argument(
         "--from",
         dest="from_path",
         metavar="PATH",
@@ -961,9 +773,6 @@ if __name__ == "__main__":
         "the upstream state the node needs as input.",
     )
     args = parser.parse_args()
-
-    if args.player < 1:
-        parser.error("--player requires a positive integer")
 
     # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
     # is constructed fresh inside world_builder_node and reads these.
@@ -977,8 +786,7 @@ if __name__ == "__main__":
         log_nodes = list(NODE_NAMES)
 
     # --node NAME: run a single node independently against saved state, then exit.
-    # --smoke takes precedence — when both are given, --node is ignored and the
-    # smoke runner uses --mode to control which pipeline runs.
+    # --smoke takes precedence — when both are given, --node is ignored.
     if args.node and args.smoke is None:
         run_node(
             args.node,
@@ -998,16 +806,12 @@ if __name__ == "__main__":
         smoke(
             args.smoke,
             log_nodes=log_nodes,
-            mode=args.mode,
             trace_eval=args.trace_eval,
             theme=theme,
-            num_players=args.player,
         )
     else:
         run(
-            mode=args.mode,
             log_nodes=log_nodes,
             theme=theme,
             trace_eval=args.trace_eval,
-            num_players=args.player,
         )

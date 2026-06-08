@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from agents import game_master as gm
+from agents import world_builder as gm
 from agents import puzzle_builder_node as pb
 from benchmark.engine import HeadlessEpisode
 from benchmark.policies import bfs_solution_path, heuristic_policy
