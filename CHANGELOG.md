@@ -2,6 +2,15 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 09:14:32 WIB
+
+### What changed
+- Removed the LLM-as-judge entirely. Deleted the `benchmark/narrative_eval.py` module and its `prompts/narrative_eval/` prompts, and dropped every entry point into it: the `--narrative-eval`/`--eval` and `--oracle-trace` flags (plus `_run_narrative_eval`/`_load_world_from_json`) from `main.py`, and the `--judge-dpo` revision-loop gate, the `--min-quality` post-filter (`quality_filter`), and `_judge_violations` from `benchmark/generate_dataset.py`. World and puzzle acceptance is now gated solely by the deterministic checks — `_eval_world_structure`, `check_solvable`, and `_eval_puzzle` (static solvability + key objects + object counts + oracle).
+- The fast, deterministic `--struct-eval` (alias `--trace-eval`) inline per-node check is unchanged and remains the only evaluator. Feedback/correction wording that called the deterministic checks an "automated judge" was corrected to "automated checks".
+
+### Why
+The deterministic gates already fully validate structural solvability and key-object presence, and the LLM judge added cost, latency, and non-determinism to generation and dataset building. Removing it makes both pipelines fully deterministic by default.
+
 ## 2026-06-08 08:38:56 WIB
 
 ### What changed

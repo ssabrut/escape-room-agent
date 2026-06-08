@@ -1,6 +1,6 @@
 """Player Agent — picks one character from the roster.
 
-Two instances run sequentially so agent 2 cannot pick the same character as agent 1.
+A single instance runs and selects one character for the party.
 """
 
 from __future__ import annotations
@@ -130,5 +130,9 @@ def _make_player_node(agent_id: str):
     return node
 
 
+def make_player_node(agent_id: str):
+    """Public factory: build a player node for a given agent id."""
+    return _make_player_node(agent_id)
+
+
 player_agent_1_node = _make_player_node("agent_1")
-player_agent_2_node = _make_player_node("agent_2")

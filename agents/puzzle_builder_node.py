@@ -1055,7 +1055,7 @@ def _generate_puzzle_with_feedback(
 ) -> tuple[GameWorld, str]:
     violation_block = "\n".join(f"  - {v}" for v in violations)
     correction = (
-        "Your previous puzzle had the following issues detected by an automated judge. "
+        "Your previous puzzle had the following issues detected by automated checks. "
         "Please generate a NEW, corrected puzzle for the same rooms that fixes ALL of them. "
         "Return only the JSON object — no prose.\n\n"
         f"Issues to fix:\n{violation_block}"

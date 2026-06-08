@@ -22,7 +22,17 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
-from graph import graph
+from graph import build_graph
+
+# Cache compiled graphs by player count so repeated runs (e.g. --smoke N) don't
+# rebuild the same graph each iteration.
+_GRAPH_CACHE: dict[int, object] = {}
+
+
+def _get_graph(num_players: int = 1):
+    if num_players not in _GRAPH_CACHE:
+        _GRAPH_CACHE[num_players] = build_graph(num_players)
+    return _GRAPH_CACHE[num_players]
 from state import GameState, GameWorld
 from visualization import render_room_layout
 
@@ -65,7 +75,6 @@ NODE_NAMES = (
     "puzzle_builder",
     "character_master",
     "player_agent_1",
-    "player_agent_2",
     "gameplay",
 )
 
@@ -359,6 +368,7 @@ def run(
     log_nodes: list[str] | None = None,
     theme: str = "",
     trace_eval: bool = False,
+    num_players: int = 1,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -402,8 +412,9 @@ def run(
         return
 
     result: dict = {}
+    game_graph = _get_graph(num_players)
     _step_start = time.perf_counter()
-    for step in graph.stream(GameState(theme=theme), stream_mode="updates"):
+    for step in game_graph.stream(GameState(theme=theme), stream_mode="updates"):
         _step_end = time.perf_counter()
         for node, update in step.items():
             node_times[node] = node_times.get(node, 0.0) + (_step_end - _step_start)
@@ -426,6 +437,7 @@ def _run_once_captured(
     log_root: Path | None,
     mode: str = MODE_FULL,
     theme: str = "pirate",
+    num_players: int = 1,
 ) -> tuple[str, dict, dict[str, float]]:
     """Run the pipeline once with stdout captured.
 
@@ -469,8 +481,9 @@ def _run_once_captured(
             result = {**wb_update, **pb_update}
         else:
             result = {}
+            game_graph = _get_graph(num_players)
             _step_start = time.perf_counter()
-            for step in graph.stream(GameState(theme=theme), stream_mode="updates"):
+            for step in game_graph.stream(GameState(theme=theme), stream_mode="updates"):
                 _step_end = time.perf_counter()
                 for node, update in step.items():
                     node_times[node] = node_times.get(node, 0.0) + (
@@ -514,8 +527,7 @@ def _eval_node(
     """Run the structural eval that belongs to `node` and print a PASS/FAIL trace.
 
     Returns True if the node's eval passed (or had no eval to run). This is a
-    fast, deterministic check per pipeline stage — the narrative LLM judge runs
-    once at the end via _run_narrative_eval, not here.
+    fast, deterministic check per pipeline stage.
     """
     world = result.get("world")
     issues: list[str] = []
@@ -576,34 +588,6 @@ def _eval_node(
     return passed
 
 
-def _run_narrative_eval(
-    world, show_trace: bool = False, out_path: Path | None = None
-) -> None:
-    """Evaluate `world` with the LLM-as-judge + oracle, print the report, and optionally save it."""
-    from benchmark.narrative_eval import evaluate_world, print_report, write_report
-
-    report = evaluate_world(world)
-    print_report(report, show_trace=show_trace)
-    if out_path is not None:
-        write_report(report, out_path)
-        print(f"  [eval] wrote {out_path}")
-
-
-def _load_world_from_json(path: Path) -> "GameWorld | None":
-    """Load a GameWorld from a saved game_master output.json."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"  [eval] could not read {path}: {exc}")
-        return None
-    world_data = raw.get("world", raw)
-    try:
-        return GameWorld.model_validate(world_data)
-    except Exception as exc:
-        print(f"  [eval] could not parse GameWorld from {path}: {exc}")
-        return None
-
-
 def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None":
     """Load a saved GameState from a node output.json (or a bare world.json).
 
@@ -646,7 +630,7 @@ def _node_registry() -> dict:
     from agents.character_master_node import character_master_node
     from agents.game_master import world_builder_node
     from agents.gameplay_node import gameplay_node
-    from agents.player_agent_node import player_agent_1_node, player_agent_2_node
+    from agents.player_agent_node import player_agent_1_node
     from agents.puzzle_builder_node import puzzle_builder_node
 
     return {
@@ -654,7 +638,6 @@ def _node_registry() -> dict:
         "puzzle_builder": (puzzle_builder_node, ("world",)),
         "character_master": (character_master_node, ("world",)),
         "player_agent_1": (player_agent_1_node, ("characters",)),
-        "player_agent_2": (player_agent_2_node, ("characters",)),
         "gameplay": (gameplay_node, ("world", "party")),
     }
 
@@ -745,10 +728,9 @@ def smoke(
     n: int,
     log_nodes: list[str] | None = None,
     mode: str = MODE_FULL,
-    eval_narrative: bool = False,
-    eval_trace: bool = False,
     trace_eval: bool = False,
     theme: str = "pirate",
+    num_players: int = 1,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -767,7 +749,7 @@ def smoke(
             log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
             out_file = run_dir / f"run_{i:03d}.txt"
             output, result, node_times = _run_once_captured(
-                log_nodes, log_root, mode=mode, theme=theme
+                log_nodes, log_root, mode=mode, theme=theme, num_players=num_players
             )
             _write_run_summary(result, out_file, node_times=node_times)
             (run_dir / f"run_{i:03d}_stdout.txt").write_text(output, encoding="utf-8")
@@ -801,11 +783,6 @@ def smoke(
                         "failures": eval_failures,
                     }
                 )
-            if eval_narrative:
-                world = result.get("world")
-                if world:
-                    eval_out = run_dir / f"run_{i:03d}.eval.json"
-                    _run_narrative_eval(world, show_trace=eval_trace, out_path=eval_out)
         except Exception as e:
             errors += 1
             err_file = run_dir / f"run_{i:03d}.error.txt"
@@ -850,9 +827,6 @@ if __name__ == "__main__":
             "  python main.py --mode full              # full pipeline (default)\n"
             "  python main.py --mode generate --smoke 5\n"
             "  python main.py --mode generate --log world_builder --log puzzle_builder\n"
-            "  python main.py --narrative-eval path/to/output.json  # judge a saved world\n"
-            "  python main.py --mode generate --narrative-eval      # generate then judge\n"
-            "  python main.py --mode generate --smoke 3 --narrative-eval  # judge each run\n"
             "  python main.py --mode generate --struct-eval  # fast per-node structural eval\n"
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
@@ -898,20 +872,6 @@ if __name__ == "__main__":
         help="Number of rooms in hard mode (implies --hard). Default: 4.",
     )
     parser.add_argument(
-        "--narrative-eval",
-        "--eval",  # deprecated alias
-        dest="eval",
-        nargs="?",
-        const=True,  # no arg: evaluate the freshly generated world
-        metavar="PATH",
-        help=(
-            "NARRATIVE evaluator (slow, one LLM-as-judge call at the END). Scores "
-            "the assembled world's prose, atmosphere, and plot twist, and runs an "
-            "internal oracle solve. Supply a PATH to judge a saved output.json, or "
-            "omit it to judge the world this run produces. (alias: --eval)"
-        ),
-    )
-    parser.add_argument(
         "--struct-eval",
         "--trace-eval",  # deprecated alias
         dest="trace_eval",
@@ -919,14 +879,7 @@ if __name__ == "__main__":
         help="STRUCTURAL evaluator (fast, deterministic, no LLM). Runs inline as "
         "each node finishes: world_builder is checked for room count/adjacency/goal "
         "coherence; puzzle_builder is checked for SOLVABILITY (object-graph walk). "
-        "Independent of --narrative-eval. (alias: --trace-eval)",
-    )
-    parser.add_argument(
-        "--oracle-trace",
-        action="store_true",
-        help="VERBOSITY modifier for --narrative-eval (not an evaluator on its own). "
-        "Prints the oracle's tick-by-tick solve trace. No effect unless "
-        "--narrative-eval is active.",
+        "(alias: --trace-eval)",
     )
     parser.add_argument(
         "--theme",
@@ -944,6 +897,14 @@ if __name__ == "__main__":
         "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
     )
     parser.add_argument(
+        "--player",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of player agents in the party (default: 1). Each picks one "
+        "distinct character.",
+    )
+    parser.add_argument(
         "--from",
         dest="from_path",
         metavar="PATH",
@@ -951,6 +912,9 @@ if __name__ == "__main__":
         "the upstream state the node needs as input.",
     )
     args = parser.parse_args()
+
+    if args.player < 1:
+        parser.error("--player requires a positive integer")
 
     # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
     # is constructed fresh inside world_builder_node and reads these.
@@ -975,24 +939,9 @@ if __name__ == "__main__":
         )
         sys.exit(0)
 
-    eval_arg = args.eval
-    eval_trace = args.oracle_trace
-
-    # --eval PATH: load and evaluate a saved world — no theme needed, exit immediately.
-    if isinstance(eval_arg, str):
-        eval_path = Path(eval_arg)
-        world = _load_world_from_json(eval_path)
-        if world is None:
-            sys.exit(1)
-        eval_out = eval_path.parent / (eval_path.stem + ".eval.json")
-        _run_narrative_eval(world, show_trace=eval_trace, out_path=eval_out)
-        sys.exit(0)
-
     # For all generation paths, ask the user to pick a theme now (once) unless
     # one was supplied via --theme.
     theme = args.theme or _pick_theme()
-
-    eval_inline = eval_arg is True  # --eval without a path: evaluate after generation
 
     if args.smoke is not None:
         if args.smoke < 1:
@@ -1001,38 +950,15 @@ if __name__ == "__main__":
             args.smoke,
             log_nodes=log_nodes,
             mode=args.mode,
-            eval_narrative=eval_inline,
-            eval_trace=eval_trace,
             trace_eval=args.trace_eval,
             theme=theme,
+            num_players=args.player,
         )
     else:
-        if eval_inline:
-            # Capture the result dict so we can pass the world to the evaluator
-            # without a second generation call.
-            log_root = LOG_DIR if log_nodes else None
-            _, result, node_times = _run_once_captured(
-                log_nodes, log_root, mode=args.mode, theme=theme
-            )
-            _print_timing_table(node_times)
-            # Per-node structural trace runs first (fast), then the narrative judge.
-            if args.trace_eval:
-                eval_failures = [
-                    n
-                    for n in ("world_builder", "puzzle_builder")
-                    if not _eval_node(n, result, log_root)
-                ]
-                _report_eval_failures(eval_failures)
-            world = result.get("world")
-            if world:
-                eval_out = (log_root or Path(".")) / "eval.json"
-                _run_narrative_eval(world, show_trace=eval_trace, out_path=eval_out)
-            else:
-                print("[eval] no world available to evaluate")
-        else:
-            run(
-                mode=args.mode,
-                log_nodes=log_nodes,
-                theme=theme,
-                trace_eval=args.trace_eval,
-            )
+        run(
+            mode=args.mode,
+            log_nodes=log_nodes,
+            theme=theme,
+            trace_eval=args.trace_eval,
+            num_players=args.player,
+        )

@@ -136,44 +136,20 @@ def _silent(fn, *args, **kwargs):
 def _correction(kind: str, violations: list[str]) -> str:
     block = "\n".join(f"  - {v}" for v in violations)
     return (
-        f"Your previous {kind} had the following issues detected by an automated "
-        f"judge. Please generate a NEW, corrected {kind} that fixes ALL of them. "
+        f"Your previous {kind} had the following issues detected by automated "
+        f"checks. Please generate a NEW, corrected {kind} that fixes ALL of them. "
         "Return only the JSON object — no prose.\n\n"
         f"Issues to fix:\n{block}"
     )
 
 
-def _judge_violations(world: GameWorld) -> list[str]:
-    """Run the LLM-as-judge quick pass and return its violation strings.
+def _puzzle_issues(world: GameWorld, chain_target: int, min_objs: int) -> list[str]:
+    """Deterministic acceptance gate for a puzzle world.
 
-    Uses `quick_eval_for_feedback` (tool presence + oracle solvability +
-    prompt_compliance LLM judge) — the loop-tuned subset of narrative_eval.
-    Returns [] on any failure so a flaky/unavailable judge never blocks
-    generation. stdout is suppressed to keep the progress line clean.
+    Runs `_eval_puzzle` (static solvability + key objects + object counts +
+    oracle). An empty list is the single accept condition for the revision loop.
     """
-    try:
-        from benchmark.narrative_eval import quick_eval_for_feedback
-        return _silent(quick_eval_for_feedback, world).violations
-    except Exception:
-        return []
-
-
-def _puzzle_issues(
-    world: GameWorld, chain_target: int, min_objs: int, use_judge: bool
-) -> list[str]:
-    """Unified gate: deterministic policy issues + LLM-judge issues.
-
-    The deterministic check (`_eval_puzzle`) runs first and is always authoritative.
-    The (slow, stochastic) LLM judge runs ONLY when the world is already
-    structurally valid — there's no point judging the prose of an unsolvable
-    world, and it saves a judge call on every broken attempt. The returned list
-    is the union; an empty list means the world satisfies BOTH the policy and
-    the judge, which is the single accept condition for the revision loop.
-    """
-    issues = _eval_puzzle(world, chain_target, min_objs)
-    if use_judge and not issues:
-        issues = _judge_violations(world)
-    return issues
+    return _eval_puzzle(world, chain_target, min_objs)
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +595,6 @@ def generate_theme(
     corruptors: list[str],
     world_corruptors: list[str],
     max_dpo_per_world: int,
-    judge_dpo: bool,
     rng: random.Random,
     resume_from_world: int,
     resume_from_puzzle: int,
@@ -721,27 +696,19 @@ def generate_theme(
             print(f" puzzle gen error: {exc}")
             continue
 
-        # --- Unified revision loop -----------------------------------------
-        # ONE loop drives the world until it satisfies BOTH the deterministic
-        # policy AND the LLM judge (when --judge-dpo is on). `_puzzle_issues`
-        # returns the union of issues — deterministic first, and the LLM judge
-        # only once the world is already structurally valid. Every attempt feeds
-        # the full issue list back into the regen, so revision is driven by the
-        # combined feedback. The loop exits only when issues == [] (both pass)
-        # or the attempt budget is exhausted; in the latter case the world is
-        # DISCARDED below (hard gate), so a written world ALWAYS satisfies both.
-        puzzle_issues = _puzzle_issues(full, chain_target, min_objs, judge_dpo)
+        # --- Revision loop -------------------------------------------------
+        # Drives the world until it satisfies the deterministic policy
+        # (`_puzzle_issues` → `_eval_puzzle`: solvable + deep). Every attempt
+        # feeds the full issue list back into the regen. The loop exits only
+        # when issues == [] or the attempt budget is exhausted; in the latter
+        # case the world is DISCARDED below (hard gate), so a written world is
+        # always solvable and deep.
+        puzzle_issues = _puzzle_issues(full, chain_target, min_objs)
         pretry = 0
         while puzzle_issues and pretry < max_attempts - 1:
             pretry += 1
             bad_full = full
-            # A judge-only failure (deterministic already clean) is a compliance
-            # contrast; otherwise it's a solvability/structure contrast.
-            cleared_axis = (
-                "compliance"
-                if not _eval_puzzle(full, chain_target, min_objs)
-                else "solvability"
-            )
+            cleared_axis = "solvability"
             if debug:
                 for v in puzzle_issues:
                     print(f"\n      puzzle: {v}", end="")
@@ -758,9 +725,9 @@ def generate_theme(
                 print(f" puzzle regen error: {exc}")
                 break
             prev_issues = puzzle_issues
-            puzzle_issues = _puzzle_issues(full, chain_target, min_objs, judge_dpo)
+            puzzle_issues = _puzzle_issues(full, chain_target, min_objs)
             # Capture the bad->good transition as a real DPO pair the moment the
-            # regen clears ALL issues (both judges).
+            # regen clears ALL issues.
             if "puzzle" in targets and not puzzle_issues:
                 counts["puzzle_dpo"] += 1
                 out = dirs["puzzle_dpo"] / f"{counts['puzzle_dpo']:04d}.jsonl"
@@ -773,12 +740,12 @@ def generate_theme(
         if puzzle_issues:
             print(
                 f"\n    => puzzle discarded after {pretry + 1} attempt(s): "
-                f"{len(puzzle_issues)} issue(s) (policy+judge not both satisfied)"
+                f"{len(puzzle_issues)} issue(s) (policy not satisfied)"
             )
             continue
 
-        # Past this point `full` is guaranteed solvable, deep, AND (if the judge
-        # was enabled) judge-approved — the revised, accepted world.
+        # Past this point `full` is guaranteed solvable and deep — the revised,
+        # accepted world.
 
         sig = _world_signature(full)
         if sig in seen:
@@ -972,64 +939,6 @@ def write_manifest(
 # ---------------------------------------------------------------------------
 
 
-def _world_from_sft_file(path: Path) -> "GameWorld | None":
-    """Reconstruct a GameWorld from a saved SFT file's assistant message."""
-    try:
-        rec = json.loads(path.read_text(encoding="utf-8"))
-        assistant = rec["messages"][-1]["content"]
-        data = json.loads(assistant)["world"]
-        return GameWorld.model_validate(data)
-    except Exception:
-        return None
-
-
-def quality_filter(themes: list[str], targets: set[str], min_quality: float) -> None:
-    """Post-filter: run full narrative_eval over accepted puzzle SFT worlds and
-    delete any whose overall score is below `min_quality`.
-
-    Runs AFTER generation so the generation pass itself stays deterministic and
-    fast. Only puzzle worlds carry objects + solution path, so only the puzzle
-    SFT tree is scored (world skeletons have no solvable content to judge).
-    Deletes the SFT file in place; the subsequent merge/manifest reflect the cut.
-    """
-    if min_quality <= 0 or "puzzle" not in targets:
-        return
-    try:
-        from benchmark.narrative_eval import evaluate_world
-    except Exception as exc:
-        print(f"\n[quality-filter] narrative_eval unavailable — skipping ({exc})")
-        return
-
-    print(f"\n{'═' * 64}")
-    print(f"  Quality post-filter (min overall score: {min_quality})")
-    print(f"{'═' * 64}")
-
-    kept = dropped = 0
-    for theme in themes:
-        sft_dir = PUZZLE_DIR / "sft" / _slug(theme)
-        if not sft_dir.exists():
-            continue
-        for p in sorted(sft_dir.glob("*.jsonl")):
-            world = _world_from_sft_file(p)
-            if world is None:
-                continue
-            try:
-                report = _silent(evaluate_world, world)
-            except Exception as exc:
-                print(f"  [{theme}] {p.name}: eval error ({exc}) — keeping")
-                kept += 1
-                continue
-            if report.overall < min_quality:
-                p.unlink()
-                dropped += 1
-                print(f"  [{theme}] {p.name}: overall {report.overall:.2f} < "
-                      f"{min_quality} — DROPPED")
-            else:
-                kept += 1
-
-    print(f"\n  quality-filter: kept {kept}, dropped {dropped}")
-
-
 def print_stats() -> None:
     """Summarise SFT/DPO counts and the per-axis breakdown of puzzle DPO pairs."""
 
@@ -1109,7 +1018,7 @@ def main() -> None:
         "--max-attempts-per-world",
         type=int,
         default=0,
-        help="judge-retry attempts per stage before discarding "
+        help="revision attempts per stage before discarding "
         "(default: settings.gen_max_attempts)",
     )
     parser.add_argument(
@@ -1152,23 +1061,6 @@ def main() -> None:
         help="cap on synthetic DPO pairs kept per accepted world; axes are "
         "seeded-shuffled and the first N validated ones are kept "
         "(default: 2). 0 = no cap (keep every validated axis).",
-    )
-    parser.add_argument(
-        "--judge-dpo",
-        action="store_true",
-        help="add the LLM-as-judge (quick narrative_eval pass) to the revision "
-        "loop as a HARD gate: each world is revised until it satisfies BOTH the "
-        "deterministic policy AND the judge, or is discarded. Bad->good fixes are "
-        "captured as real DPO pairs. Adds LLM cost; non-deterministic.",
-    )
-    parser.add_argument(
-        "--min-quality",
-        type=float,
-        default=0.0,
-        metavar="SCORE",
-        help="post-filter: after generation, run full narrative_eval over accepted "
-        "worlds and DROP any whose overall score is below SCORE (0.0-1.0). "
-        "0 = no filter (default). Adds LLM cost; runs once per accepted world.",
     )
     parser.add_argument(
         "--seed",
@@ -1263,8 +1155,6 @@ def main() -> None:
         f"  world dpo axes      : {', '.join(world_corruptors) if world_corruptors else '(live-retry only)'}"
     )
     print(f"  max dpo / world     : {args.max_dpo_per_world or 'no cap'}")
-    print(f"  llm judge gate      : {args.judge_dpo}  (revise until policy+judge pass)")
-    print(f"  quality post-filter : {args.min_quality or 'off'}")
     print(f"  output              : {DATASET_DIR}/")
 
     t0 = time.time()
@@ -1297,14 +1187,11 @@ def main() -> None:
             corruptors=corruptors,
             world_corruptors=world_corruptors,
             max_dpo_per_world=args.max_dpo_per_world,
-            judge_dpo=args.judge_dpo,
             rng=rng,
             resume_from_world=existing_world if args.resume else 0,
             resume_from_puzzle=existing_puzzle if args.resume else 0,
             debug=args.debug,
         )
-
-    quality_filter(themes, targets, args.min_quality)
 
     totals = merge_all(themes, targets)
     write_manifest(
