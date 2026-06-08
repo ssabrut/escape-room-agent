@@ -2,6 +2,16 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 14:19:54 WIB
+
+### What changed
+- The solver agent's ReAct trace now prints each `THINK` reasoning line directly above the action it reasoned about. Previously the thought was tagged one tick ahead of its action, so every thought displayed against the *next* tick's action, making the verbose `--world` trace read as if the agent's reasoning lagged a step behind what it actually did.
+
+### Why
+The thought tag used `ps.tick + 1` while the engine tags the corresponding action line with `ps.tick` (the policy runs after the tick counter is already incremented), so the interleave paired each thought with the wrong action. Dropping the `+ 1` aligns the two; the fix is display-only and does not change solver behavior.
+
+---
+
 ## 2026-06-08 14:03:21 WIB
 
 ### What changed

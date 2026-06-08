@@ -169,7 +169,7 @@ def react_solver_policy(
         if thought:
             scratchpad.append(f"Thought: {thought}")
             if trace is not None:
-                trace.append(f"t{ps.tick + 1} THINK: {thought}")
+                trace.append(f"t{ps.tick} THINK: {thought}")
         scratchpad.append(f"Action: {action}")
         return action
 
