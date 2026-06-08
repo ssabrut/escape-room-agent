@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
 from agents import world_builder as gm
-from agents import puzzle_builder_node as pb
+from agents.puzzle_graph import apply_theming, build_solvable_world
 from benchmark.engine import HeadlessEpisode
 from benchmark.policies import bfs_solution_path, heuristic_policy
 from config.settings import Settings
@@ -70,9 +70,9 @@ def _generate_one(
 ) -> tuple[GameWorld | None, list[str]]:
     """One LLM generation -> (validated GameWorld | None, build-log lines).
 
-    Generates rooms via world_builder then populates objects via puzzle_builder.
-    The repair/coherence warnings are captured (not swallowed) and returned so the caller
-    can show them inline per attempt under --debug.
+    Generates rooms via world_builder then builds objects constructively
+    (build_solvable_world) and themes them with the LLM (apply_theming),
+    mirroring the live puzzle_builder_node pipeline.
     """
     prompt = BANK_PROMPT.format(theme=theme, num_rooms=rooms, chain_depth=chain_depth)
     response = llm.invoke(
@@ -85,7 +85,8 @@ def _generate_one(
     try:
         with contextlib.redirect_stdout(buf):
             room_world = gm._build_world(room_data, max_rooms=rooms)
-            world, _ = pb._generate_puzzle(llm, room_world, chain_depth)
+            world = build_solvable_world(room_world, chain_depth=chain_depth)
+            world = apply_theming(world, theme, llm)
     except Exception:
         world = None
     build_log = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
@@ -134,6 +135,50 @@ def _print_trace(history: list[str]) -> None:
     _print_indented(history, header="oracle trace:")
 
 
+def _attempt_one(
+    llm: ChatOllama,
+    theme: str,
+    rooms: int,
+    chain_depth: int,
+    min_chain_depth: int,
+    seen: set[tuple],
+    debug: bool,
+    attempt_num: int,
+) -> tuple[GameWorld | None, str]:
+    """Try one generation for `theme`. Returns (world, rejection_reason) where
+    world is None on failure and rejection_reason is empty on success."""
+    print(f"  attempt {attempt_num:>3} [{theme}] ...", end="", flush=True)
+    world, build_log = _generate_one(llm, theme, rooms, chain_depth)
+    if world is None:
+        print(" parse/build failed")
+        if debug:
+            _print_indented(build_log, header="build log:")
+        return None, "parse/build failed"
+    sig = _world_signature(world)
+    if sig in seen:
+        print(" duplicate, skipped")
+        return None, "duplicate"
+    victory, depth, history = _oracle_solve(world)
+    size = f"{len(world.rooms)}r/{len(world.objects)}o"
+    if not victory:
+        print(f" unsolvable by oracle ({size})")
+        if debug:
+            _print_indented(build_log, header="build log:")
+            _print_trace(history)
+        return None, "unsolvable"
+    if depth < min_chain_depth:
+        print(f" too shallow: depth {depth} < {min_chain_depth} ({size})")
+        if debug:
+            _print_indented(build_log, header="build log:")
+            _print_trace(history)
+        return None, f"depth {depth} < {min_chain_depth}"
+    seen.add(sig)
+    world.solution_path = bfs_solution_path(world)
+    if debug:
+        _print_indented(build_log, header="build log:")
+    return world, ""
+
+
 def generate_bank(
     count: int,
     rooms: int,
@@ -142,14 +187,12 @@ def generate_bank(
     temperature: float,
     max_attempts: int,
     min_chain_depth: int,
+    per_theme: int = 0,
     debug: bool = False,
     fresh: bool = False,
 ) -> None:
     WORLDS_DIR.mkdir(parents=True, exist_ok=True)
     if fresh:
-        # Clear leftover worlds so a new bank isn't contaminated by a prior run.
-        # (A shell `rm *.json` silently no-ops under zsh when the dir is empty, so
-        # do it here where emptiness is harmless.)
         stale = sorted(WORLDS_DIR.glob("world_*.json"))
         for p in stale:
             p.unlink()
@@ -157,51 +200,73 @@ def generate_bank(
             print(f"  (cleared {len(stale)} stale world file(s))")
     llm = _make_llm(model, temperature)
 
+    if per_theme > 0:
+        # Generate exactly `per_theme` worlds for every theme in order.
+        total = per_theme * len(THEMES)
+        print(
+            f"Generating {per_theme} world(s) × {len(THEMES)} themes = {total} total: "
+            f"{rooms} rooms, chain>={chain_depth}, accept depth>={min_chain_depth}, "
+            f"model={model}\n"
+        )
+        seen: set[tuple] = set()
+        kept = 0
+        global_attempt = 0
+        for theme in THEMES:
+            theme_kept = 0
+            theme_attempts = 0
+            print(f"\n--- theme: {theme} (target: {per_theme}) ---")
+            while theme_kept < per_theme and theme_attempts < max_attempts:
+                global_attempt += 1
+                theme_attempts += 1
+                world, _ = _attempt_one(
+                    llm, theme, rooms, chain_depth, min_chain_depth,
+                    seen, debug, theme_attempts,
+                )
+                if world is None:
+                    continue
+                kept += 1
+                theme_kept += 1
+                out = WORLDS_DIR / f"world_{kept:03d}.json"
+                out.write_text(
+                    json.dumps(
+                        {"world": world.model_dump(mode="json", exclude_none=True)},
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                size = f"{len(world.rooms)}r/{len(world.objects)}o"
+                print(
+                    f" KEPT -> {out.name} ({size}) "
+                    f"[{theme_kept}/{per_theme} for this theme, {kept}/{total} total]"
+                )
+            if theme_kept < per_theme:
+                print(
+                    f"  WARNING: only {theme_kept}/{per_theme} kept for '{theme}' "
+                    f"after {theme_attempts} attempt(s)"
+                )
+        print(f"\nDone: {kept}/{total} kept -> {WORLDS_DIR}/")
+        if kept < total:
+            print("  (raise --max-attempts or lower difficulty if short)")
+        return
+
+    # Default mode: fill `count` worlds cycling through themes.
     print(
         f"Generating {count} world(s): {rooms} rooms, request chain>={chain_depth}, "
         f"ACCEPT measured depth>={min_chain_depth}, model={model}\n"
     )
-
+    seen = set()
     kept = 0
-    seen: set[tuple] = set()
     attempts = 0
     while kept < count and attempts < max_attempts:
         attempts += 1
         theme = THEMES[attempts % len(THEMES)]
-        print(f"  attempt {attempts:>3} [{theme}] ...", end="", flush=True)
-        world, build_log = _generate_one(llm, theme, rooms, chain_depth)
+        world, _ = _attempt_one(
+            llm, theme, rooms, chain_depth, min_chain_depth, seen, debug, attempts
+        )
         if world is None:
-            print(" parse/build failed")
-            if debug:
-                _print_indented(build_log, header="build log:")
             continue
-        sig = _world_signature(world)
-        if sig in seen:
-            print(" duplicate, skipped")
-            continue
-        victory, depth, history = _oracle_solve(world)
-        size = f"{len(world.rooms)}r/{len(world.objects)}o"
-        if not victory:
-            print(f" unsolvable by oracle ({size})")
-            if debug:
-                _print_indented(build_log, header="build log:")
-                _print_trace(history)
-            continue
-        if depth < min_chain_depth:
-            # Solvable but the repair net flattened it — too shallow to be a useful
-            # benchmark target. Reject rather than pad the bank with trivial worlds.
-            print(f" too shallow: depth {depth} < {min_chain_depth} ({size})")
-            if debug:
-                _print_indented(build_log, header="build log:")
-                _print_trace(history)
-            continue
-        seen.add(sig)
         kept += 1
-        # Replace the LLM's solution_path (which references hallucinated /
-        # repair-drifted object ids) with one derived from the oracle's actual
-        # winning solve over the final object graph — BFS-shortest, minimised,
-        # and guaranteed consistent.
-        world.solution_path = bfs_solution_path(world)
         out = WORLDS_DIR / f"world_{kept:03d}.json"
         out.write_text(
             json.dumps(
@@ -211,10 +276,8 @@ def generate_bank(
             ),
             encoding="utf-8",
         )
-        print(f" KEPT -> {out.name} ({size}, depth {depth})")
-        if debug:
-            _print_indented(build_log, header="build log:")
-            _print_trace(history)
+        size = f"{len(world.rooms)}r/{len(world.objects)}o"
+        print(f" KEPT -> {out.name} ({size})")
 
     print(f"\nDone: {kept}/{count} kept in {attempts} attempt(s) -> {WORLDS_DIR}/")
     if kept < count:
@@ -223,7 +286,14 @@ def generate_bank(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a hard benchmark world bank")
-    parser.add_argument("--count", type=int, default=10, help="worlds to keep")
+    parser.add_argument("--count", type=int, default=10, help="worlds to keep (ignored when --per-theme is set)")
+    parser.add_argument(
+        "--per-theme",
+        type=int,
+        default=0,
+        help="worlds to keep per theme; total = N × len(THEMES). "
+             "Generates each theme exhaustively before moving to the next.",
+    )
     parser.add_argument("--rooms", type=int, default=4, help="rooms per world")
     parser.add_argument(
         "--chain-depth",
@@ -260,16 +330,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    max_attempts = args.max_attempts or args.count * 4
+    count = args.per_theme * len(THEMES) if args.per_theme > 0 else args.count
+    max_attempts = args.max_attempts or max(count, args.per_theme or 1) * 4
     min_chain_depth = args.min_chain_depth or args.chain_depth
     generate_bank(
-        count=args.count,
+        count=count,
         rooms=args.rooms,
         chain_depth=args.chain_depth,
         model=args.model,
         temperature=args.temperature,
         max_attempts=max_attempts,
         min_chain_depth=min_chain_depth,
+        per_theme=args.per_theme,
         debug=args.debug,
         fresh=args.fresh,
     )

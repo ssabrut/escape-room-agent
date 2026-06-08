@@ -24,7 +24,7 @@ Each room must have:
     - {{"type": "known_info", "info": "<token>"}}
     - {{"type": "has_item", "object_id": "<id>"}}
     - {{"type": "power_active", "id": "<token>"}}
-- key_objects: list of 2–4 descriptive placeholder ids for the most important puzzle objects expected in this room. These will be placed during puzzle generation.
+- key_objects: list of 2–4 narrative snake_case ids for the most important puzzle objects expected in this room. Name them as vivid, theme-appropriate nouns — not structural placeholders. Good examples: "rusted_iron_gate", "bloodstained_ledger", "cracked_mirror", "brass_valve". Bad examples: "room1_safe", "room1_clue". These names inform the theming pass and make the room feel grounded before objects are built.
 
 The FINAL room's goal_completion will become the win condition.
 

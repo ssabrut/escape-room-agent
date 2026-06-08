@@ -2,6 +2,31 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 23:17:48 WIB
+
+### What changed
+- The benchmark generator now supports a `--per-theme` flag that generates exactly N worlds per theme exhaustively (one theme at a time) before moving to the next, rather than cycling themes round-robin. Total worlds produced equals `N × number-of-themes`.
+- Generation attempt logic was extracted into a shared `_attempt_one` helper used by both the per-theme and default count-fill modes, eliminating duplicated validation, duplicate-detection, oracle-solve, and depth-check code.
+- In default (count-fill) mode, the per-attempt log no longer prints depth or the oracle trace unconditionally — those details are now only shown under `--debug`, matching the per-theme mode's behaviour.
+
+### Why
+Running the bank generator with a fixed world count caused uneven theme coverage — prolific themes crowded out harder ones before their quota was reached. The `--per-theme` mode guarantees balanced representation across themes for training and evaluation purposes.
+
+---
+
+## 2026-06-08 23:14:51 WIB
+
+### What changed
+- The puzzle graph spec passed to the theming LLM now includes each room's goal text and annotates every object's dependency relationships (e.g. `unlocked-by=<tool>`, `unlocked-by=code`, `unlocked-by=power(…)`, `reveals=code`, `controls-power(…)`), giving the LLM enough causal context to write names and descriptions that feel mechanically coherent rather than generic.
+- The theming prompt was updated to use these annotations: it instructs the LLM to write causally-paired names (e.g. a tool and the lock it opens should feel like they belong together), to hint at hidden numbers in clue descriptions without stating digits, and to enforce cross-room vocabulary consistency so all rooms feel part of the same story world.
+- World-builder prompts (`generation.txt` and `generation_bank.txt`) now ask the LLM to supply vivid, theme-appropriate snake_case nouns as `key_objects` ids (e.g. `rusted_iron_gate`, `bloodstained_ledger`) instead of structural placeholders (e.g. `room1_safe`, `room1_clue`), so the room feels grounded before the puzzle-builder even runs.
+- The benchmark generator (`generate_bank.py`) was updated to use the constructive `build_solvable_world` + `apply_theming` pipeline directly, replacing the old `puzzle_builder_node._generate_puzzle` call so bank generation mirrors the live pipeline.
+
+### Why
+The theming pass was operating without knowledge of how objects depend on each other, producing names and descriptions that were thematically flavored but causally incoherent — a "rusted crowbar" unlocking a "porcelain music box" with no logical connection. Surfacing the dependency graph in both the spec and the prompt instructions gives the LLM the information it needs to write names where the tool and its lock feel like a matched pair, and where clue and code objects carry appropriate narrative hints.
+
+---
+
 ## 2026-06-08 23:11:16 WIB
 
 ### What changed

@@ -293,11 +293,24 @@ def _fallback_description(obj: WorldObject, world: GameWorld) -> str:
 def _graph_spec(world: GameWorld) -> str:
     lines: list[str] = []
     for room in world.rooms:
-        lines.append(f'Room "{room.id}":')
+        lines.append(f'Room "{room.id}" — goal: {room.goal}')
         for obj in world.objects:
             if obj.location != room.id:
                 continue  # constructor anchors every object directly in a room
-            lines.append(f"  - {obj.id} [{classify_role(obj, world)}]")
+            role = classify_role(obj, world)
+            parts = [f"  - {obj.id} [{role}]"]
+            if obj.requires_tool:
+                parts.append(f"unlocked-by={obj.requires_tool}")
+            if obj.requires_code:
+                parts.append("unlocked-by=code")
+            if obj.requires_power:
+                parts.append(f"unlocked-by=power({obj.requires_power})")
+            if obj.contains_info:
+                parts.append("reveals=code")
+            if obj.fuses:
+                labels = ",".join(obj.fuses.keys())
+                parts.append(f"controls-power({labels})")
+            lines.append(" | ".join(parts))
     return "\n".join(lines)
 
 
