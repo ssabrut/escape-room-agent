@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 23:11:16 WIB
+
+### What changed
+- Every object in a room is now part of the dependency chain — forming a true linked list where each item requires the previous one to unlock it. Intermediate chain links always use the tool mechanic (so each helper becomes a locked takeable gated by the next link), and only the final (root) link uses a terminating mechanic (code or power) whose helper is directly accessible.
+- The effective chain depth is now `max(chain_depth, min_objects_per_room - 1)`, so the per-room object minimum is met entirely by real chained objects. The scenic backfill pass (which padded under-filled rooms with inert props) has been removed — there are no longer any filler objects.
+
+### Why
+The previous mechanic picker could randomly assign a terminating mechanic (code or power) to an intermediate chain link, which left a helper locked but with nothing to subsequently gate it — creating an un-takeable (deadlocked) object. Forcing all intermediate links to use the tool mechanic guarantees that every object in a room is chained to and reachable from the one before it, making the dependency graph a strict linked list with no scenic dead weight.
+
+---
+
 ## 2026-06-08 20:13:39 WIB
 
 ### What changed

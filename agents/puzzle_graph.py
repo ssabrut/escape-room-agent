@@ -129,6 +129,11 @@ def _build_room_chain(
     opened by a mechanic; that mechanic's helper may itself be a locked object
     opened by a deeper mechanic, up to ``chain_depth`` links. Every helper is
     reachable strictly before its consumer, so the chain is solvable in order.
+
+    All intermediate links use the tool mechanic so every object in the chain is
+    locked behind the previous one — forming a true linked-list dependency. Only
+    the final (root) link uses a terminating mechanic (code or power) so its
+    helper is directly reachable with no further prerequisite.
     """
     room_objs: list[WorldObject] = []
 
@@ -148,14 +153,15 @@ def _build_room_chain(
     target = goal
     for link in range(depth):
         is_last_link = link == depth - 1
-        # Only the non-final links may deepen through a takeable helper (which gets
-        # locked and gated on the next iteration). On the final link we MUST pick a
-        # terminating mechanic so its helper stays directly reachable — never lock a
-        # helper we won't subsequently gate, or it becomes un-takeable (deadlock).
-        mechanic = builder.pick_mechanic()
-        if is_last_link and mechanic == "tool":
-            # Terminate cleanly: a code clue / fuse panel needs no further unlocking.
+        # Intermediate links always use the tool mechanic so the helper becomes a
+        # locked takeable item gated by the next link — every object in the room
+        # is reachable only after the one before it. The final (root) link must
+        # use a terminating mechanic (code or power) whose helper needs nothing
+        # further to be accessed; a terminal tool would be un-takeable (deadlock).
+        if is_last_link:
             mechanic = builder.rng.choice(("code", "power"))
+        else:
+            mechanic = "tool"
 
         helpers = builder.gate(target, room.id, mechanic)
         for h in helpers:
@@ -164,12 +170,10 @@ def _build_room_chain(
 
         if is_last_link:
             break
-        # Deepen the chain through a takeable tool/liquid by locking it behind the
-        # next mechanic. The take verb is only offered once the helper is unlocked,
-        # and the next iteration installs that unlocking mechanism.
+        # Lock the tool helper so it requires the next link to unlock it first.
         nxt = next((h for h in helpers if h.takeable), None)
         if nxt is None:
-            break  # mechanic was code/power (terminating) — chain ends here
+            break  # safety: terminating mechanic chosen — end chain here
         target = nxt
         target.state = LOCKED_STATE
 
@@ -205,14 +209,23 @@ def build_solvable_world(
     This function discards any goal_completion the skeleton carried and installs a
     constructed, guaranteed-solvable goal chain per room. Object descriptions are
     left blank for the theming pass to fill in.
+
+    Every object in a room is part of the dependency chain — forming a linked list
+    where each object requires the previous one. The effective chain depth is
+    max(chain_depth, min_objects_per_room - 1) so that the per-room object minimum
+    is met entirely by real chained objects, with no inert scenic fillers.
     """
     rng = random.Random(seed)
     builder = _Builder(rng)
 
+    # Each room gets exactly (effective_depth + 1) objects: the goal plus one helper
+    # per link. min_objects_per_room - 1 links are needed to reach the minimum count.
+    effective_depth = max(chain_depth, max(min_objects_per_room - 1, 1))
+
     rooms: list[Room] = []
     for room in skeleton.rooms:
-        goal, room_objs = _build_room_chain(builder, room, chain_depth)
-        _backfill_scenic(builder, room.id, len(room_objs), min_objects_per_room)
+        goal, room_objs = _build_room_chain(builder, room, effective_depth)
+        # No scenic backfill: all slots are filled by real chained objects above.
         rooms.append(
             Room(
                 id=room.id,
