@@ -1154,7 +1154,7 @@ def main() -> None:
         f"  hard mode           : {s.hard_mode}  (chain target: {chain_target}, "
         f"rooms: {max_rooms}, min objs/room: {min_objs})"
     )
-    print(f"  model               : {s.game_master_model}")
+    print(f"  model               : {s.builder_model}")
     print(
         f"  puzzle dpo axes     : {', '.join(corruptors) if corruptors else '(live-retry only)'}"
     )
@@ -1202,7 +1202,7 @@ def main() -> None:
 
     totals = merge_all(themes, targets)
     write_manifest(
-        themes, args.per_theme, s.game_master_model, chain_target, targets, totals
+        themes, args.per_theme, s.builder_model, chain_target, targets, totals
     )
 
     elapsed = time.time() - t0

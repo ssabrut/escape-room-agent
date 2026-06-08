@@ -1,17 +1,14 @@
 """Generate a bank of HARD, solvable worlds for the benchmark — LLM-backed.
 
 Uses the local Ollama model to author N-room worlds with deep puzzle chains
-(prompt: ``game_master/generation_bank.txt``), runs each through the live
+(prompt: ``world_builder/generation_bank.txt``), runs each through the live
 ``world_builder`` + ``puzzle_builder`` pipeline so it is structurally sound, then
 keeps only worlds that the heuristic oracle can actually SOLVE (so the bank is
 hard but winnable). Passing worlds are saved as JSON under ``benchmark/worlds/``.
 
-This is a benchmark-only path: it does NOT touch the live game's generation
-prompt or the production ``MAX_ROOMS`` default (it overrides the module global
-just for the duration of a bank build).
-
 Usage:
     python -m benchmark.generate_bank --count 20 --rooms 4 --model qwen3.5:9b-mlx
+    python -m benchmark.generate_bank --per-theme 5 --rooms 4 --model qwen3:14b --fresh
 """
 
 from __future__ import annotations
@@ -39,8 +36,8 @@ from prompts import load_prompt
 from state import GameWorld
 
 WORLDS_DIR = ROOT / "benchmark" / "worlds"
-BANK_PROMPT = load_prompt("game_master", "generation_bank")
-SYSTEM_PROMPT = load_prompt("game_master", "system")
+BANK_PROMPT = load_prompt("world_builder", "generation_bank")
+SYSTEM_PROMPT = load_prompt("world_builder", "system")
 
 THEMES = [
     "pirate ship",

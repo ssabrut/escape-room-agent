@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 23:27:29 WIB
+
+### What changed
+- The world-builder's environment variable for model selection was renamed from `GAME_MASTER_MODEL` to `BUILDER_MODEL`, and the temperature variable from `GAME_MASTER_TEMPERATURE` to `BUILDER_TEMPERATURE`. Code that read these env vars (settings, solver fallback chain, dataset generator logging) was updated accordingly.
+- The benchmark bank generator now loads its generation and system prompts from the `world_builder` prompt namespace instead of the now-deleted `game_master` namespace.
+- The five `game_master` prompts (`directive.txt`, `evaluation.txt`, `generation.txt`, `generation_bank.txt`, `system.txt`) have been deleted from the repository; they were made redundant when the corresponding prompts were moved to `world_builder/` in an earlier session.
+
+### Why
+The `game_master` name was a holdover from before the world-building agent was renamed to `world_builder`. The env var rename (`GAME_MASTER_MODEL` → `BUILDER_MODEL`) and prompt namespace cleanup complete that rename at the configuration and file-system level so nothing in the codebase still refers to `game_master` for world generation.
+
+---
+
 ## 2026-06-08 23:17:48 WIB
 
 ### What changed

@@ -24,16 +24,16 @@ def _parse_keep_alive(val: str) -> "int | str":
 
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    game_master_model: str = os.getenv("GAME_MASTER_MODEL", "llama3.2")
+    builder_model: str = os.getenv("BUILDER_MODEL", "llama3.2")
     player_model: str = os.getenv(
-        "PLAYER_MODEL", os.getenv("GAME_MASTER_MODEL", "llama3.2")
+        "PLAYER_MODEL", os.getenv("BUILDER_MODEL", "llama3.2")
     )
     # Solver agent (agents.solver_agent) — its own model, independent of the
-    # world generator and the in-game player. Falls back to GAME_MASTER_MODEL.
+    # world generator and the in-game player. Falls back to BUILDER_MODEL.
     solver_model: str = os.getenv(
-        "SOLVER_MODEL", os.getenv("GAME_MASTER_MODEL", "llama3.2")
+        "SOLVER_MODEL", os.getenv("BUILDER_MODEL", "llama3.2")
     )
-    game_master_temperature: float = float(os.getenv("GAME_MASTER_TEMPERATURE", "0.8"))
+    builder_temperature: float = float(os.getenv("BUILDER_TEMPERATURE", "0.8"))
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
     # Solving wants determinism, not creativity — low temperature by default.
     solver_temperature: float = float(os.getenv("SOLVER_TEMPERATURE", "0.2"))
@@ -58,7 +58,7 @@ class Settings:
 
 
 _ROLE_CONFIG = {
-    "game_master": lambda s: (s.game_master_model, s.game_master_temperature),
+    "game_master": lambda s: (s.builder_model, s.builder_temperature),
     "player": lambda s: (s.player_model, s.player_temperature),
     "solver": lambda s: (s.solver_model, s.solver_temperature),
 }
