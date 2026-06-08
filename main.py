@@ -140,6 +140,82 @@ def _render(result: dict) -> None:
             print()
 
 
+def _run_solver(world, use_react: bool = False, role: str = "solver") -> None:
+    """Run the LLM solver agent on a finished world and print its trace + score.
+
+    Opt-in step after generation (``--solve``). The solver drives the world under
+    the same engine the BFS oracle uses, so its tick count is directly comparable
+    to the optimal solution path.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        print("\n[solver] no world to solve — skipping.")
+        return
+    if not world.win_condition.object_id:
+        print("\n[solver] world has no win condition — skipping.")
+        return
+
+    from agents.solver_agent import objective, solve_world
+
+    print("\n" + "=" * 94)
+    print(f" LLM SOLVER  (mode={'ReAct' if use_react else 'direct'}, role={role})")
+    print("=" * 94 + "\n")
+
+    trace: list[str] = []
+    result, optimal = solve_world(world, role, use_react=use_react, trace=trace)
+
+    verdict = "ESCAPED" if result.victory else "FAILED"
+    print(f"  {verdict} in {result.ticks} tick(s)\n")
+
+    thought_by_tick = {ln.split(" ", 1)[0]: ln for ln in trace}
+    for line in result.history:
+        tk = line.split(" ", 1)[0]
+        if tk in thought_by_tick:
+            print(f"    {thought_by_tick[tk]}")
+        print(f"    {line}")
+
+    score = objective(world, result, optimal_len=len(optimal))
+    print(
+        f"\n  vs BFS optimal ({score['optimal']} step(s)): "
+        f"reward={score['reward']}  efficiency={score['efficiency']}  "
+        f"wasted={score['wasted']}"
+    )
+
+
+def _solve_run(world, out_path: Path, use_react: bool = False, role: str = "solver"):
+    """Run the LLM solver on `world`, save its trace to `out_path`, return a score record.
+
+    Returns None when there is nothing solvable. Used by the smoke roll-up so each
+    run's solve trace lands on disk while only a one-line result prints to stdout.
+    """
+    if world is None or not getattr(world, "rooms", None) or not world.win_condition.object_id:
+        return None
+
+    from agents.solver_agent import objective, solve_world
+
+    trace: list[str] = []
+    result, optimal = solve_world(world, role, use_react=use_react, trace=trace)
+    score = objective(world, result, optimal_len=len(optimal))
+
+    thought_by_tick = {ln.split(" ", 1)[0]: ln for ln in trace}
+    lines = [
+        f"LLM solver (mode={'ReAct' if use_react else 'direct'}, role={role})",
+        f"{'ESCAPED' if result.victory else 'FAILED'} in {result.ticks} tick(s)",
+        "",
+    ]
+    for line in result.history:
+        tk = line.split(" ", 1)[0]
+        if tk in thought_by_tick:
+            lines.append(f"  {thought_by_tick[tk]}")
+        lines.append(f"  {line}")
+    lines += ["", f"BFS optimal ({len(optimal)} step(s)):"] + [f"  {s}" for s in optimal]
+    lines.append(
+        f"\nreward={score['reward']} won={score['won']} ticks={score['ticks']} "
+        f"optimal={score['optimal']} efficiency={score['efficiency']} wasted={score['wasted']}"
+    )
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return score
+
+
 def _format_timing_table(node_times: dict[str, float]) -> list[str]:
     """Return lines for a per-node elapsed-time table."""
     if not node_times:
@@ -249,6 +325,8 @@ def run(
     log_nodes: list[str] | None = None,
     theme: str = "",
     trace_eval: bool = False,
+    solve: bool = False,
+    react: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -288,6 +366,9 @@ def run(
     _render(result)
     _print_timing_table(node_times)
     _report_eval_failures(eval_failures)
+
+    if solve:
+        _run_solver(result.get("world"), use_react=react)
 
 
 def _run_once_captured(
@@ -607,6 +688,8 @@ def smoke(
     log_nodes: list[str] | None = None,
     trace_eval: bool = False,
     theme: str = "pirate",
+    solve: bool = False,
+    react: bool = False,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -619,6 +702,7 @@ def smoke(
 
     errors = 0
     eval_records: list[dict] = []  # per-run structural eval outcomes for the roll-up
+    solve_records: list[dict] = []  # per-run LLM-solver outcomes for the roll-up
     for i in range(1, n + 1):
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
@@ -644,6 +728,21 @@ def smoke(
                 f"{out_file.name}{world_note}{bench_note}{bfs_note}"
             )
             _print_timing_table(node_times)
+
+            if solve:
+                rec = _solve_run(
+                    result.get("world"),
+                    run_dir / f"run_{i:03d}.solve.txt",
+                    use_react=react,
+                )
+                if rec is not None:
+                    rec["run"] = i
+                    solve_records.append(rec)
+                    print(
+                        f"      [solve] {'ESCAPED' if rec['won'] else 'FAILED'} "
+                        f"in {rec['ticks']} tick(s) "
+                        f"(optimal {rec['optimal']}, reward {rec['reward']})"
+                    )
             if trace_eval:
                 # Structural per-node eval (PASS/FAIL + status/timestamp), written
                 # to each node's eval.json under this run's log dir.
@@ -689,6 +788,30 @@ def smoke(
         print(
             f"\n  [trace-eval] {passed}/{len(eval_records)} run(s) passed "
             f"→ {summary_path.name}"
+        )
+
+    if solve_records:
+        solvable = sum(1 for r in solve_records if r["optimal"] > 0)
+        escaped = sum(1 for r in solve_records if r["won"])
+        win_rewards = [r["reward"] for r in solve_records if r["won"]]
+        mean_reward = (sum(win_rewards) / len(win_rewards)) if win_rewards else 0.0
+        roll_up = {
+            "runs_solved": len(solve_records),
+            "solvable": solvable,
+            "escaped": escaped,
+            "solve_rate": round(escaped / solvable, 3) if solvable else 0.0,
+            "mean_reward_on_escapes": round(mean_reward, 3),
+            "records": solve_records,
+        }
+        solve_path = run_dir / "solve_summary.json"
+        solve_path.write_text(
+            json.dumps(roll_up, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        rate = (escaped / solvable * 100) if solvable else 0.0
+        print(
+            f"\n  [solve] {escaped}/{solvable} solvable world(s) escaped = {rate:.0f}%"
+            + (f"   |   mean reward (escapes): {mean_reward:.2f}" if win_rewards else "")
+            + f"  → {solve_path.name}"
         )
 
     summary = f"\nAll runs saved to {run_dir}/"
@@ -772,6 +895,18 @@ if __name__ == "__main__":
         help="With --node: path to a saved output.json (or world.json) carrying "
         "the upstream state the node needs as input.",
     )
+    parser.add_argument(
+        "--solve",
+        action="store_true",
+        help="After generating the world, run the LLM solver agent on it and print "
+        "its trace and score vs the BFS optimum.",
+    )
+    parser.add_argument(
+        "--react",
+        action="store_true",
+        help="With --solve: use the ReAct solver policy (Thought->Action with a "
+        "running scratchpad) instead of the direct policy.",
+    )
     args = parser.parse_args()
 
     # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
@@ -808,10 +943,14 @@ if __name__ == "__main__":
             log_nodes=log_nodes,
             trace_eval=args.trace_eval,
             theme=theme,
+            solve=args.solve,
+            react=args.react,
         )
     else:
         run(
             log_nodes=log_nodes,
             theme=theme,
             trace_eval=args.trace_eval,
+            solve=args.solve,
+            react=args.react,
         )

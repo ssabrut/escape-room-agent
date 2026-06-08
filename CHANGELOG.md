@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 14:54:28 WIB
+
+### What changed
+- Generation runs can now optionally hand the finished world to the LLM solver agent via a new `--solve` flag. In a single run this prints the solver's full trace — interleaving each `THINK` line with the action it reasoned about — its verdict (ESCAPED/FAILED) and tick count, and a score against the BFS optimum (reward, efficiency, wasted steps). A companion `--react` flag switches the solver from its direct policy to the ReAct policy (Thought→Action with a running scratchpad).
+- Smoke runs honour `--solve`/`--react` too: each run's solver trace plus the BFS optimal path is written to `run_NNN.solve.txt` while only a one-line result prints to stdout. A `solve_summary.json` roll-up is then emitted reporting solvable-worlds-escaped count, solve rate, and mean reward on escapes across the batch.
+
+### Why
+With the pipeline now generation-only and the LLM solver available as a standalone agent, wiring it into the generation CLI lets the solver be exercised and benchmarked against the BFS optimum in the same pass that produces a world, and the smoke roll-up turns that into an aggregate solve-rate signal across many worlds without manual per-run inspection.
+
+---
+
 ## 2026-06-08 14:37:32 WIB
 
 ### What changed
