@@ -2,6 +2,19 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-08 20:13:39 WIB
+
+### What changed
+- Object ids produced by the LLM theming step are now slugified to `snake_case` (lowercase letters, digits, underscores only). Both the inline `_coerce_id` helper in the puzzle builder and the `apply_theming` slug-mapping in the puzzle graph independently enforce this conversion, and duplicate slugs after renaming are resolved by appending a counter suffix.
+- A room's goal text is automatically rewritten to reference the new slug after its key object is renamed during theming, keeping the displayed objective consistent with the new object id.
+- Themed descriptions are now remapped from original ids to their new slugs before being applied to objects, so every object receives its LLM-authored description instead of falling back to the generic fallback.
+- The theming prompt now explicitly requires names to be `snake_case` identifiers (no spaces, hyphens, or other punctuation), so the LLM is less likely to produce multi-word names that would break single-token action parsing.
+
+### Why
+The game engine splits action strings on whitespace and uses the second token as the target object id, so an object named "iron gate" (two tokens) would be unreachable via any action. Slugifying all LLM-produced names to `snake_case` at both the prompt level and in post-processing ensures ids remain single-token action targets regardless of what the model emits.
+
+---
+
 ## 2026-06-08 14:54:28 WIB
 
 ### What changed

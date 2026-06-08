@@ -388,13 +388,29 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
             names = {}
             descs = {}
 
-    # Build old_id -> new_id mapping for updating references
+    # Build old_id -> new_id mapping for updating references.
+    # Slugify LLM names to snake_case so they remain valid single-token action
+    # targets (the engine splits actions on whitespace and uses parts[1] as the id).
+    def _slugify(name: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower().strip()).strip("_")
+        return slug or "object"
+
     id_mapping: dict[str, str] = {}
+    used_slugs: set[str] = set()
     for obj in world.objects:
         if obj.id in names:
-            new_id = names[obj.id]
-            id_mapping[obj.id] = new_id
-            obj.id = new_id
+            slug = _slugify(names[obj.id])
+            # Ensure uniqueness: append a counter if slug already taken
+            if slug in used_slugs:
+                n = 2
+                while f"{slug}_{n}" in used_slugs:
+                    n += 1
+                slug = f"{slug}_{n}"
+            used_slugs.add(slug)
+            id_mapping[obj.id] = slug
+            obj.id = slug
+        else:
+            used_slugs.add(obj.id)
 
     # Update references throughout the world
     for obj in world.objects:
@@ -407,17 +423,23 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
         room.key_objects = [id_mapping.get(oid, oid) for oid in room.key_objects]
         if room.goal_completion and room.goal_completion.object_id:
             if room.goal_completion.object_id in id_mapping:
-                room.goal_completion.object_id = id_mapping[
-                    room.goal_completion.object_id
-                ]
+                new_oid = id_mapping[room.goal_completion.object_id]
+                room.goal_completion.object_id = new_oid
+                room.goal = f"Get {new_oid} into the '{room.goal_completion.state}' state."
 
     # Update win condition if present
     if world.win_condition and world.win_condition.object_id in id_mapping:
         world.win_condition.object_id = id_mapping[world.win_condition.object_id]
 
+    # Remap descriptions from original ids to new slugs so lookups work after renaming.
+    slug_descs: dict[str, str] = {}
+    for orig_id, desc in descs.items():
+        new_id = id_mapping.get(orig_id, orig_id)
+        slug_descs[new_id] = desc
+
     # Apply descriptions with fallback
     for obj in world.objects:
-        themed = descs.get(obj.id)
+        themed = slug_descs.get(obj.id)
         obj.description = themed if themed else _fallback_description(obj, world)
     return world
 

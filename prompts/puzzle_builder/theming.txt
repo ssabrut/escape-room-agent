@@ -27,10 +27,14 @@ For 'clue' objects, the description should hint it carries hidden information
 (without stating the digits). For 'panel' objects, mention the switch. Names
 should fit the theme and feel natural—avoid generic "clue_" or "tool_" style names.
 
+IMPORTANT: Names must be snake_case identifiers (lowercase letters, digits, and
+underscores only — no spaces, hyphens, or punctuation). Examples of valid names:
+iron_gate, parchment_scroll, glowing_rune_stone, brass_lever.
+
 Format:
 {{
   "names": {{
-    "<object_id>": "<creative theme-appropriate name>",
+    "<object_id>": "<snake_case_name>",
     ...
   }},
   "descriptions": {{

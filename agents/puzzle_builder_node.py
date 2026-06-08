@@ -133,12 +133,21 @@ def _all_key_objects(rooms: list[Room]) -> set[str]:
 
 
 def _coerce_id(value) -> str | None:
+    """Extract and slugify an id from an LLM-provided value.
+
+    Slugification (lowercase + underscores) ensures ids remain single-token
+    action targets — the engine splits actions on whitespace and uses parts[1].
+    """
+    raw: str | None = None
     if isinstance(value, str):
-        return value or None
-    if isinstance(value, dict):
+        raw = value or None
+    elif isinstance(value, dict):
         inner = value.get("id") or value.get("name")
-        return inner if isinstance(inner, str) and inner else None
-    return None
+        raw = inner if isinstance(inner, str) and inner else None
+    if raw is None:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "_", raw.lower().strip()).strip("_")
+    return slug or None
 
 
 def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObject]:
