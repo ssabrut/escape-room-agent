@@ -19,8 +19,8 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
-from state import GameState, GameWorld
-from visualization import render_room_layout
+from src.escape_rooms.state import GameState, GameWorld
+from src.escape_rooms.utils.renderer import render_room_layout
 
 THEMES = [
     "Haunted House",
@@ -260,9 +260,9 @@ def run(
     eval_failures: list[str] = []
     eval_root = LOG_DIR if trace_eval else None
 
-    from agents.world_builder import world_builder_node
-    from agents.puzzle_builder_node import puzzle_builder_node
-    from state import GameState as _GS
+    from src.escape_rooms.nodes.world_builder import world_builder_node
+    from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+    from src.escape_rooms.state import GameState as _GS
 
     state = _GS(theme=theme)
     t0 = time.perf_counter()
@@ -307,9 +307,9 @@ def _run_once_captured(
     orig_stdout = sys.stdout
     sys.stdout = buf
     try:
-        from agents.world_builder import world_builder_node
-        from agents.puzzle_builder_node import puzzle_builder_node
-        from state import GameState as _GS
+        from src.escape_rooms.nodes.world_builder import world_builder_node
+        from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+        from src.escape_rooms.state import GameState as _GS
 
         state = _GS(theme=theme)
 
@@ -377,7 +377,7 @@ def _eval_node(
         if world is None:
             issues.append("no world produced")
         else:
-            from agents.world_builder import _eval_world_structure, MAX_ROOMS
+            from src.escape_rooms.nodes.world_builder import _eval_world_structure, MAX_ROOMS
             from benchmark.policies import check_solvable
 
             issues += _eval_world_structure(world, len(world.rooms) or MAX_ROOMS)
@@ -476,8 +476,8 @@ def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None
 # Maps a node name to (entry function, required GameState fields it reads).
 # world_builder needs nothing but a theme, so its requirements are empty.
 def _node_registry() -> dict:
-    from agents.world_builder import world_builder_node
-    from agents.puzzle_builder_node import puzzle_builder_node
+    from src.escape_rooms.nodes.world_builder import world_builder_node
+    from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 
     return {
         "world_builder": (world_builder_node, ()),

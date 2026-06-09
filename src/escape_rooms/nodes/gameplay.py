@@ -14,9 +14,9 @@ from collections import deque
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.settings import get_llm
-from prompts import load_prompt
-from state import (
+from src.escape_rooms.utils.settings import get_llm
+from src.escape_rooms.prompts import load_prompt
+from src.escape_rooms.state import (
     GameState,
     GameWorld,
     ObjectObservation,
@@ -25,7 +25,7 @@ from state import (
     TickAction,
     WorldObject,
 )
-from visualization import render_room_layout
+from src.escape_rooms.utils.renderer import render_room_layout
 
 SYSTEM_PROMPT = load_prompt("gameplay_agent", "system")
 ACTION_PROMPT = load_prompt("gameplay_agent", "action")

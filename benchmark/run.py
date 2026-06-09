@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 from benchmark.engine import EpisodeResult, HeadlessEpisode
 from benchmark.policies import bfs_policy, first_policy, heuristic_policy, random_policy
-from state import GameWorld
+from src.escape_rooms.state import GameWorld
 
 DEFAULT_GLOB = "smoke_runs/**/game_master/output.json"
 

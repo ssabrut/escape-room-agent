@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage
 
-from agents.solver_agent import objective, solve_world
-from state import GameState, SolverResult
+from src.escape_rooms.agents.solver_agent import objective, solve_world
+from src.escape_rooms.state import GameState, SolverResult
 
 
 def solver_node(state: GameState) -> dict:

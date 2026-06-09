@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agents import gameplay_node as gp
-from state import GameWorld, PartyState, TickAction
+from src.escape_rooms.nodes import gameplay as gp
+from src.escape_rooms.state import GameWorld, PartyState, TickAction
 
 
 @dataclass

@@ -26,7 +26,7 @@ import random
 import json
 import re
 
-from state import GameWorld, Prerequisite, Room, WorldObject
+from src.escape_rooms.state import GameWorld, Prerequisite, Room, WorldObject
 
 # States the engine treats as "needs unlocking". The goal/win target is always
 # "unlocked" — never a trivial default ("visible"/"fixed") that check_solvable
@@ -239,7 +239,7 @@ def build_solvable_world(
             )
         )
 
-    from state.game_state import derive_win_condition
+    from src.escape_rooms.state import derive_win_condition
 
     return GameWorld(
         scenario=skeleton.scenario,
@@ -395,7 +395,7 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
-            from prompts import load_prompt
+            from src.escape_rooms.prompts import load_prompt
 
             system = load_prompt("puzzle_builder", "system")
             prompt = load_prompt("puzzle_builder", "theming").format(

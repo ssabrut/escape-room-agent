@@ -12,9 +12,9 @@ import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.settings import Settings, get_llm
-from prompts import load_prompt
-from state import GameState, GameWorld, Prerequisite, Room
+from src.escape_rooms.utils.settings import Settings, get_llm
+from src.escape_rooms.prompts import load_prompt
+from src.escape_rooms.state import GameState, GameWorld, Prerequisite, Room
 
 SYSTEM_PROMPT = load_prompt("world_builder", "system")
 GENERATION_PROMPT = load_prompt("world_builder", "generation")

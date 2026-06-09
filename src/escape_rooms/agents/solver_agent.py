@@ -20,13 +20,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.gameplay_node import (
+from src.escape_rooms.nodes.gameplay import (
     IDLE_ACTION,
     _format_goal_completion,
     _format_objects,
@@ -35,8 +35,8 @@ from agents.gameplay_node import (
     _parse_json,
     _resolve_choice,
 )
-from config.settings import get_llm
-from state import GameWorld, PartyState
+from src.escape_rooms.utils.settings import get_llm
+from src.escape_rooms.state import GameWorld, PartyState
 
 REACT_SYSTEM = (
     "You are an expert escape-room solver using the ReAct method: you REASON about "

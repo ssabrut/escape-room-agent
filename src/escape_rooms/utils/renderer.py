@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from state import Room, WorldObject
+from src.escape_rooms.state import Room, WorldObject
 
 CELL_MIN_W = 30
 CELL_MIN_H = 7

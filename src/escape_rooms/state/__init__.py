@@ -1,4 +1,4 @@
-from .game_state import (
+from .schema import (
     Character,
     GameState,
     GameWorld,
@@ -11,6 +11,7 @@ from .game_state import (
     TickAction,
     WinCondition,
     WorldObject,
+    derive_win_condition,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "TickAction",
     "WinCondition",
     "WorldObject",
+    "derive_win_condition",
 ]

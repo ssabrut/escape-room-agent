@@ -5,10 +5,10 @@ world_builder -> puzzle_builder -> solver -> END
 
 from langgraph.graph import END, StateGraph
 
-from agents.world_builder import world_builder_node
-from agents.puzzle_builder_node import puzzle_builder_node
-from agents.solver_node import solver_node
-from state import GameState
+from src.escape_rooms.nodes.world_builder import world_builder_node
+from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+from src.escape_rooms.nodes.solver import solver_node
+from src.escape_rooms.state import GameState
 
 
 def build_graph(num_players: int = 1) -> StateGraph:

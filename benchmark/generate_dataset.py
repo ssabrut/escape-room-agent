@@ -60,16 +60,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents.world_builder import MAX_ROOMS
-from agents.world_builder import SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT
-from agents.world_builder import (
+from src.escape_rooms.nodes.world_builder import MAX_ROOMS
+from src.escape_rooms.nodes.world_builder import SYSTEM_PROMPT as WORLD_SYSTEM_PROMPT
+from src.escape_rooms.nodes.world_builder import (
     _eval_world_structure,
     _generate_world,
     _generation_prompt,
 )
-from agents.puzzle_builder_node import SYSTEM_PROMPT as PUZZLE_SYSTEM_PROMPT
-from agents.puzzle_builder_node import _build_prompt as _puzzle_prompt
-from agents.puzzle_builder_node import (
+from src.escape_rooms.nodes.puzzle_builder import SYSTEM_PROMPT as PUZZLE_SYSTEM_PROMPT
+from src.escape_rooms.nodes.puzzle_builder import _build_prompt as _puzzle_prompt
+from src.escape_rooms.nodes.puzzle_builder import (
     _default_chain_depth,
     _eval_puzzle,
     _generate_puzzle,
@@ -77,8 +77,8 @@ from agents.puzzle_builder_node import (
     _min_objects_per_room,
 )
 from benchmark.policies import bfs_solution_path
-from config.settings import Settings, get_llm
-from state import GameWorld
+from src.escape_rooms.utils.settings import Settings, get_llm
+from src.escape_rooms.state import GameWorld
 
 ALL_THEMES = [
     "Haunted House",
@@ -164,7 +164,7 @@ def _puzzle_issues(world: GameWorld, chain_target: int, min_objs: int) -> list[s
 # ---------------------------------------------------------------------------
 
 
-from state import WorldObject
+from src.escape_rooms.state import WorldObject
 
 
 def _clone(world: GameWorld) -> GameWorld:

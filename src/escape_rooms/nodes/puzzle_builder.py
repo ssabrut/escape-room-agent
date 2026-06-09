@@ -12,10 +12,9 @@ import re
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.settings import Settings, get_llm
-from prompts import load_prompt
-from state import GameState, GameWorld, Prerequisite, Room, WorldObject
-from state.game_state import derive_win_condition
+from src.escape_rooms.utils.settings import Settings, get_llm
+from src.escape_rooms.prompts import load_prompt
+from src.escape_rooms.state import GameState, GameWorld, Prerequisite, Room, WorldObject, derive_win_condition
 
 SYSTEM_PROMPT = load_prompt("puzzle_builder", "system")
 GENERATION_PROMPT = load_prompt("puzzle_builder", "generation")
@@ -1358,7 +1357,7 @@ def puzzle_builder_node(state: GameState) -> dict:
 
     import time
 
-    from agents.puzzle_graph import apply_theming, build_solvable_world
+    from src.escape_rooms.graphs.subgraphs.puzzle_graph import apply_theming, build_solvable_world
 
     s = Settings()
     llm = get_llm("game_master")

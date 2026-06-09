@@ -27,8 +27,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from agents import gameplay_node as gp
-from state import GameWorld, WorldObject
+from src.escape_rooms.nodes import gameplay as gp
+from src.escape_rooms.state import GameWorld, WorldObject
 
 # Verb priority for the heuristic: progress-making actions first, movement last,
 # wait never (unless it's all that's offered).
@@ -234,8 +234,8 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
     """
     from collections import deque
 
-    from agents import gameplay_node as _gp
-    from state import PartyState as _PartyState
+    from src.escape_rooms.nodes import gameplay as _gp
+    from src.escape_rooms.state import PartyState as _PartyState
 
     def _snapshot(ps: _PartyState) -> tuple:
         return (

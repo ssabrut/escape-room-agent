@@ -27,12 +27,12 @@ if str(ROOT) not in sys.path:
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from agents import world_builder as gm
-from agents.puzzle_graph import apply_theming, build_solvable_world
+from src.escape_rooms.nodes import world_builder as gm
+from src.escape_rooms.graphs.subgraphs.puzzle_graph import apply_theming, build_solvable_world
 from benchmark.policies import bfs_solution_path, oracle_solve
-from config.settings import Settings
-from prompts import load_prompt
-from state import GameWorld
+from src.escape_rooms.utils.settings import Settings
+from src.escape_rooms.prompts import load_prompt
+from src.escape_rooms.state import GameWorld
 
 WORLDS_DIR = ROOT / "benchmark" / "worlds"
 BANK_PROMPT = load_prompt("world_builder", "generation_bank")
