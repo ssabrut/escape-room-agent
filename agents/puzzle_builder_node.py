@@ -789,7 +789,7 @@ def _prune_orphan_objects(
     room_ids_list = [r.id for r in rooms]
     room_object_count: dict[str, int] = {rid: 0 for rid in room_ids_list}
     for o in objects:
-        if o.id in keep or o.scenic:
+        if o.id in keep:
             if o.location in room_object_count:
                 room_object_count[o.location] += 1
 
@@ -801,7 +801,6 @@ def _prune_orphan_objects(
             o
             for o in objects
             if o.id not in keep
-            and not o.scenic
             and o.location == rid
             and not o.requires_tool
             and not o.requires_code
@@ -814,8 +813,8 @@ def _prune_orphan_objects(
             keep.add(filler.id)
             room_object_count[rid] += 1
 
-    dropped = [o.id for o in objects if o.id not in keep and not o.scenic]
-    kept = [o for o in objects if o.id in keep or o.scenic]
+    dropped = [o.id for o in objects if o.id not in keep]
+    kept = [o for o in objects if o.id in keep]
     return kept, dropped
 
 
@@ -827,41 +826,7 @@ def _prune_orphan_objects(
 def _backfill_scenic_objects(
     rooms: list[Room], objects: list[WorldObject], min_per_room: int
 ) -> list[str]:
-    """Top each room up to ``min_per_room`` objects with inert scenic props.
-
-    Runs AFTER orphan pruning. The pruner legitimately deletes objects that are
-    not backward-reachable from a room goal, which can drop a room below the
-    per-room minimum and re-trigger the count violation on the next attempt —
-    a fight the LLM never wins. Backfilling with ``scenic=True`` props (which
-    are exempt from pruning and never sit on the solution path) satisfies the
-    count requirement without reintroducing solvability hazards.
-
-    Mutates ``objects`` in place; returns the ids of the props added.
-    """
-    if min_per_room <= 0:
-        return []
-    added: list[str] = []
-    for room in rooms:
-        existing = _objects_for_room(room.id, objects)
-        deficit = min_per_room - len(existing)
-        if deficit <= 0:
-            continue
-        # Continue numbering past any scenic props already in the room so ids
-        # stay unique even across repeated backfills.
-        start = sum(1 for o in objects if o.id.startswith(f"scenic_filler_{room.id}_"))
-        for n in range(deficit):
-            prop = WorldObject(
-                id=f"scenic_filler_{room.id}_{start + n + 1}",
-                location=room.id,
-                description="Nondescript clutter that fills the space — of no use to anyone.",
-                state="visible",
-                interactable=False,
-                takeable=False,
-                scenic=True,
-            )
-            objects.append(prop)
-            added.append(prop.id)
-    return added
+    return []
 
 
 def _build_puzzle(
