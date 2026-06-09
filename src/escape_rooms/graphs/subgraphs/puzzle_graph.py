@@ -153,22 +153,6 @@ def _build_room_chain(
     return goal, room_objs
 
 
-def _backfill_scenic(
-    builder: _Builder, room_id: str, have: int, min_per_room: int
-) -> None:
-    for _ in range(max(0, min_per_room - have)):
-        builder.add(
-            WorldObject(
-                id=builder._new_id("scenic", room_id),
-                location=room_id,
-                description="",
-                state="visible",
-                interactable=False,
-                takeable=False,
-                scenic=True,
-            )
-        )
-
 
 def build_solvable_world(
     skeleton: GameWorld,
@@ -186,7 +170,7 @@ def build_solvable_world(
 
     ``chain_depth`` is unused at the intra-room level (each room has exactly one
     locked object). Depth is a property of the multi-room sequence, not individual
-    rooms. Scenic fillers pad each room to ``min_objects_per_room``.
+    rooms.
     """
     rng = random.Random(seed)
     builder = _Builder(rng)
@@ -194,7 +178,6 @@ def build_solvable_world(
     rooms: list[Room] = []
     for room in skeleton.rooms:
         goal, room_objs = _build_room_chain(builder, room, chain_depth)
-        _backfill_scenic(builder, room.id, len(room_objs), min_objects_per_room)
         rooms.append(
             Room(
                 id=room.id,
@@ -231,8 +214,6 @@ def build_solvable_world(
 
 def classify_role(obj: WorldObject, world: GameWorld) -> str:
     """Human-readable role label for an object, for the theming prompt and fallbacks."""
-    if obj.scenic:
-        return "scenic"
     if obj.fuses:
         return "panel"
     if obj.contains_info:
@@ -246,7 +227,6 @@ def classify_role(obj: WorldObject, world: GameWorld) -> str:
 
 
 _FALLBACK = {
-    "scenic": "Nondescript clutter that fills the space — of no use to anyone.",
     "panel": "A fuse panel with a switch that controls power to the room.",
     "clue": "A scrap of writing — study it and a hidden code reveals itself.",
     "tool": "A handy implement, just the thing for prying something open.",

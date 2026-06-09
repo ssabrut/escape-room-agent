@@ -12,6 +12,7 @@ from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 from src.escape_rooms.nodes.solver import solver_node
 from src.escape_rooms.state import GameState
+from src.escape_rooms.utils.pixel_art import generate_world_sprites
 from src.escape_rooms.utils.renderer import render_world
 
 router = APIRouter(prefix="/generate", tags=["generate"])
@@ -55,6 +56,7 @@ class GenerateResponse(BaseModel):
     num_rooms: int
     num_objects: int
     solver: SolverLog | None = None
+    sprites: dict[str, str] = {}  # object_id → base64 PNG
 
 
 @router.post("", response_model=GenerateResponse)
@@ -113,6 +115,7 @@ def generate(req: GenerateRequest) -> GenerateResponse:
         num_rooms=len(world.rooms),
         num_objects=len(world.objects),
         solver=solver_log,
+        sprites=generate_world_sprites(world.objects),
     )
 
     OUTPUT_DIR.mkdir(exist_ok=True)

@@ -274,7 +274,7 @@ def _object_visible(
 
 def _objects_in_room(world: GameWorld, ps: PartyState) -> list[WorldObject]:
     parent_lookup = {o.id: o for o in world.objects}
-    return [o for o in world.objects if not o.scenic and _object_visible(o, ps, parent_lookup)]
+    return [o for o in world.objects if _object_visible(o, ps, parent_lookup)]
 
 
 # ---------- action space ----------

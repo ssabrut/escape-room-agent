@@ -286,10 +286,10 @@ _SPRITE_RULES: list[tuple[tuple[str, ...], str]] = [
     (("window", "curtain"),              "window"),
     (("painting", "picture", "portrait", "frame"),                "painting"),
     (("plant", "flower", "tree", "vine"), "plant"),
-    # Atmospheric / scenic catch-alls
+    # Atmospheric catch-alls
     (("floor", "blood", "stain", "mark", "symbol", "rune"),      "floor_detail"),
     (("wall", "crack", "brick"),         "wall_detail"),
-    (("shadow", "figure", "whisper", "voice", "filler", "clutter", "debris", "sky", "storm", "cloud"), "scenic"),
+    (("shadow", "figure", "whisper", "voice", "filler", "clutter", "debris", "sky", "storm", "cloud"), "item"),
 ]
 
 
@@ -396,7 +396,6 @@ def render_world(
                 "interacted": obj.id in inventory,
                 "takeable": obj.takeable,
                 "interactable": obj.interactable,
-                "scenic": obj.scenic,
             })
 
         room_list.append({

@@ -20,7 +20,8 @@ from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
 from src.escape_rooms.state import GameState, GameWorld
-from src.escape_rooms.utils.renderer import render_room_layout
+from src.escape_rooms.utils.pixel_art import generate_world_sprites
+from src.escape_rooms.utils.renderer import render_room_layout, render_world
 
 THEMES = [
     "Haunted House",
@@ -53,6 +54,7 @@ def _pick_theme() -> str:
 
 SMOKE_DIR = Path("smoke_runs")
 LOG_DIR = Path("logs")
+API_RUNS_DIR = Path("api_runs")
 NODE_NAMES = (
     "world_builder",
     "puzzle_builder",
@@ -72,6 +74,44 @@ def _jsonable(value):
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(v) for v in value]
     return value
+
+
+def _write_api_run(world, theme: str, solver_result=None) -> Path:
+    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json."""
+    from api.routers.generate import SolverLog
+
+    API_RUNS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = theme.lower().replace(" ", "_")
+    out_path = API_RUNS_DIR / f"{timestamp}_{slug}.json"
+
+    solver_log = None
+    if solver_result is not None:
+        solver_log = SolverLog(
+            won=solver_result.won,
+            ticks=solver_result.ticks,
+            optimal=solver_result.optimal,
+            reward=solver_result.reward,
+            efficiency=solver_result.efficiency,
+            wasted=solver_result.wasted,
+            history=solver_result.history,
+        ).model_dump()
+
+    payload = {
+        "world": _jsonable(world),
+        "render": render_world(
+            rooms=world.rooms,
+            objects=world.objects,
+            current_room=world.rooms[0].id if world.rooms else "",
+        ),
+        "solution_path": world.solution_path or [],
+        "num_rooms": len(world.rooms),
+        "num_objects": len(world.objects),
+        "solver": solver_log,
+        "sprites": generate_world_sprites(world.objects),
+    }
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return out_path
 
 
 def _write_world_json(world, path: Path) -> str:
@@ -219,8 +259,6 @@ def _write_run_summary(
                 parts.append(f"fuses={list(o.fuses.keys())}")
             if o.contains_info:
                 parts.append(f"contains_info={o.contains_info!r}")
-            if o.scenic:
-                parts.append("scenic")
             lines.append(" | ".join(parts))
         if world.solution_path:
             _h2("Solution path")
@@ -250,6 +288,7 @@ def run(
     log_nodes: list[str] | None = None,
     theme: str = "",
     trace_eval: bool = False,
+    api: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -289,6 +328,14 @@ def run(
     _render(result)
     _print_timing_table(node_times)
     _report_eval_failures(eval_failures)
+
+    if api:
+        from src.escape_rooms.nodes.solver import solver_node
+        world = result.get("world")
+        if world:
+            solver_result = solver_node(state.model_copy(update={"world": world})).get("solver_result")
+            out_path = _write_api_run(world, theme, solver_result)
+            print(f"  [api] wrote {out_path}")
 
 
 def _run_once_captured(
@@ -711,6 +758,7 @@ if __name__ == "__main__":
             "  python main.py --struct-eval            # fast per-node structural eval\n"
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
+            "  python main.py --api                    # also dump api_runs/<ts>_<theme>.json\n"
             "  (solver runs automatically as part of the generation graph)\n"
         ),
     )
@@ -769,6 +817,11 @@ if __name__ == "__main__":
         "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
     )
     parser.add_argument(
+        "--api",
+        action="store_true",
+        help="Also dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json.",
+    )
+    parser.add_argument(
         "--from",
         dest="from_path",
         metavar="PATH",
@@ -817,4 +870,5 @@ if __name__ == "__main__":
             log_nodes=log_nodes,
             theme=theme,
             trace_eval=args.trace_eval,
+            api=args.api,
         )

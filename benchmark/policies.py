@@ -343,13 +343,12 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
 def _world_tick_budget(world: "GameWorld") -> int:
     """Compute a tick budget scaled to the world's complexity.
 
-    Each non-scenic object needs at most ~3 ticks to resolve (examine, take/flip,
-    unlock). Room transitions add one tick each. We use 4× the object count plus
-    the number of rooms as a generous upper bound, floored at MAX_TICKS.
+    Each object needs at most ~3 ticks to resolve (examine, take/flip, unlock).
+    Room transitions add one tick each. We use 4× the object count plus the
+    number of rooms as a generous upper bound, floored at MAX_TICKS.
     """
-    non_scenic = sum(1 for o in world.objects if not o.scenic)
     num_rooms = len(world.rooms)
-    return max(gp.MAX_TICKS, 4 * non_scenic + num_rooms)
+    return max(gp.MAX_TICKS, 4 * len(world.objects) + num_rooms)
 
 
 def oracle_solve(world: "GameWorld"):
@@ -630,9 +629,6 @@ def check_solvable(world: "GameWorld") -> SolvabilityReport:
 
     # --- Walk every object that has a prerequisite ---
     for obj in world.objects:
-        if obj.scenic:
-            continue  # scenic props are exempt — they carry no prerequisites
-
         # requires_code: needs a contains_info token containing the code digits
         if obj.requires_code:
             code = obj.requires_code

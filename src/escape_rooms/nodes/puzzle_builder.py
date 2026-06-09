@@ -31,7 +31,6 @@ _OPTIONAL_OBJECT_FIELDS = (
     "contains_info",
     "slot_description",
     "note",
-    "scenic",
 )
 
 _LLM_LOCKED_STATES = {"locked", "locked_bolt", "locked_room", "hidden"}
@@ -194,8 +193,6 @@ def _build_objects(raw_objects: list[dict], room_ids: set[str]) -> list[WorldObj
             if field == "fuses":
                 if isinstance(value, dict):
                     kwargs[field] = value
-            elif field == "scenic":
-                kwargs[field] = bool(value)
             elif isinstance(value, (str, int)):
                 kwargs[field] = value
 
@@ -784,12 +781,6 @@ def _prune_orphan_objects(
             for pid in _power_producers(o.requires_power):
                 _enqueue(pid)
 
-    # Scenic objects are intentional atmosphere — always preserve them regardless
-    # of whether they are reachable from a goal.
-    for o in objects:
-        if o.scenic:
-            keep.add(o.id)
-
     dropped = [o.id for o in objects if o.id not in keep]
     kept = [o for o in objects if o.id in keep]
     return kept, dropped
@@ -799,11 +790,6 @@ def _prune_orphan_objects(
 # Core build function
 # ---------------------------------------------------------------------------
 
-
-def _backfill_scenic_objects(
-    rooms: list[Room], objects: list[WorldObject], min_per_room: int
-) -> list[str]:
-    return []
 
 
 def _build_puzzle(
@@ -893,16 +879,6 @@ def _build_puzzle(
             f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True
         )
         rooms = _scrub_room_refs(rooms, {o.id for o in objects})
-
-    # Backfill AFTER pruning so the scenic props themselves are never pruned and
-    # the per-room minimum survives the prune pass (otherwise the count check and
-    # the pruner fight each other across attempts).
-    filler = _backfill_scenic_objects(rooms, objects, min_objects_per_room)
-    if filler:
-        print(
-            f"[puzzle_builder] backfilled scenic props to meet minimum: {', '.join(filler)}",
-            flush=True,
-        )
 
     coherence = _check_coherence(rooms, objects)
     if coherence:
@@ -1148,7 +1124,7 @@ def _eval_key_objects_present(world: GameWorld) -> list[str]:
 
 
 def _eval_object_counts(world: GameWorld, min_per_room: int) -> list[str]:
-    """Check that every room has at least `min_per_room` objects (puzzle + scenic)."""
+    """Check that every room has at least `min_per_room` objects."""
     if min_per_room <= 0:
         return []
     issues: list[str] = []
