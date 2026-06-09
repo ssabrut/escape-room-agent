@@ -52,6 +52,8 @@ REACT_SYSTEM = (
     "(5) Write a 'plan' field: one sentence summarising your current multi-step intent "
     "(e.g. 'take obsidian_lens then unlock recovery_door'). Update it whenever your "
     "intent changes. This plan persists across ticks so you stay on track. "
+    "(6) Never attempt to go to a room listed in BLOCKED EXITS — the door is locked and "
+    "you must solve this room's goal first before that exit will open. "
     'Respond ONLY with JSON: {"thought": "<1-2 sentence reasoning>", '
     '"plan": "<current intent>", "action": "<one action copied EXACTLY from the list>"}.'
 )
@@ -99,6 +101,7 @@ def _annotated_clues(world: GameWorld, ps: PartyState) -> str:
 def _build_prompt(
     world: GameWorld, ps: PartyState, action_space: list[str], visible,
     dead_ends: set[str] | None = None,
+    blocked_exits: set[str] | None = None,
 ) -> str:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     win = world.win_condition
@@ -121,9 +124,8 @@ def _build_prompt(
         else "(none)"
     )
     space_str = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(action_space))
-    dead_str = (
-        ", ".join(sorted(dead_ends)) if dead_ends else "(none)"
-    )
+    dead_str = ", ".join(sorted(dead_ends)) if dead_ends else "(none)"
+    blocked_str = ", ".join(sorted(blocked_exits)) if blocked_exits else "(none)"
     return (
         f"SCENARIO: {world.scenario}\n"
         f"OBJECTIVE: {world.objective}\n"
@@ -137,7 +139,8 @@ def _build_prompt(
         f"OBJECTS YOU CAN SEE:\n{_format_objects(visible, ps)}\n\n"
         f"INVENTORY: {', '.join(ps.inventory) if ps.inventory else '(empty)'}\n"
         f"CLUES KNOWN: {_annotated_clues(world, ps)}\n"
-        f"DEAD ENDS (no info here — do NOT examine these): {dead_str}\n\n"
+        f"DEAD ENDS (no info here — do NOT examine these): {dead_str}\n"
+        f"BLOCKED EXITS (door locked — do NOT go here until room goal is done): {blocked_str}\n\n"
         f"LEGAL ACTIONS (choose exactly one, copy it verbatim):\n{space_str}\n"
     )
 
@@ -158,23 +161,42 @@ def react_solver_policy(
     llm = get_llm(role)
     scratchpad: list[str] = []
     dead_ends: set[str] = set()
+    blocked_exits: set[str] = set()
     current_plan: list[str] = ["(none yet)"]
+    # Sliding window of recent actions for cycle detection (period 1–4, 3 full cycles).
+    action_history: list[str] = []
+    _CYCLE_REPS = 3   # how many full repetitions before we intervene
+    _MAX_PERIOD = 4   # longest oscillation pattern to detect
     state = {"seen_log": 0}
+
+    def _is_cycling(history: list[str]) -> bool:
+        """Return True if the tail of history is a repeated pattern of length 1.._MAX_PERIOD."""
+        for period in range(1, _MAX_PERIOD + 1):
+            needed = period * _CYCLE_REPS
+            if len(history) < needed:
+                continue
+            tail = history[-needed:]
+            pattern = tail[:period]
+            if tail == pattern * _CYCLE_REPS:
+                return True
+        return False
 
     def _policy(world: GameWorld, ps: PartyState, action_space: list[str]) -> str:
         if not action_space:
             return IDLE_ACTION
 
-        # Ingest observations from the engine log; record dead-ends permanently.
+        # Ingest observations from the engine log; record dead-ends and blocked exits.
         while state["seen_log"] < len(ps.log):
             entry = ps.log[state["seen_log"]]
             note = entry.note
             if note:
                 scratchpad.append(f"Observation: {note}")
-                if "no hidden info" in note:
-                    parts = entry.action.split()
-                    if len(parts) >= 2:
-                        dead_ends.add(parts[1])
+                parts = entry.action.split()
+                if "no hidden info" in note and len(parts) >= 2:
+                    dead_ends.add(parts[1])
+                # "is locked" means a go <room> was blocked by an unsolved door.
+                if "is locked" in note and len(parts) >= 2 and parts[0] == "go":
+                    blocked_exits.add(parts[1])
             state["seen_log"] += 1
 
         visible = _objects_in_room(world, ps)
@@ -182,7 +204,7 @@ def react_solver_policy(
         pad_lines = [f"Current plan: {current_plan[0]}"] + scratchpad[-scratchpad_limit:]
         pad = "\n".join(pad_lines)
         prompt = (
-            _build_prompt(world, ps, action_space, visible, dead_ends)
+            _build_prompt(world, ps, action_space, visible, dead_ends, blocked_exits)
             + f"\nSCRATCHPAD (plan + recent thought → action → observation):\n{pad}\n"
         )
         try:
@@ -195,6 +217,22 @@ def react_solver_policy(
             action = _resolve_choice(str(data.get("action", "")).strip(), action_space)
         except Exception:
             thought, plan, action = "(parse error)", "", action_space[0]
+
+        # Cycle guard: detect any repeating pattern of length 1-_MAX_PERIOD in the
+        # recent action history and force a different action to break out of the loop.
+        action_history.append(action)
+        if _is_cycling(action_history):
+            cycle_set = set(action_history[-(2 * _MAX_PERIOD):])
+            alternatives = [a for a in action_space if a not in cycle_set]
+            if not alternatives:
+                alternatives = [a for a in action_space if a != action]
+            if alternatives:
+                forced = alternatives[0]
+                scratchpad.append(
+                    f"[override] cycle detected {action_history[-(2*_MAX_PERIOD):]} — forcing '{forced}'"
+                )
+                action = forced
+                action_history[-1] = forced
 
         if plan:
             current_plan[0] = plan
