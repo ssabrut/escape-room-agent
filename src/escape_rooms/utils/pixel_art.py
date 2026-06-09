@@ -1,17 +1,16 @@
-"""Procedural pixel art sprite generator for WorldObjects.
+"""Sprite generator for WorldObjects using SD_PixelArt_SpriteSheet_Generator via diffusers.
 
-Generates a 32×32 pixel art PNG (upscaled to 128×128 for display) for each
-WorldObject, driven entirely by the object's id and description — no external
-API calls, fully offline.
+Generates a 64×64 pixel-art PNG for each object using a locally-running
+Stable Diffusion pipeline (Onodofthenorth/SD_PixelArt_SpriteSheet_Generator) on
+Apple Silicon (MPS). The pipeline is lazy-loaded on the first call and kept in
+memory for subsequent calls. Model weights are ~1GB and downloaded automatically
+from HuggingFace on first use.
 
-Strategy
---------
-- Hash the object id to seed a deterministic RNG.
-- Pick a body shape (silhouette) that hints at the object category
-  (door, chest, key, lock, panel, paper/note, liquid, gear, default box).
-- Fill the silhouette with a palette derived from the description keywords.
-- Add a simple highlight/shadow pass for depth.
-- Return the image as a base64-encoded PNG string.
+One-time setup:
+    pip install torch torchvision diffusers transformers accelerate sentencepiece
+
+Falls back to procedural pixel-art generation if diffusers/torch are not
+installed or if the pipeline fails for any reason.
 """
 
 from __future__ import annotations
@@ -22,41 +21,115 @@ import io
 import random
 from typing import TYPE_CHECKING
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 if TYPE_CHECKING:
     from src.escape_rooms.state.schema import WorldObject
 
 # ---------------------------------------------------------------------------
-# Palette catalogue — (highlight, mid, shadow, outline)
+# FLUX.1-schnell backend
 # ---------------------------------------------------------------------------
-_PALETTES: list[tuple[tuple[int, int, int], ...]] = [
-    # warm wood
-    ((210, 170, 110), (160, 110, 60), (100, 65, 30), (50, 30, 10)),
-    # cold metal
-    ((200, 215, 230), (140, 155, 170), (80, 95, 110), (30, 40, 55)),
-    # aged parchment
-    ((240, 230, 200), (190, 175, 140), (130, 110, 80), (60, 45, 20)),
-    # mystic purple
-    ((220, 180, 255), (160, 100, 220), (90, 40, 150), (40, 10, 80)),
-    # poison green
-    ((180, 240, 160), (100, 190, 80), (40, 120, 30), (10, 60, 5)),
-    # fire orange
-    ((255, 240, 130), (250, 160, 40), (200, 80, 10), (100, 30, 0)),
-    # ocean blue
-    ((180, 230, 255), (80, 160, 220), (20, 90, 160), (5, 30, 80)),
-    # blood red
-    ((255, 180, 160), (220, 80, 60), (150, 20, 10), (70, 0, 0)),
-    # sandy stone
-    ((240, 220, 190), (185, 160, 120), (120, 95, 60), (55, 35, 15)),
-    # dark iron
-    ((160, 160, 175), (100, 100, 115), (50, 50, 65), (15, 15, 25)),
-]
+
+_SD_MODEL = "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
+_OUTPUT_SIZE = 64    # final sprite size after downscale
+_GEN_SIZE = 512      # size to generate at (nearest-neighbour → pixel art look)
+_SD_STEPS = 20       # SD 1.5 needs ~20 steps for good results
+
+# Module-level lazy singleton — loaded once, reused across all calls.
+_pipeline = None
+_pipeline_error: Exception | None = None  # cached so we don't retry a broken env
+
+
+def _get_pipeline():
+    global _pipeline, _pipeline_error
+    if _pipeline is not None:
+        return _pipeline
+    if _pipeline_error is not None:
+        return None
+    try:
+        import torch
+        from diffusers import StableDiffusionPipeline
+
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"[pixel_art] loading SD_PixelArt_SpriteSheet on {device}...", flush=True)
+
+        pipe = StableDiffusionPipeline.from_pretrained(
+            _SD_MODEL,
+            torch_dtype=torch.float16,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
+        pipe = pipe.to(device)
+        pipe.set_progress_bar_config(disable=True)
+        _pipeline = pipe
+        print("[pixel_art] SD pipeline ready", flush=True)
+        return _pipeline
+    except Exception as exc:
+        _pipeline_error = exc
+        print(f"[pixel_art] SD unavailable ({exc}), using procedural fallback", flush=True)
+        return None
+
+
+def _build_prompt(obj: "WorldObject") -> str:
+    desc = obj.description.strip() if obj.description else obj.id.replace("_", " ")
+    return (
+        f"pixel art sprite of {desc}, "
+        "retro RPG game item icon, flat 2D, solid dark background, "
+        "escape room puzzle object, vibrant limited palette, no text, crisp pixels"
+    )
+
+_NEGATIVE_PROMPT = (
+    "blurry, photorealistic, 3d render, text, watermark, "
+    "signature, extra limbs, low quality, grainy"
+)
+
+
+def _generate_via_sd(obj: "WorldObject") -> str | None:
+    pipe = _get_pipeline()
+    if pipe is None:
+        return None
+    try:
+        import torch
+
+        seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        result = pipe(
+            prompt=_build_prompt(obj),
+            negative_prompt=_NEGATIVE_PROMPT,
+            width=_GEN_SIZE,
+            height=_GEN_SIZE,
+            num_inference_steps=_SD_STEPS,
+            guidance_scale=7.5,
+            generator=generator,
+        )
+        img: Image.Image = result.images[0]
+        # Nearest-neighbour downscale gives the blocky pixel-art look
+        img = img.resize((_OUTPUT_SIZE, _OUTPUT_SIZE), Image.NEAREST)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as exc:
+        print(f"[pixel_art] SD generate failed for {obj.id!r}: {exc}", flush=True)
+        return None
+
 
 # ---------------------------------------------------------------------------
-# Shape definitions  (1 = body, 2 = highlight, 3 = detail/accent, 0 = empty)
-# Each shape is 16×16 and will be tiled/scaled to fill the 32×32 canvas.
+# Procedural fallback (original pixel_art.py logic, kept intact)
 # ---------------------------------------------------------------------------
+
+_PALETTES: list[tuple[tuple[int, int, int], ...]] = [
+    ((210, 170, 110), (160, 110, 60),  (100, 65, 30),  (50, 30, 10)),
+    ((200, 215, 230), (140, 155, 170), (80, 95, 110),  (30, 40, 55)),
+    ((240, 230, 200), (190, 175, 140), (130, 110, 80), (60, 45, 20)),
+    ((220, 180, 255), (160, 100, 220), (90, 40, 150),  (40, 10, 80)),
+    ((180, 240, 160), (100, 190, 80),  (40, 120, 30),  (10, 60, 5)),
+    ((255, 240, 130), (250, 160, 40),  (200, 80, 10),  (100, 30, 0)),
+    ((180, 230, 255), (80, 160, 220),  (20, 90, 160),  (5, 30, 80)),
+    ((255, 180, 160), (220, 80, 60),   (150, 20, 10),  (70, 0, 0)),
+    ((240, 220, 190), (185, 160, 120), (120, 95, 60),  (55, 35, 15)),
+    ((160, 160, 175), (100, 100, 115), (50, 50, 65),   (15, 15, 25)),
+]
 
 _SHAPE_BOX = [
     "0000000000000000",
@@ -76,7 +149,6 @@ _SHAPE_BOX = [
     "0000000000000000",
     "0000000000000000",
 ]
-
 _SHAPE_DOOR = [
     "0000011111100000",
     "0000111111110000",
@@ -95,7 +167,6 @@ _SHAPE_DOOR = [
     "0001111111111000",
     "0000111111110000",
 ]
-
 _SHAPE_KEY = [
     "0000000000000000",
     "0000001110000000",
@@ -114,7 +185,6 @@ _SHAPE_KEY = [
     "0000000000000000",
     "0000000000000000",
 ]
-
 _SHAPE_LOCK = [
     "0000011111100000",
     "0000111111110000",
@@ -133,7 +203,6 @@ _SHAPE_LOCK = [
     "0001111111111000",
     "0000111111110000",
 ]
-
 _SHAPE_CHEST = [
     "0000011111100000",
     "0001111111111000",
@@ -152,7 +221,6 @@ _SHAPE_CHEST = [
     "0111111111111110",
     "0000000000000000",
 ]
-
 _SHAPE_SCROLL = [
     "0000111111100000",
     "0001222222110000",
@@ -171,7 +239,6 @@ _SHAPE_SCROLL = [
     "0000000000000000",
     "0000000000000000",
 ]
-
 _SHAPE_BOTTLE = [
     "0000001111000000",
     "0000011221000000",
@@ -190,7 +257,6 @@ _SHAPE_BOTTLE = [
     "0001111111110000",
     "0000000000000000",
 ]
-
 _SHAPE_GEAR = [
     "0000011111100000",
     "0001111111111000",
@@ -211,17 +277,11 @@ _SHAPE_GEAR = [
 ]
 
 _SHAPES = {
-    "door": _SHAPE_DOOR,
-    "key": _SHAPE_KEY,
-    "lock": _SHAPE_LOCK,
-    "chest": _SHAPE_CHEST,
-    "scroll": _SHAPE_SCROLL,
-    "bottle": _SHAPE_BOTTLE,
-    "gear": _SHAPE_GEAR,
-    "box": _SHAPE_BOX,
+    "door": _SHAPE_DOOR, "key": _SHAPE_KEY, "lock": _SHAPE_LOCK,
+    "chest": _SHAPE_CHEST, "scroll": _SHAPE_SCROLL, "bottle": _SHAPE_BOTTLE,
+    "gear": _SHAPE_GEAR, "box": _SHAPE_BOX,
 }
 
-# Keywords that map to a specific shape
 _SHAPE_KEYWORDS: list[tuple[list[str], str]] = [
     (["door", "gate", "exit", "entrance", "hatch", "portal"], "door"),
     (["key", "keycard", "passkey"], "key"),
@@ -241,10 +301,9 @@ def _pick_shape(description: str, obj_id: str) -> list[str]:
     return _SHAPES["box"]
 
 
-def _pick_palette(description: str, obj_id: str, rng: random.Random) -> tuple[tuple[int, int, int], ...]:
+def _pick_palette(description: str, obj_id: str, rng: random.Random) -> tuple:
     lower = (description + " " + obj_id).lower()
-    # Weight palettes by keyword hints
-    keyword_palette: dict[str, int] = {
+    keyword_palette = {
         "gold|golden|treasure|ancient": 0,
         "metal|iron|steel|silver": 1,
         "paper|parchment|aged|old|dusty": 2,
@@ -262,11 +321,10 @@ def _pick_palette(description: str, obj_id: str, rng: random.Random) -> tuple[tu
     return _PALETTES[rng.randint(0, len(_PALETTES) - 1)]
 
 
-def _render_16x16(shape: list[str], palette: tuple[tuple[int, int, int], ...]) -> Image.Image:
-    """Render a 16×16 RGBA image from a shape grid + 4-color palette."""
+def _render_16x16(shape: list[str], palette: tuple) -> Image.Image:
     highlight, mid, shadow, outline = palette
     color_map = {
-        "0": (0, 0, 0, 0),          # transparent
+        "0": (0, 0, 0, 0),
         "1": (*outline, 255),
         "2": (*mid, 255),
         "3": (*highlight, 255),
@@ -280,7 +338,6 @@ def _render_16x16(shape: list[str], palette: tuple[tuple[int, int, int], ...]) -
 
 
 def _add_dither_noise(img: Image.Image, rng: random.Random, intensity: int = 12) -> Image.Image:
-    """Add subtle per-pixel brightness noise to break up flat fills."""
     pixels = img.load()
     for y in range(img.height):
         for x in range(img.width):
@@ -297,48 +354,42 @@ def _add_dither_noise(img: Image.Image, rng: random.Random, intensity: int = 12)
     return img
 
 
-def _add_background(sprite: Image.Image, bg_color: tuple[int, int, int]) -> Image.Image:
-    """Composite sprite onto a solid background square."""
+def _add_background(sprite: Image.Image, bg_color: tuple) -> Image.Image:
     bg = Image.new("RGBA", sprite.size, (*bg_color, 255))
     bg.paste(sprite, mask=sprite)
     return bg
 
 
-def generate_object_sprite(obj: "WorldObject", scale: int = 4) -> str:
-    """Generate a pixel art PNG for *obj* and return it as a base64 string.
-
-    Parameters
-    ----------
-    obj:
-        The WorldObject to render.
-    scale:
-        Upscale multiplier applied after the 16×16 render (default 4 → 64×64).
-
-    Returns
-    -------
-    str
-        Base64-encoded PNG (no data-URI prefix).
-    """
+def _generate_procedural(obj: "WorldObject", scale: int = 4) -> str:
     seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
-
     shape = _pick_shape(obj.description, obj.id)
     palette = _pick_palette(obj.description, obj.id, rng)
-
     sprite = _render_16x16(shape, palette)
     sprite = _add_dither_noise(sprite, rng)
-
-    # Pick a slightly dark background color from the mid-tone
     _, mid, _, _ = palette
     bg = tuple(max(0, c - 40) for c in mid)  # type: ignore[arg-type]
     img = _add_background(sprite, bg)  # type: ignore[arg-type]
-
-    # Nearest-neighbour upscale for crisp pixels
     img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
-
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def generate_object_sprite(obj: "WorldObject") -> str:
+    """Generate a sprite PNG for *obj* and return it as a base64 string.
+
+    Uses SD_PixelArt_SpriteSheet on MPS when available; falls back to procedural generation.
+    """
+    result = _generate_via_sd(obj)
+    if result is not None:
+        return result
+    return _generate_procedural(obj)
 
 
 def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
