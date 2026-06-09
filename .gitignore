@@ -7,3 +7,4 @@ dist/
 smoke_runs/
 logs/
 benchmark/worlds/
+api_runs/

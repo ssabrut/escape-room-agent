@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+from src.escape_rooms.nodes.solver import solver_node
 from src.escape_rooms.state import GameState
 from src.escape_rooms.utils.renderer import render_world
 
 router = APIRouter(prefix="/generate", tags=["generate"])
+
+OUTPUT_DIR = Path("api_runs")
 
 THEMES = [
     "Haunted House",
@@ -32,12 +38,23 @@ class GenerateRequest(BaseModel):
     num_rooms: int = Field(4, ge=2, le=10, description="Number of rooms (hard mode only)")
 
 
+class SolverLog(BaseModel):
+    won: bool
+    ticks: int
+    optimal: int
+    reward: float
+    efficiency: float
+    wasted: int
+    history: list[str]
+
+
 class GenerateResponse(BaseModel):
     world: dict
     render: dict
     solution_path: list[str]
     num_rooms: int
     num_objects: int
+    solver: SolverLog | None = None
 
 
 @router.post("", response_model=GenerateResponse)
@@ -69,7 +86,23 @@ def generate(req: GenerateRequest) -> GenerateResponse:
     if world is None:
         raise HTTPException(status_code=500, detail="puzzle_builder produced no world")
 
-    return GenerateResponse(
+    state = state.model_copy(update={"world": world})
+    solver_update = solver_node(state)
+    solver_result = solver_update.get("solver_result")
+
+    solver_log = None
+    if solver_result is not None:
+        solver_log = SolverLog(
+            won=solver_result.won,
+            ticks=solver_result.ticks,
+            optimal=solver_result.optimal,
+            reward=solver_result.reward,
+            efficiency=solver_result.efficiency,
+            wasted=solver_result.wasted,
+            history=solver_result.history,
+        )
+
+    response = GenerateResponse(
         world=world.model_dump(mode="json", exclude_none=True),
         render=render_world(
             rooms=world.rooms,
@@ -79,4 +112,16 @@ def generate(req: GenerateRequest) -> GenerateResponse:
         solution_path=world.solution_path or [],
         num_rooms=len(world.rooms),
         num_objects=len(world.objects),
+        solver=solver_log,
     )
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = req.theme.lower().replace(" ", "_")
+    out_path = OUTPUT_DIR / f"{timestamp}_{slug}.json"
+    out_path.write_text(
+        json.dumps(response.model_dump(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    return response

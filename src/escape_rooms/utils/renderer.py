@@ -243,6 +243,87 @@ def render_room_layout(
         print("".join(row_chars).rstrip())
 
 
+# Room dimensions in tiles (interior, excluding walls).
+ROOM_W = 10
+ROOM_H = 10
+TILE_SIZE = 16  # px, for SwiftUI to scale sprites
+
+# Direction -> (door tileX, door tileY) on the room's interior edge.
+# Doors sit centered on each wall: north/south center on X, east/west center on Y.
+_DOOR_TILE: dict[str, tuple[int, int]] = {
+    "north": (ROOM_W // 2, 0),
+    "south": (ROOM_W // 2, ROOM_H - 1),
+    "east":  (ROOM_W - 1, ROOM_H // 2),
+    "west":  (0,           ROOM_H // 2),
+}
+
+# Keywords in object IDs -> sprite name.
+# Checked in order; first match wins. Falls back to a generic bucket.
+_SPRITE_RULES: list[tuple[tuple[str, ...], str]] = [
+    # Doors
+    (("door",),                          "door"),
+    # Containers / storage
+    (("chest", "cabinet", "box", "crate", "locker", "safe"), "chest"),
+    (("drawer", "dresser", "wardrobe"),  "dresser"),
+    (("bookshelf", "shelf", "bookcase"), "bookshelf"),
+    # Furniture
+    (("table", "desk"),                  "table"),
+    (("chair",),                         "chair"),
+    (("bed",),                           "bed"),
+    (("sofa", "couch"),                  "sofa"),
+    (("rug", "carpet", "mat"),           "rug"),
+    # Interactive puzzle objects
+    (("mirror",),                        "mirror"),
+    (("clock",),                         "clock"),
+    (("note", "letter", "journal", "diary", "scroll", "paper"), "note"),
+    (("key",),                           "key"),
+    (("lever", "switch", "button", "panel", "mechanism", "fuse"), "lever"),
+    (("altar", "pedestal", "statue", "idol", "shrine"),           "altar"),
+    (("lens", "glass", "crystal", "gem", "orb", "stone", "seal", "amulet", "relic"), "artifact"),
+    (("machine", "device", "computer", "terminal", "generator"),  "machine"),
+    (("barrel", "keg"),                  "barrel"),
+    (("lamp", "lantern", "candle", "torch", "light", "fire"),     "light"),
+    (("window", "curtain"),              "window"),
+    (("painting", "picture", "portrait", "frame"),                "painting"),
+    (("plant", "flower", "tree", "vine"), "plant"),
+    # Atmospheric / scenic catch-alls
+    (("floor", "blood", "stain", "mark", "symbol", "rune"),      "floor_detail"),
+    (("wall", "crack", "brick"),         "wall_detail"),
+    (("shadow", "figure", "whisper", "voice", "filler", "clutter", "debris", "sky", "storm", "cloud"), "scenic"),
+]
+
+
+def _sprite_for(obj_id: str) -> str:
+    lower = obj_id.lower()
+    for keywords, sprite in _SPRITE_RULES:
+        if any(k in lower for k in keywords):
+            return sprite
+    return "item"  # generic fallback
+
+
+# Wall-hugging slots for non-door objects: walk clockwise around the interior
+# perimeter (1-tile inset from the door positions), then fill the center.
+def _perimeter_slots(w: int, h: int) -> list[tuple[int, int]]:
+    slots: list[tuple[int, int]] = []
+    # Top row (left to right, skip corners used by doors)
+    for x in range(1, w - 1):
+        slots.append((x, 1))
+    # Right column (top to bottom)
+    for y in range(1, h - 1):
+        slots.append((w - 2, y))
+    # Bottom row (right to left)
+    for x in range(w - 2, 0, -1):
+        slots.append((x, h - 2))
+    # Left column (bottom to top)
+    for y in range(h - 2, 0, -1):
+        slots.append((1, y))
+    # Center fill
+    for y in range(2, h - 2):
+        for x in range(2, w - 2):
+            slots.append((x, y))
+    return slots
+
+
 def render_world(
     rooms: list[Room],
     objects: list[WorldObject],
@@ -251,14 +332,15 @@ def render_world(
     object_states: dict[str, str] | None = None,
     tick: int = 0,
 ) -> dict[str, Any]:
-    """Return a SwiftUI-ready render payload with BFS grid coordinates.
+    """Return a SwiftUI tile-map render payload.
 
-    Rooms are placed on a (col, row) integer grid via BFS over adjacency.
-    Corridors are deduplicated undirected edges. Object states are merged
-    with the live party overrides so SwiftUI always sees the current truth.
+    Each room has pixel dimensions (widthTiles x heightTiles), a floor/wall
+    tile hint, doors placed on the correct walls, and every object assigned a
+    (tileX, tileY) position and a sprite key. Corridors are deduplicated
+    undirected edges between rooms.
     """
     if not rooms:
-        return {"grid": {"cols": 0, "rows": 0}, "rooms": [], "corridors": [], "party": {}}
+        return {"grid": {"cols": 0, "rows": 0, "tileSize": TILE_SIZE}, "rooms": [], "corridors": [], "party": {}}
 
     inventory = inventory or []
     object_states = object_states or {}
@@ -272,27 +354,63 @@ def render_world(
         if obj.location in objects_by_room:
             objects_by_room[obj.location].append(obj)
 
+    slots = _perimeter_slots(ROOM_W, ROOM_H)
+
     room_list = []
     for room in rooms:
         col, row = grid[room.id]
-        room_objects = [
-            {
+        room_objs = objects_by_room.get(room.id, [])
+
+        # Doors — one per adjacency direction, locked state derived from object states.
+        doors = []
+        for direction, neighbor_id in room.adjacency.items():
+            tx, ty = _DOOR_TILE.get(direction, (ROOM_W // 2, ROOM_H // 2))
+            # Find a door object in this room whose state we can read.
+            door_obj = next(
+                (o for o in room_objs if "door" in o.id.lower()), None
+            )
+            locked = (
+                object_states.get(door_obj.id, door_obj.state) not in ("unlocked", "open")
+                if door_obj else False
+            )
+            doors.append({
+                "direction": direction,
+                "toRoom": neighbor_id,
+                "tileX": tx,
+                "tileY": ty,
+                "locked": locked,
+            })
+
+        # Place non-door objects at perimeter/center slots.
+        non_door_objs = [o for o in room_objs if "door" not in o.id.lower()]
+        slot_iter = iter(slots)
+        rendered_objects = []
+        for obj in non_door_objs:
+            tx, ty = next(slot_iter, (ROOM_W // 2, ROOM_H // 2))
+            rendered_objects.append({
                 "id": obj.id,
+                "sprite": _sprite_for(obj.id),
+                "tileX": tx,
+                "tileY": ty,
                 "state": object_states.get(obj.id, obj.state),
                 "interacted": obj.id in inventory,
                 "takeable": obj.takeable,
                 "interactable": obj.interactable,
-            }
-            for obj in objects_by_room.get(room.id, [])
-        ]
+                "scenic": obj.scenic,
+            })
+
         room_list.append({
             "id": room.id,
             "label": room.id.upper(),
             "col": col,
             "row": row,
+            "widthTiles": ROOM_W,
+            "heightTiles": ROOM_H,
+            "floorTile": "floor_wood",
+            "wallTile": "wall_stone",
             "isCurrentRoom": room.id == current_room,
-            "connections": list(room.adjacency.keys()),
-            "objects": room_objects,
+            "doors": doors,
+            "objects": rendered_objects,
         })
 
     seen: set[frozenset[str]] = set()
@@ -305,7 +423,7 @@ def render_world(
                 seen.add(key)
 
     return {
-        "grid": {"cols": max_col + 1, "rows": max_row + 1},
+        "grid": {"cols": max_col + 1, "rows": max_row + 1, "tileSize": TILE_SIZE},
         "rooms": room_list,
         "corridors": corridors,
         "party": {
