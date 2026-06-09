@@ -123,17 +123,12 @@ class _Builder:
 def _build_room_chain(
     builder: _Builder, room: Room, chain_depth: int
 ) -> tuple[WorldObject, list[WorldObject]]:
-    """Construct a backward dependency chain ending at this room's goal object.
+    """Construct a single-lock room: one locked goal object opened by one mechanic.
 
-    Returns (goal_object, all_room_objects). The goal object starts LOCKED and is
-    opened by a mechanic; that mechanic's helper may itself be a locked object
-    opened by a deeper mechanic, up to ``chain_depth`` links. Every helper is
-    reachable strictly before its consumer, so the chain is solvable in order.
-
-    All intermediate links use the tool mechanic so every object in the chain is
-    locked behind the previous one — forming a true linked-list dependency. Only
-    the final (root) link uses a terminating mechanic (code or power) so its
-    helper is directly reachable with no further prerequisite.
+    Returns (goal_object, all_room_objects). Only the goal starts LOCKED; all
+    helpers (clue, tool, or panel) are directly visible — no intermediate locks.
+    ``chain_depth`` is ignored here; depth is expressed across rooms, not within
+    a single room's object set.
     """
     room_objs: list[WorldObject] = []
 
@@ -149,33 +144,11 @@ def _build_room_chain(
     )
     room_objs.append(goal)
 
-    depth = max(1, chain_depth)
-    target = goal
-    for link in range(depth):
-        is_last_link = link == depth - 1
-        # Intermediate links always use the tool mechanic so the helper becomes a
-        # locked takeable item gated by the next link — every object in the room
-        # is reachable only after the one before it. The final (root) link must
-        # use a terminating mechanic (code or power) whose helper needs nothing
-        # further to be accessed; a terminal tool would be un-takeable (deadlock).
-        if is_last_link:
-            mechanic = builder.rng.choice(("code", "power"))
-        else:
-            mechanic = "tool"
-
-        helpers = builder.gate(target, room.id, mechanic)
-        for h in helpers:
-            builder.add(h)
-            room_objs.append(h)
-
-        if is_last_link:
-            break
-        # Lock the tool helper so it requires the next link to unlock it first.
-        nxt = next((h for h in helpers if h.takeable), None)
-        if nxt is None:
-            break  # safety: terminating mechanic chosen — end chain here
-        target = nxt
-        target.state = LOCKED_STATE
+    mechanic = builder.pick_mechanic()
+    helpers = builder.gate(goal, room.id, mechanic)
+    for h in helpers:
+        builder.add(h)
+        room_objs.append(h)
 
     return goal, room_objs
 
@@ -207,25 +180,21 @@ def build_solvable_world(
 
     ``skeleton`` supplies scenario/objective/rooms/adjacency (from world_builder).
     This function discards any goal_completion the skeleton carried and installs a
-    constructed, guaranteed-solvable goal chain per room. Object descriptions are
-    left blank for the theming pass to fill in.
+    constructed, guaranteed-solvable single-lock structure per room: one locked goal
+    object opened by one mechanic (code, tool, or power) whose helpers are all
+    directly visible. Object descriptions are left blank for the theming pass.
 
-    Every object in a room is part of the dependency chain — forming a linked list
-    where each object requires the previous one. The effective chain depth is
-    max(chain_depth, min_objects_per_room - 1) so that the per-room object minimum
-    is met entirely by real chained objects, with no inert scenic fillers.
+    ``chain_depth`` is unused at the intra-room level (each room has exactly one
+    locked object). Depth is a property of the multi-room sequence, not individual
+    rooms. Scenic fillers pad each room to ``min_objects_per_room``.
     """
     rng = random.Random(seed)
     builder = _Builder(rng)
 
-    # Each room gets exactly (effective_depth + 1) objects: the goal plus one helper
-    # per link. min_objects_per_room - 1 links are needed to reach the minimum count.
-    effective_depth = max(chain_depth, max(min_objects_per_room - 1, 1))
-
     rooms: list[Room] = []
     for room in skeleton.rooms:
-        goal, room_objs = _build_room_chain(builder, room, effective_depth)
-        # No scenic backfill: all slots are filled by real chained objects above.
+        goal, room_objs = _build_room_chain(builder, room, chain_depth)
+        _backfill_scenic(builder, room.id, len(room_objs), min_objects_per_room)
         rooms.append(
             Room(
                 id=room.id,

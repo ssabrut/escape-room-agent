@@ -340,6 +340,18 @@ def bfs_policy(world: "GameWorld", max_states: int = 50_000):
     return _bfs_policy
 
 
+def _world_tick_budget(world: "GameWorld") -> int:
+    """Compute a tick budget scaled to the world's complexity.
+
+    Each non-scenic object needs at most ~3 ticks to resolve (examine, take/flip,
+    unlock). Room transitions add one tick each. We use 4× the object count plus
+    the number of rooms as a generous upper bound, floored at MAX_TICKS.
+    """
+    non_scenic = sum(1 for o in world.objects if not o.scenic)
+    num_rooms = len(world.rooms)
+    return max(gp.MAX_TICKS, 4 * non_scenic + num_rooms)
+
+
 def oracle_solve(world: "GameWorld"):
     """Deterministic best-effort solve (no LLM): exhaustive BFS first, greedy fallback.
 
@@ -355,7 +367,9 @@ def oracle_solve(world: "GameWorld"):
     from benchmark.engine import HeadlessEpisode
 
     policy = bfs_policy(world) or heuristic_policy
-    return HeadlessEpisode(world).run(policy, record_history=True)
+    return HeadlessEpisode(world, max_ticks=_world_tick_budget(world)).run(
+        policy, record_history=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +404,7 @@ def _replay_wins(world: "GameWorld", actions: list[str]) -> bool:
                 return nxt
         return gp.IDLE_ACTION
 
-    return HeadlessEpisode(world).run(_scripted).victory
+    return HeadlessEpisode(world, max_ticks=_world_tick_budget(world)).run(_scripted).victory
 
 
 def _minimal_actions(world: "GameWorld", actions: list[str]) -> list[str]:
@@ -445,7 +459,9 @@ def bfs_solution_path(world: "GameWorld") -> list[str]:
     from benchmark.engine import HeadlessEpisode
 
     policy = bfs_policy(world)
-    result = HeadlessEpisode(world).run(policy, record_history=True)
+    result = HeadlessEpisode(world, max_ticks=_world_tick_budget(world)).run(
+        policy, record_history=True
+    )
     if not result.victory:
         return []
     actions = [_action_of(line) for line in result.history if line.strip()]

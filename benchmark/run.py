@@ -111,7 +111,8 @@ def run_policy(name, policy, worlds, episodes: int) -> dict:
     """
     results: list[EpisodeResult] = []
     for _label, world in worlds:
-        ep = HeadlessEpisode(world)
+        from benchmark.policies import _world_tick_budget
+        ep = HeadlessEpisode(world, max_ticks=_world_tick_budget(world))
         for _ in range(episodes):
             # Detect factory: bfs_policy(world) returns a callable, not a string.
             resolved = (

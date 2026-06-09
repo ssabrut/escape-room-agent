@@ -784,33 +784,11 @@ def _prune_orphan_objects(
             for pid in _power_producers(o.requires_power):
                 _enqueue(pid)
 
-    MIN_OBJECTS_PER_ROOM = 5
-    room_ids_list = [r.id for r in rooms]
-    room_object_count: dict[str, int] = {rid: 0 for rid in room_ids_list}
+    # Scenic objects are intentional atmosphere — always preserve them regardless
+    # of whether they are reachable from a goal.
     for o in objects:
-        if o.id in keep:
-            if o.location in room_object_count:
-                room_object_count[o.location] += 1
-
-    for rid in room_ids_list:
-        deficit = MIN_OBJECTS_PER_ROOM - room_object_count[rid]
-        if deficit <= 0:
-            continue
-        fillers = [
-            o
-            for o in objects
-            if o.id not in keep
-            and o.location == rid
-            and not o.requires_tool
-            and not o.requires_code
-            and not o.requires_liquid
-            and not o.requires_power
-            and not o.fuses
-            and not o.contains_info
-        ]
-        for filler in fillers[:deficit]:
-            keep.add(filler.id)
-            room_object_count[rid] += 1
+        if o.scenic:
+            keep.add(o.id)
 
     dropped = [o.id for o in objects if o.id not in keep]
     kept = [o for o in objects if o.id in keep]
@@ -1123,7 +1101,8 @@ def _eval_room_goals(world: GameWorld) -> list[str]:
             continue  # nothing to check
 
         try:
-            result = HeadlessEpisode(sub).run(heuristic_policy)
+            from benchmark.policies import _world_tick_budget
+            result = HeadlessEpisode(sub, max_ticks=_world_tick_budget(sub)).run(heuristic_policy)
             if not result.victory:
                 issues.append(
                     f"room '{room.id}': per-room oracle failed to satisfy goal "
