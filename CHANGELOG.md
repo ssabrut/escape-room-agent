@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-09 09:32:17 WIB
+
+### What changed
+- The `oracle_solve` function now records the full action history (`record_history=True`), matching the behaviour of the smoke-run solver so callers get a complete winning trace.
+- The unused bank and dataset generation scripts (`benchmark/generate_bank.py`, `benchmark/generate_dataset.py`) have been removed.
+
+### Why
+`oracle_solve` was running the same BFS-first policy as the smoke solver but discarding the action trace; enabling history recording aligns the two paths. The generation scripts had no remaining callers and were dead code.
+
+---
+
 ## 2026-06-08 23:55:59 WIB
 
 ### What changed

@@ -355,7 +355,7 @@ def oracle_solve(world: "GameWorld"):
     from benchmark.engine import HeadlessEpisode
 
     policy = bfs_policy(world) or heuristic_policy
-    return HeadlessEpisode(world).run(policy)
+    return HeadlessEpisode(world).run(policy, record_history=True)
 
 
 # ---------------------------------------------------------------------------
