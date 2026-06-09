@@ -1,4 +1,6 @@
 aiohappyeyeballs==2.6.2
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
 aiohttp==3.13.5
 aiosignal==1.4.0
 annotated-types==0.7.0

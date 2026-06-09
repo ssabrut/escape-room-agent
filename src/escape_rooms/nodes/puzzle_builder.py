@@ -964,14 +964,26 @@ def _generate_puzzle_with_feedback(
     world: GameWorld,
     chain_depth: int,
     min_objects_per_room: int,
-    violations: list[str],
+    all_attempt_issues: list[tuple[int, list[str]]],
 ) -> tuple[GameWorld, str]:
-    violation_block = "\n".join(f"  - {v}" for v in violations)
+    """Regenerate with the full history of every past attempt's failures.
+
+    `all_attempt_issues` is a list of (attempt_number, issues) for every prior
+    attempt. Sending the full history prevents the LLM from cycling back to
+    mistakes it already made on earlier tries.
+    """
+    history_lines: list[str] = []
+    for attempt_num, issues in all_attempt_issues:
+        history_lines.append(f"Attempt {attempt_num} failures:")
+        history_lines.extend(f"  - {v}" for v in issues)
+    history_block = "\n".join(history_lines)
+
     correction = (
-        "Your previous puzzle had the following issues detected by automated checks. "
-        "Please generate a NEW, corrected puzzle for the same rooms that fixes ALL of them. "
+        "Your previous puzzle attempt(s) had the following issues detected by automated checks. "
+        "Do NOT repeat any mistake listed here. "
+        "Generate a NEW, corrected puzzle for the same rooms that fixes every issue. "
         "Return only the JSON object — no prose.\n\n"
-        f"Issues to fix:\n{violation_block}"
+        f"Full failure history (do not repeat ANY of these):\n{history_block}"
     )
     prompt = _build_prompt(world, chain_depth, min_objects_per_room)
     response = llm.invoke(
@@ -1184,13 +1196,13 @@ def _eval_puzzle(
     # --- pass 3: per-room oracle ---
     issues.extend(_eval_room_goals(world))
 
-    # --- pass 3: global oracle (dynamic end-to-end) ---
+    # --- pass 3: global oracle (dynamic end-to-end) + solution path ---
     if not world.win_condition.object_id or not world.rooms:
         issues.append("no win condition or rooms defined")
         return issues
 
     try:
-        from benchmark.policies import oracle_solve
+        from benchmark.policies import bfs_solution_path, oracle_solve
 
         # BFS-first solve: complete search within budget (no false "unsolvable"
         # from a greedy policy stalling), with heuristic fallback for huge worlds.
@@ -1205,6 +1217,17 @@ def _eval_puzzle(
             issues.append(
                 f"chain depth {result.chain_depth} < target {chain_depth_target}"
             )
+        else:
+            # Oracle won — derive and store the ground-truth solution path now so
+            # the retry loop can confirm each attempt produces a non-empty path.
+            path = bfs_solution_path(world)
+            if path:
+                world.solution_path = path
+            else:
+                issues.append(
+                    "oracle won but bfs_solution_path returned empty "
+                    "(BFS budget too small to derive minimal path)"
+                )
     except Exception:
         pass
 
@@ -1296,12 +1319,14 @@ def _build_puzzle_for_world(
     Returns (world, final_raw, remaining_issues, attempt_log, attempts).
     """
     attempt_log: list[dict] = []
+    all_attempt_issues: list[tuple[int, list[str]]] = []
     world, raw = _generate_puzzle(llm, base_world, chain_depth, min_objs)
     attempts = 1
     issues = _eval_puzzle(world, chain_depth_target, min_objs)
 
     while issues and attempts < max_attempts:
         attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
+        all_attempt_issues.append((attempts, issues))
         print(
             f"[puzzle_builder] attempt {attempts} rejected — {len(issues)} issue(s):",
             flush=True,
@@ -1310,11 +1335,11 @@ def _build_puzzle_for_world(
             print(f"  • {issue}", flush=True)
         print(
             f"[puzzle_builder] regenerating with feedback "
-            f"(attempt {attempts + 1}/{max_attempts})...",
+            f"(attempt {attempts + 1}/{max_attempts}, {len(all_attempt_issues)} failure(s) in history)...",
             flush=True,
         )
         world, raw = _generate_puzzle_with_feedback(
-            llm, base_world, chain_depth, min_objs, issues
+            llm, base_world, chain_depth, min_objs, all_attempt_issues
         )
         attempts += 1
         issues = _eval_puzzle(world, chain_depth_target, min_objs)
@@ -1392,14 +1417,14 @@ def puzzle_builder_node(state: GameState) -> dict:
             flush=True,
         )
 
-    # Ground-truth solution path from the oracle's actual winning solve.
-    from benchmark.policies import bfs_solution_path
-
-    world.solution_path = bfs_solution_path(world)
     if world.solution_path:
         print(
-            f"[puzzle_builder] derived solution path from oracle "
-            f"({len(world.solution_path)} step(s))",
+            f"[puzzle_builder] solution path: {len(world.solution_path)} step(s)",
+            flush=True,
+        )
+    else:
+        print(
+            "[puzzle_builder] WARNING: no solution path — world ships without ground-truth steps",
             flush=True,
         )
 
