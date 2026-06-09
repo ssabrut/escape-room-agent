@@ -175,6 +175,18 @@ class PartyState(BaseModel):
     )  # object_id -> latest structured observation across all rooms
 
 
+class SolverResult(BaseModel):
+    """Summary of one LLM solver run, stored on GameState after solver_node runs."""
+
+    won: bool
+    ticks: int
+    optimal: int
+    reward: float
+    efficiency: float
+    wasted: int
+    history: list[str] = Field(default_factory=list)
+
+
 class GameState(BaseModel):
     """Top-level LangGraph state."""
 
@@ -184,3 +196,4 @@ class GameState(BaseModel):
     characters: list[Character] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
     party_state: PartyState | None = None
+    solver_result: SolverResult | None = None
