@@ -140,7 +140,7 @@ def _render(result: dict) -> None:
             print()
 
 
-def _run_solver(world, use_react: bool = False, role: str = "solver") -> None:
+def _run_solver(world, role: str = "solver") -> None:
     """Run the LLM solver agent on a finished world and print its trace + score.
 
     Opt-in step after generation (``--solve``). The solver drives the world under
@@ -157,11 +157,11 @@ def _run_solver(world, use_react: bool = False, role: str = "solver") -> None:
     from agents.solver_agent import objective, solve_world
 
     print("\n" + "=" * 94)
-    print(f" LLM SOLVER  (mode={'ReAct' if use_react else 'direct'}, role={role})")
+    print(f" LLM SOLVER  (mode=ReAct, role={role})")
     print("=" * 94 + "\n")
 
     trace: list[str] = []
-    result, optimal = solve_world(world, role, use_react=use_react, trace=trace)
+    result, optimal = solve_world(world, role, trace=trace)
 
     verdict = "ESCAPED" if result.victory else "FAILED"
     print(f"  {verdict} in {result.ticks} tick(s)\n")
@@ -181,7 +181,7 @@ def _run_solver(world, use_react: bool = False, role: str = "solver") -> None:
     )
 
 
-def _solve_run(world, out_path: Path, use_react: bool = False, role: str = "solver"):
+def _solve_run(world, out_path: Path, role: str = "solver"):
     """Run the LLM solver on `world`, save its trace to `out_path`, return a score record.
 
     Returns None when there is nothing solvable. Used by the smoke roll-up so each
@@ -193,12 +193,12 @@ def _solve_run(world, out_path: Path, use_react: bool = False, role: str = "solv
     from agents.solver_agent import objective, solve_world
 
     trace: list[str] = []
-    result, optimal = solve_world(world, role, use_react=use_react, trace=trace)
+    result, optimal = solve_world(world, role, trace=trace)
     score = objective(world, result, optimal_len=len(optimal))
 
     thought_by_tick = {ln.split(" ", 1)[0]: ln for ln in trace}
     lines = [
-        f"LLM solver (mode={'ReAct' if use_react else 'direct'}, role={role})",
+        f"LLM solver (mode=ReAct, role={role})",
         f"{'ESCAPED' if result.victory else 'FAILED'} in {result.ticks} tick(s)",
         "",
     ]
@@ -326,7 +326,6 @@ def run(
     theme: str = "",
     trace_eval: bool = False,
     solve: bool = False,
-    react: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -368,7 +367,7 @@ def run(
     _report_eval_failures(eval_failures)
 
     if solve:
-        _run_solver(result.get("world"), use_react=react)
+        _run_solver(result.get("world"))
 
 
 def _run_once_captured(
@@ -689,7 +688,6 @@ def smoke(
     trace_eval: bool = False,
     theme: str = "pirate",
     solve: bool = False,
-    react: bool = False,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -733,7 +731,6 @@ def smoke(
                 rec = _solve_run(
                     result.get("world"),
                     run_dir / f"run_{i:03d}.solve.txt",
-                    use_react=react,
                 )
                 if rec is not None:
                     rec["run"] = i
@@ -901,12 +898,6 @@ if __name__ == "__main__":
         help="After generating the world, run the LLM solver agent on it and print "
         "its trace and score vs the BFS optimum.",
     )
-    parser.add_argument(
-        "--react",
-        action="store_true",
-        help="With --solve: use the ReAct solver policy (Thought->Action with a "
-        "running scratchpad) instead of the direct policy.",
-    )
     args = parser.parse_args()
 
     # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
@@ -944,7 +935,6 @@ if __name__ == "__main__":
             trace_eval=args.trace_eval,
             theme=theme,
             solve=args.solve,
-            react=args.react,
         )
     else:
         run(
@@ -952,5 +942,4 @@ if __name__ == "__main__":
             theme=theme,
             trace_eval=args.trace_eval,
             solve=args.solve,
-            react=args.react,
         )

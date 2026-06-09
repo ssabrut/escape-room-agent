@@ -38,17 +38,6 @@ from agents.gameplay_node import (
 from config.settings import get_llm
 from state import GameWorld, PartyState
 
-SOLVER_SYSTEM = (
-    "You are an expert escape-room solver. Each turn you see the current room, the "
-    "objects you can see, what you carry, the clues you have learned, and a list of "
-    "legal actions. Choose the SINGLE best action that makes progress toward "
-    "escaping. Prefer examining un-inspected objects, applying a known clue/code, "
-    "and using tools to unlock things over waiting. To move to another room you must "
-    "FIRST unlock that room's locked door (its goal). "
-    "DEAD ENDS lists objects already confirmed to hold no info — never examine them again. "
-    'Respond ONLY with JSON: {"action": "<one action copied EXACTLY from the list>"}.'
-)
-
 REACT_SYSTEM = (
     "You are an expert escape-room solver using the ReAct method: you REASON about "
     "the situation, then ACT. Each turn you see the current room, visible objects, "
@@ -151,43 +140,6 @@ def _build_prompt(
         f"DEAD ENDS (no info here — do NOT examine these): {dead_str}\n\n"
         f"LEGAL ACTIONS (choose exactly one, copy it verbatim):\n{space_str}\n"
     )
-
-
-def llm_solver_policy(role: str = "solver"):
-    """Return a policy ``(world, ps, action_space) -> action_str`` driven by an LLM.
-
-    On any parse/LLM failure it falls back to the first legal action so the episode
-    never crashes (it just makes a non-ideal move that tick).
-    """
-    llm = get_llm(role)
-    dead_ends: set[str] = set()
-    state = {"seen_log": 0}
-
-    def _policy(world: GameWorld, ps: PartyState, action_space: list[str]) -> str:
-        if not action_space:
-            return IDLE_ACTION
-        # Track objects that yielded no hidden info.
-        while state["seen_log"] < len(ps.log):
-            entry = ps.log[state["seen_log"]]
-            if entry.note and "no hidden info" in entry.note:
-                parts = entry.action.split()
-                if len(parts) >= 2:
-                    dead_ends.add(parts[1])
-            state["seen_log"] += 1
-        visible = _objects_in_room(world, ps)
-        prompt = _build_prompt(world, ps, action_space, visible, dead_ends)
-        try:
-            response = llm.invoke(
-                [SystemMessage(content=SOLVER_SYSTEM), HumanMessage(content=prompt)]
-            )
-            data = _parse_json(response.content) or {}
-            return _resolve_choice(str(data.get("action", "")).strip(), action_space)
-        except Exception:
-            return action_space[0]
-
-    return _policy
-
-
 
 
 def react_solver_policy(
@@ -305,29 +257,26 @@ def _load_world(path: Path) -> GameWorld:
 
 
 def solve_world(
-    world: GameWorld, role: str = "solver", use_react: bool = False, trace: list | None = None
+    world: GameWorld, role: str = "solver", trace: list | None = None
 ):
     """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps)."""
     from benchmark.engine import HeadlessEpisode
     from benchmark.policies import bfs_solution_path
 
-    policy = (
-        react_solver_policy(role, trace=trace) if use_react else llm_solver_policy(role)
-    )
+    policy = react_solver_policy(role, trace=trace)
     result = HeadlessEpisode(world).run(policy, record_history=True)
     optimal = bfs_solution_path(world)
     return result, optimal
 
 
-def benchmark(paths: list[Path], role: str = "solver", use_react: bool = False) -> None:
+def benchmark(paths: list[Path], role: str = "solver") -> None:
     """Run the LLM solver over many worlds; report solve-rate, ticks-vs-optimal, and
     the objective reward (optimal/ticks on a win, -1 on failure).
 
     Only worlds the BFS oracle can solve count toward the solve-rate denominator
     (an unsolvable world is not the agent's fault).
     """
-    mode = "ReAct" if use_react else "direct"
-    print(f"LLM solver benchmark — role={role}, mode={mode}, {len(paths)} world(s)\n")
+    print(f"LLM solver benchmark — role={role}, mode=ReAct, {len(paths)} world(s)\n")
     header = (
         f"{'world':<40} {'result':<8} {'ticks':>5} {'optimal':>7} "
         f"{'wasted':>6} {'reward':>7}"
@@ -339,7 +288,7 @@ def benchmark(paths: list[Path], role: str = "solver", use_react: bool = False) 
     rewards: list[float] = []
     for p in paths:
         world = _load_world(p)
-        result, optimal = solve_world(world, role, use_react=use_react)
+        result, optimal = solve_world(world, role)
         score = objective(world, result, optimal_len=len(optimal))
         solvable += int(score["optimal"] > 0)
         solved += int(score["won"])
@@ -377,27 +326,22 @@ def main() -> None:
         default="solver",
         help="LLM role from settings: solver (default), game_master, or player",
     )
-    parser.add_argument(
-        "--react",
-        action="store_true",
-        help="use the ReAct policy (Thought->Action with a running scratchpad)",
-    )
     args = parser.parse_args()
 
     if args.bench:
         paths = [Path(p) for p in sorted(glob.glob(args.bench))]
         if not paths:
             parser.error(f"no worlds matched: {args.bench}")
-        benchmark(paths, args.role, use_react=args.react)
+        benchmark(paths, args.role)
         return
 
     world = _load_world(Path(args.world))
-    print(f"Solving: {args.world}  (mode={'ReAct' if args.react else 'direct'})")
+    print(f"Solving: {args.world}  (mode=ReAct)")
     print(f"  scenario : {world.scenario[:80]}...")
     print(f"  win when : {world.win_condition.object_id} -> {world.win_condition.state}")
 
     trace: list[str] = []
-    result, optimal = solve_world(world, args.role, use_react=args.react, trace=trace)
+    result, optimal = solve_world(world, args.role, trace=trace)
     print(
         f"\n=== LLM solver: {'ESCAPED' if result.victory else 'FAILED'} "
         f"in {result.ticks} tick(s) ==="
