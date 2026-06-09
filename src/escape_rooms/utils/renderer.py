@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import Any
 
 from src.escape_rooms.state import Room, WorldObject
 
@@ -240,3 +241,76 @@ def render_room_layout(
 
     for row_chars in canvas:
         print("".join(row_chars).rstrip())
+
+
+def render_world(
+    rooms: list[Room],
+    objects: list[WorldObject],
+    current_room: str = "",
+    inventory: list[str] | None = None,
+    object_states: dict[str, str] | None = None,
+    tick: int = 0,
+) -> dict[str, Any]:
+    """Return a SwiftUI-ready render payload with BFS grid coordinates.
+
+    Rooms are placed on a (col, row) integer grid via BFS over adjacency.
+    Corridors are deduplicated undirected edges. Object states are merged
+    with the live party overrides so SwiftUI always sees the current truth.
+    """
+    if not rooms:
+        return {"grid": {"cols": 0, "rows": 0}, "rooms": [], "corridors": [], "party": {}}
+
+    inventory = inventory or []
+    object_states = object_states or {}
+
+    grid = _place_rooms(rooms)
+    max_col = max(c for c, _ in grid.values())
+    max_row = max(r for _, r in grid.values())
+
+    objects_by_room: dict[str, list[WorldObject]] = {r.id: [] for r in rooms}
+    for obj in objects:
+        if obj.location in objects_by_room:
+            objects_by_room[obj.location].append(obj)
+
+    room_list = []
+    for room in rooms:
+        col, row = grid[room.id]
+        room_objects = [
+            {
+                "id": obj.id,
+                "state": object_states.get(obj.id, obj.state),
+                "interacted": obj.id in inventory,
+                "takeable": obj.takeable,
+                "interactable": obj.interactable,
+            }
+            for obj in objects_by_room.get(room.id, [])
+        ]
+        room_list.append({
+            "id": room.id,
+            "label": room.id.upper(),
+            "col": col,
+            "row": row,
+            "isCurrentRoom": room.id == current_room,
+            "connections": list(room.adjacency.keys()),
+            "objects": room_objects,
+        })
+
+    seen: set[frozenset[str]] = set()
+    corridors = []
+    for room in rooms:
+        for direction, neighbor_id in room.adjacency.items():
+            key = frozenset({room.id, neighbor_id})
+            if key not in seen:
+                corridors.append({"fromRoom": room.id, "toRoom": neighbor_id, "direction": direction})
+                seen.add(key)
+
+    return {
+        "grid": {"cols": max_col + 1, "rows": max_row + 1},
+        "rooms": room_list,
+        "corridors": corridors,
+        "party": {
+            "currentRoom": current_room,
+            "inventory": inventory,
+            "tick": tick,
+        },
+    }

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 from src.escape_rooms.state import GameState
+from src.escape_rooms.utils.renderer import render_world
 
 router = APIRouter(prefix="/generate", tags=["generate"])
 
@@ -33,6 +34,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     world: dict
+    render: dict
     solution_path: list[str]
     num_rooms: int
     num_objects: int
@@ -69,6 +71,11 @@ def generate(req: GenerateRequest) -> GenerateResponse:
 
     return GenerateResponse(
         world=world.model_dump(mode="json", exclude_none=True),
+        render=render_world(
+            rooms=world.rooms,
+            objects=world.objects,
+            current_room=world.rooms[0].id if world.rooms else "",
+        ),
         solution_path=world.solution_path or [],
         num_rooms=len(world.rooms),
         num_objects=len(world.objects),
