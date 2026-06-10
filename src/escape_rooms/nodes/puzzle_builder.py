@@ -1112,16 +1112,181 @@ def _eval_object_counts(world: GameWorld, min_per_room: int) -> list[str]:
     return issues
 
 
+def _lock_unlocker_id(obj: WorldObject, by_id: dict[str, WorldObject]) -> str | None:
+    """Return the id of the single helper object that unlocks `obj`, if any."""
+    if obj.requires_tool:
+        return obj.requires_tool if obj.requires_tool in by_id else None
+    if obj.requires_code:
+        for o2 in by_id.values():
+            if o2.contains_info and obj.requires_code in o2.contains_info:
+                return o2.id
+        return None
+    if obj.requires_power:
+        for o2 in by_id.values():
+            if o2.fuses and (
+                o2.id in obj.requires_power
+                or any(label in obj.requires_power for label in o2.fuses)
+            ):
+                return o2.id
+        return None
+    return None
+
+
+def _eval_chain_integrity(world: GameWorld) -> list[str]:
+    """Check that each room's locks form a single dependency chain, not a branching tree.
+
+    The constructive generator (puzzle_graph._build_room_chain) gives every locked
+    object exactly one unlocking helper, and — except for the first link — that
+    helper is nested inside the *previous* lock so it stays hidden until that lock
+    opens. This means: every lock has exactly one unlocker, every lock but the first
+    has its unlocker nested inside exactly one other lock, and following
+    lock -> unlocker's-containing-lock from the room's goal must visit every lock
+    exactly once and terminate at the lock whose unlocker sits in the room itself.
+    """
+    issues: list[str] = []
+    for room in world.rooms:
+        room_objs = _objects_for_room(room.id, world.objects)
+        by_id = {o.id: o for o in room_objs}
+        locks = [o for o in room_objs if o.requires_tool or o.requires_code or o.requires_power]
+        if not locks:
+            continue
+
+        # lock -> the lock whose body hides this lock's unlocker (None == in the room)
+        gated_by: dict[str, str | None] = {}
+        for lock in locks:
+            unlocker_id = _lock_unlocker_id(lock, by_id)
+            if unlocker_id is None:
+                issues.append(
+                    f"room '{room.id}': lock '{lock.id}' has no resolvable unlocker"
+                )
+                continue
+            unlocker = by_id[unlocker_id]
+            if unlocker.location == room.id:
+                gated_by[lock.id] = None
+            elif unlocker.location in {l.id for l in locks}:
+                gated_by[lock.id] = unlocker.location
+            else:
+                issues.append(
+                    f"room '{room.id}': lock '{lock.id}' unlocker '{unlocker_id}' "
+                    f"is nested in '{unlocker.location}', which is not another "
+                    f"lock in this room"
+                )
+
+        roots = [lid for lid, parent in gated_by.items() if parent is None]
+        if len(roots) != 1:
+            issues.append(
+                f"room '{room.id}': expected exactly 1 lock unlockable from the "
+                f"room itself (chain start), found {len(roots)}: {roots}"
+            )
+
+        # each lock should gate at most one other lock (no branching)
+        gates: dict[str, list[str]] = {}
+        for lid, parent in gated_by.items():
+            if parent is not None:
+                gates.setdefault(parent, []).append(lid)
+        for parent, children in gates.items():
+            if len(children) > 1:
+                issues.append(
+                    f"room '{room.id}': lock '{parent}' hides the unlocker for "
+                    f"{len(children)} other locks {children} — a single chain "
+                    f"link must gate at most one"
+                )
+
+        # walk from the root(s) and confirm the chain covers every lock
+        visited: set[str] = set()
+        stack = list(roots)
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                issues.append(f"room '{room.id}': cycle detected at lock '{cur}'")
+                continue
+            visited.add(cur)
+            stack.extend(gates.get(cur, []))
+
+        unreached = [l.id for l in locks if l.id not in visited]
+        if unreached:
+            issues.append(
+                f"room '{room.id}': lock(s) {unreached} are not reachable from "
+                f"the chain start — disconnected from the linked list"
+            )
+
+    return issues
+
+
+def _eval_dead_objects(world: GameWorld) -> list[str]:
+    """Check for objects that exist but are never referenced by the puzzle graph.
+
+    An object earns its place by gating progress: it is the target of a
+    requires_tool/requires_code/requires_power/requires_liquid prerequisite, it
+    supplies a contains_info token or fuse a prerequisite needs, it is nested
+    inside another object (part of the chain), or it is a key_objects/goal/win
+    object. Anything else is a "scenic filler" the linked-list design forbids.
+    """
+    issues: list[str] = []
+
+    referenced: set[str] = set()
+    for room in world.rooms:
+        referenced.update(room.key_objects)
+        gc = room.goal_completion
+        if gc is not None:
+            if gc.object_id:
+                referenced.add(gc.object_id)
+    if world.win_condition.object_id:
+        referenced.add(world.win_condition.object_id)
+
+    for obj in world.objects:
+        # nesting: this object's location is another object -> that object
+        # gates it, so the parent is referenced (it reveals something).
+        if obj.location:
+            referenced.add(obj.location)
+        if obj.requires_tool:
+            referenced.add(obj.requires_tool)
+
+    for obj in world.objects:
+        if obj.requires_code:
+            for o2 in world.objects:
+                if o2.contains_info and obj.requires_code in o2.contains_info:
+                    referenced.add(o2.id)
+        if obj.requires_liquid:
+            for o2 in world.objects:
+                if (o2.contains_info and obj.requires_liquid in o2.contains_info) or (
+                    o2.id == obj.requires_liquid
+                ):
+                    referenced.add(o2.id)
+        if obj.requires_power:
+            for o2 in world.objects:
+                if o2.fuses and (
+                    o2.id in obj.requires_power
+                    or any(label in obj.requires_power for label in o2.fuses)
+                ):
+                    referenced.add(o2.id)
+
+    dead = [
+        o.id
+        for o in world.objects
+        if o.id not in referenced and not o.fuses
+    ]
+    if dead:
+        issues.append(
+            f"{len(dead)} object(s) are never referenced by any lock, clue, "
+            f"or goal — scenic filler not allowed: {dead}"
+        )
+
+    return issues
+
+
 def _eval_puzzle(
     world: GameWorld, chain_depth_target: int, min_objects_per_room: int = 1
 ) -> list[str]:
     """Return violation strings for the fully-built puzzle world.
 
-    Runs four passes in sequence, all without LLM calls:
+    Runs five passes in sequence, all without LLM calls:
       1. Static backward-chain analysis (check_solvable) — zero simulation cost
       2. Per-room object count — every room must meet the minimum object threshold
-      3. Per-room oracle — confirms each room's goal is satisfiable with local objects
-      4. Global HeadlessEpisode oracle — confirms end-to-end solvability and chain depth
+      3. Chain integrity — each room's objects form a single linked list, no branches
+      4. Dead objects — every object is referenced by the puzzle graph, no filler
+      5. Per-room oracle — confirms each room's goal is satisfiable with local objects
+      6. Global HeadlessEpisode oracle — confirms end-to-end solvability and chain depth
 
     Returns an empty list when the world is fully valid.
     """
@@ -1142,6 +1307,12 @@ def _eval_puzzle(
 
     # --- pass 2b: per-room object count ---
     issues.extend(_eval_object_counts(world, min_objects_per_room))
+
+    # --- pass 2c: chain integrity (linked-list shape) ---
+    issues.extend(_eval_chain_integrity(world))
+
+    # --- pass 2d: dead/unreferenced objects ---
+    issues.extend(_eval_dead_objects(world))
 
     # --- pass 3: per-room oracle ---
     issues.extend(_eval_room_goals(world))
