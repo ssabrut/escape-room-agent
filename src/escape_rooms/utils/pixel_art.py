@@ -71,27 +71,28 @@ _OUTPUT_SIZE = 64    # final sprite size after downscale
 _GEN_SIZE = 1024     # SDXL native resolution (nearest-neighbour → pixel art look)
 _SD_STEPS = 25       # steps for good results with the pixel-art-xl LoRA
 
-# Module-level lazy singleton — loaded once, reused across all calls.
+# Module-level lazy singletons — loaded once, reused across all calls.
 _pipeline = None
+_cpu_pipeline = None
 
 # The pipeline's scheduler holds mutable per-call state (step index, sigmas),
 # so concurrent pipe(...) calls from multiple threads corrupt each other's
 # denoising loop. Serialize all local inference through this lock.
 _pipeline_lock = threading.Lock()
 
+# Max attempts on the primary device (MPS/CUDA) before falling back to CPU.
+# Each retry after the first reloads the pipeline, since a fresh instance
+# sometimes recovers from the NaN-VAE failure mode.
+_MAX_DEVICE_ATTEMPTS = 3
 
-def _get_pipeline():
-    global _pipeline
-    if _pipeline is not None:
-        return _pipeline
 
+def _load_pipeline(device: str):
     import torch
     from diffusers import DiffusionPipeline
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
     log.info("Loading SDXL + pixel-art-xl LoRA on {} ...", device)
 
-    device_map = "cuda" if torch.cuda.is_available() else None
+    device_map = "cuda" if device == "cuda" else None
     dtype = torch.float16 if device != "cpu" else torch.float32
     pipe = DiffusionPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
@@ -104,9 +105,30 @@ def _get_pipeline():
     pipe.set_progress_bar_config(disable=True)
     pipe.enable_attention_slicing()
     pipe.enable_vae_slicing()
-    _pipeline = pipe
     log.success("SD pipeline ready on {}", device)
+    return pipe
+
+
+def _get_pipeline():
+    global _pipeline
+    if _pipeline is not None:
+        return _pipeline
+
+    import torch
+
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    _pipeline = _load_pipeline(device)
     return _pipeline
+
+
+def _get_cpu_pipeline():
+    """Lazy CPU pipeline — used as a last-resort fallback when the primary
+    device (MPS/CUDA) keeps producing blank (NaN-VAE) output."""
+    global _cpu_pipeline
+    if _cpu_pipeline is not None:
+        return _cpu_pipeline
+    _cpu_pipeline = _load_pipeline("cpu")
+    return _cpu_pipeline
 
 
 def _build_prompt(obj: "WorldObject") -> str:
@@ -139,8 +161,7 @@ def _run_pipeline(obj: "WorldObject") -> Image.Image:
 
     seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
 
-    def run_once() -> Image.Image:
-        pipe = _get_pipeline()
+    def run_with(pipe) -> Image.Image:
         generator = torch.Generator(device="cpu").manual_seed(seed)
         result = pipe(
             prompt=_build_prompt(obj),
@@ -154,15 +175,27 @@ def _run_pipeline(obj: "WorldObject") -> Image.Image:
         return result.images[0]
 
     with _pipeline_lock:
-        img = run_once()
-        if _is_blank(img):
+        img = run_with(_get_pipeline())
+        for attempt in range(2, _MAX_DEVICE_ATTEMPTS + 1):
+            if not _is_blank(img):
+                return img
             # MPS occasionally degrades into NaN VAE output after the pipeline
-            # has been used once; a fresh pipeline instance recovers.
-            log.warning("Blank sprite for {!r} — reloading pipeline and retrying", obj.id)
+            # has been used once; a fresh pipeline instance sometimes recovers.
+            log.warning(
+                "Blank sprite for {!r} — reloading pipeline and retrying ({}/{})",
+                obj.id, attempt, _MAX_DEVICE_ATTEMPTS,
+            )
             _pipeline = None
-            img = run_once()
+            img = run_with(_get_pipeline())
+
+        if _is_blank(img):
+            log.error(
+                "Sprite for {!r} still blank after {} attempt(s) — falling back to CPU",
+                obj.id, _MAX_DEVICE_ATTEMPTS,
+            )
+            img = run_with(_get_cpu_pipeline())
             if _is_blank(img):
-                log.error("Sprite for {!r} still blank after pipeline reload", obj.id)
+                log.error("Sprite for {!r} still blank after CPU fallback", obj.id)
 
     return img
 
