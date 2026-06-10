@@ -883,7 +883,7 @@ def _default_chain_depth(s: Settings) -> int:
 
 
 def _min_objects_per_room(s: Settings) -> int:
-    return 8 if s.hard_mode else 1
+    return 4 if s.hard_mode else 1
 
 
 def _build_prompt(world: GameWorld, chain_depth: int, min_objects_per_room: int) -> str:

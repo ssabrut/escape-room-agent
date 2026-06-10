@@ -80,14 +80,9 @@ def _jsonable(value):
     return value
 
 
-def _write_api_run(world, theme: str, solver_result=None) -> Path:
-    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json."""
+def _build_api_payload(world, solver_result=None) -> dict:
+    """Build the full API-shaped payload (render + solution + sprites) for `world`."""
     from api.routers.generate import SolverLog
-
-    API_RUNS_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    slug = theme.lower().replace(" ", "_")
-    out_path = API_RUNS_DIR / f"{timestamp}_{slug}.json"
 
     solver_log = None
     if solver_result is not None:
@@ -101,7 +96,7 @@ def _write_api_run(world, theme: str, solver_result=None) -> Path:
             history=solver_result.history,
         ).model_dump()
 
-    payload = {
+    return {
         "world": _jsonable(world),
         "render": render_world(
             rooms=world.rooms,
@@ -114,8 +109,34 @@ def _write_api_run(world, theme: str, solver_result=None) -> Path:
         "solver": solver_log,
         "sprites": generate_world_sprites(world.objects),
     }
+
+
+def _write_api_run(world, theme: str, solver_result=None) -> Path:
+    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json."""
+    API_RUNS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = theme.lower().replace(" ", "_")
+    out_path = API_RUNS_DIR / f"{timestamp}_{slug}.json"
+
+    payload = _build_api_payload(world, solver_result)
     out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return out_path
+
+
+def _write_api_payload(world, path: Path, solver_result=None) -> str:
+    """Write the API-shaped payload for `world` to `path`. Returns a status note.
+
+    Diagnostic only (used by smoke runs), so failures are swallowed rather than
+    aborting the smoke run.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        payload = _build_api_payload(world, solver_result)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return ""
+    return f" + {path.name}"
 
 
 def _write_world_json(world, path: Path) -> str:
@@ -292,7 +313,6 @@ def run(
     log_nodes: list[str] | None = None,
     theme: str = "",
     trace_eval: bool = False,
-    api: bool = False,
     solve: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
@@ -344,11 +364,10 @@ def run(
             node_times["solver"] = time.perf_counter() - t0
             _print_timing_table({"solver": node_times["solver"]})
 
-    if api:
-        world = result.get("world")
-        if world:
-            out_path = _write_api_run(world, theme, solver_result)
-            print(f"  [api] wrote {out_path}")
+    world = result.get("world")
+    if world:
+        out_path = _write_api_run(world, theme, solver_result)
+        print(f"  [api] wrote {out_path}")
 
 
 def _run_once_captured(
@@ -699,10 +718,13 @@ def smoke(
             bfs_note = _write_bfs_path(
                 result.get("world"), run_dir / f"run_{i:03d}.bfs_path.txt"
             )
+            api_note = _write_api_payload(
+                result.get("world"), run_dir / f"run_{i:03d}.api.json"
+            )
             total_elapsed = sum(node_times.values())
             print(
                 f"done in {total_elapsed:.1f}s → "
-                f"{out_file.name}{world_note}{bench_note}{bfs_note}"
+                f"{out_file.name}{world_note}{bench_note}{bfs_note}{api_note}"
             )
             _print_timing_table(node_times)
 
@@ -772,7 +794,9 @@ if __name__ == "__main__":
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
             "  python main.py --solve                  # also run the LLM solver\n"
-            "  python main.py --api                    # also dump api_runs/<ts>_<theme>.json\n"
+            "  # every run also dumps the API-shaped JSON (api_runs/<ts>_<theme>.json"
+            " for a normal run,\n"
+            "  # run_<NNN>.api.json per run under smoke_runs/<ts>/ for --smoke)\n"
         ),
     )
     parser.add_argument(
@@ -835,11 +859,6 @@ if __name__ == "__main__":
         help="Run the LLM solver after generation and print its result.",
     )
     parser.add_argument(
-        "--api",
-        action="store_true",
-        help="Also dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json.",
-    )
-    parser.add_argument(
         "--from",
         dest="from_path",
         metavar="PATH",
@@ -888,6 +907,5 @@ if __name__ == "__main__":
             log_nodes=log_nodes,
             theme=theme,
             trace_eval=args.trace_eval,
-            api=args.api,
             solve=args.solve,
         )
