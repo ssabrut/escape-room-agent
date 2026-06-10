@@ -3,9 +3,11 @@
 # worker Mac on the same LAN.
 #
 # Usage:
-#   ./scripts/setup_main.sh <worker-hostname-or-ip> [port]
+#   ./scripts/setup_main.sh                       # auto-discover worker via Bonjour/mDNS
+#   ./scripts/setup_main.sh <worker-hostname-or-ip> [port]   # specify it manually
 #
 # Example:
+#   ./scripts/setup_main.sh
 #   ./scripts/setup_main.sh my-second-mac.local
 #   ./scripts/setup_main.sh my-second-mac.local 8001
 #
@@ -16,15 +18,36 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <worker-hostname-or-ip> [port]" >&2
-    echo "Example: $0 my-second-mac.local" >&2
-    exit 1
-fi
+ENV_NAME="escape-rooms"
 
-WORKER_HOST="$1"
-PORT="${2:-8001}"
-WORKER_URL="http://${WORKER_HOST}:${PORT}"
+if [[ $# -ge 1 ]]; then
+    WORKER_HOST="$1"
+    PORT="${2:-8001}"
+    WORKER_URL="http://${WORKER_HOST}:${PORT}"
+else
+    echo "No worker specified — searching LAN for a sprite worker via Bonjour/mDNS..."
+
+    PYTHON_BIN="python3"
+    if command -v conda >/dev/null 2>&1; then
+        # shellcheck disable=SC1091
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        if conda env list | grep -qE "^\s*${ENV_NAME}\s"; then
+            PYTHON_BIN="$(conda run -n ${ENV_NAME} which python)"
+        fi
+    fi
+
+    DISCOVERED="$("${PYTHON_BIN}" scripts/discover_worker.py 3 | head -n1)"
+
+    if [[ -z "${DISCOVERED}" ]]; then
+        echo "No sprite worker found on the LAN." >&2
+        echo "Make sure ./scripts/setup_worker.sh is running on the worker Mac," >&2
+        echo "or specify it manually: $0 <worker-hostname-or-ip> [port]" >&2
+        exit 1
+    fi
+
+    WORKER_URL="http://${DISCOVERED}"
+    echo "Found sprite worker at ${WORKER_URL}"
+fi
 
 ENV_FILE=".env"
 [[ -f "${ENV_FILE}" ]] || touch "${ENV_FILE}"
@@ -47,7 +70,7 @@ echo "Checking worker health at ${WORKER_URL}/health ..."
 if curl -fsS --max-time 5 "${WORKER_URL}/health" >/dev/null 2>&1; then
     echo "Worker is reachable. Distributed sprite generation is ready."
 else
-    echo "Could not reach the worker." >&2
-    echo "Make sure ./scripts/setup_worker.sh is running on ${WORKER_HOST}." >&2
+    echo "Could not reach the worker at ${WORKER_URL}." >&2
+    echo "Make sure ./scripts/setup_worker.sh is running on the worker Mac." >&2
     exit 1
 fi

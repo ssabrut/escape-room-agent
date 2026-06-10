@@ -15,8 +15,8 @@ from its root:
 ```
 
 This creates/uses the `escape-rooms` conda env, installs `requirements.txt`,
-and starts `sprite_worker.py` on `0.0.0.0:8001`. Leave it running — it just
-waits for sprite requests.
+and starts `sprite_worker.py` on `0.0.0.0:8001`. Leave it running — it
+advertises itself via Bonjour/mDNS and waits for sprite requests.
 
 To only set up the env without starting the server:
 
@@ -24,26 +24,43 @@ To only set up the env without starting the server:
 ./scripts/setup_worker.sh --setup
 ```
 
-The script prints the worker's `.local` hostname, e.g.:
-
-```
-Main Mac should set: SPRITE_WORKERS=http://my-second-mac.local:8001
-```
-
 > First sprite request triggers a ~7GB SDXL model download — let the worker
 > sit for a minute and consider sending one test request before a full run.
 
 ## 2. Main Mac — point at the worker
 
-From the repo root on the main Mac:
+From the repo root on the main Mac, with no arguments to auto-discover the
+worker on the LAN via Bonjour/mDNS:
 
 ```bash
-./scripts/setup_main.sh my-second-mac.local
+./scripts/setup_main.sh
 ```
 
-This writes `SPRITE_WORKERS=http://my-second-mac.local:8001` into `.env` and
-checks the worker's `/health` endpoint. It exits with an error if the worker
-isn't reachable yet.
+This writes `SPRITE_WORKERS=http://<discovered-ip>:8001` into `.env` and
+checks the worker's `/health` endpoint. It exits with an error if no worker
+is found — make sure `setup_worker.sh` is running on the other Mac first.
+
+If auto-discovery doesn't find the worker (e.g. mDNS blocked on the
+network), specify it manually instead:
+
+```bash
+./scripts/setup_main.sh <worker-ip-or-hostname> [port]
+```
+
+### Finding the worker's IP/hostname manually
+
+On the **worker Mac**, run any of:
+
+```bash
+ipconfig getifaddr en0           # Wi-Fi/Ethernet LAN IP
+ipconfig getifaddr en1           # try this if en0 has no address
+scutil --get LocalHostName       # .local mDNS hostname (e.g. my-second-mac)
+hostname                         # full hostname
+```
+
+`setup_worker.sh` prints the LAN IP at the end of setup. Use that IP (not
+the `.local` hostname) with `setup_main.sh` — `curl`/`requests` don't
+reliably resolve `.local` names even when `ping` does.
 
 ## 3. Run generation — main Mac only
 

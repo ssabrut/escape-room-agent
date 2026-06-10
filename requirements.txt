@@ -95,5 +95,6 @@ wcwidth==0.7.0
 websockets==16.0
 xxhash==3.7.0
 yarl==1.24.2
+zeroconf==0.149.16
 zipp==4.1.0
 zstandard==0.25.0

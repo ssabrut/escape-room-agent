@@ -9,14 +9,17 @@
 #   ./scripts/setup_worker.sh          # set up env, install deps, then start the worker
 #   ./scripts/setup_worker.sh --setup  # only set up env + deps, don't start the server
 #
-# The server listens on 0.0.0.0:8001 so the main Mac can reach it at
+# The server listens on 0.0.0.0:8001 and advertises itself via Bonjour/mDNS
+# as "_sprite-worker._tcp.local." so the main Mac can auto-discover it
+# (see scripts/setup_main.sh). It's also reachable directly at
 # http://<this-mac>.local:8001
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_NAME="escape-rooms"
-PORT="${SPRITE_WORKER_PORT:-8001}"
+export SPRITE_WORKER_PORT="${SPRITE_WORKER_PORT:-8001}"
+PORT="${SPRITE_WORKER_PORT}"
 
 if ! command -v conda >/dev/null 2>&1; then
     echo "conda not found. Install Miniconda/Anaconda first: https://docs.conda.io/" >&2
@@ -36,10 +39,11 @@ conda activate "${ENV_NAME}"
 echo "Installing dependencies from requirements.txt..."
 pip install -r requirements.txt
 
-HOSTNAME_LOCAL="$(scutil --get LocalHostName 2>/dev/null || hostname).local"
+LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this-mac-ip>")"
 echo ""
 echo "Setup complete."
-echo "Main Mac should set: SPRITE_WORKERS=http://${HOSTNAME_LOCAL}:${PORT}"
+echo "Run ./scripts/setup_main.sh on the main Mac to auto-discover this worker,"
+echo "or set manually: SPRITE_WORKERS=http://${LAN_IP}:${PORT}"
 echo ""
 
 if [[ "${1:-}" == "--setup" ]]; then
