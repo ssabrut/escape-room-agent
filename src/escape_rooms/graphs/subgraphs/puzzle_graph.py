@@ -69,14 +69,19 @@ class _Builder:
         return "".join(str(self.rng.randint(0, 9)) for _ in range(self.rng.choice((3, 4))))
 
     # -- one unlocking mechanism applied to `target`, returns helper objects --
+    #
+    # `room_id` namespaces the generated id (so ids stay readable/unique per
+    # room); `location` is where the helper is placed — the room itself for the
+    # first link in a chain, or the previous link's lock for later links (so the
+    # helper stays hidden until that lock is opened).
 
-    def _gate_with_code(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+    def _gate_with_code(self, target: WorldObject, room_id: str, location: str) -> list[WorldObject]:
         code = self._code()
         target.requires_code = code
         target.code_digits = len(code)
         clue = WorldObject(
             id=self._new_id("clue", room_id),
-            location=room_id,
+            location=location,
             description="",
             state="visible",
             interactable=True,
@@ -85,10 +90,10 @@ class _Builder:
         )
         return [clue]
 
-    def _gate_with_tool(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+    def _gate_with_tool(self, target: WorldObject, room_id: str, location: str) -> list[WorldObject]:
         tool = WorldObject(
             id=self._new_id("tool", room_id),
-            location=room_id,
+            location=location,
             description="",
             state="visible",  # reachable before the thing it opens — no cycle
             interactable=True,
@@ -97,12 +102,12 @@ class _Builder:
         target.requires_tool = tool.id
         return [tool]
 
-    def _gate_with_power(self, target: WorldObject, room_id: str) -> list[WorldObject]:
+    def _gate_with_power(self, target: WorldObject, room_id: str, location: str) -> list[WorldObject]:
         label = self.rng.choice("ABCDEFGH")
         token = f"sekring_{label}_ON"
         panel = WorldObject(
             id=self._new_id("panel", room_id),
-            location=room_id,
+            location=location,
             description="",
             state="visible",  # must be reachable to flip the fuse
             interactable=True,
@@ -112,45 +117,64 @@ class _Builder:
         target.requires_power = token
         return [panel]
 
-    def gate(self, target: WorldObject, room_id: str, mechanic: str) -> list[WorldObject]:
+    def gate(self, target: WorldObject, room_id: str, location: str, mechanic: str) -> list[WorldObject]:
         return {
             "code": self._gate_with_code,
             "tool": self._gate_with_tool,
             "power": self._gate_with_power,
-        }[mechanic](target, room_id)
+        }[mechanic](target, room_id, location)
 
     def pick_mechanic(self) -> str:
         return self.rng.choices(MECHANICS, weights=_MECHANIC_WEIGHTS, k=1)[0]
 
 
 def _build_room_chain(
-    builder: _Builder, room: Room, chain_depth: int
+    builder: _Builder, room: Room, chain_depth: int, min_objects: int = 1
 ) -> tuple[WorldObject, list[WorldObject]]:
-    """Construct a single-lock room: one locked goal object opened by one mechanic."""
+    """Construct a sequential lock chain for one room.
+
+    Each link is one locked object opened by one mechanic (code/tool/power),
+    whose helper is placed directly in the room (link 1) or nested inside the
+    previous link's lock (link 2+) — so it stays hidden (HIDDEN_STATES) until
+    that lock is opened. This keeps every helper reachable strictly before its
+    consumer (solvable by construction) while producing a true dependency chain.
+
+    The number of links is sized so the room has at least `min_objects` objects
+    (2 per link), and the FINAL lock in the chain becomes the room's goal object.
+    """
     room_objs: list[WorldObject] = []
+    n_links = max(1, -(-min_objects // 2))  # ceil(min_objects / 2)
 
-    goal = builder.add(
-        WorldObject(
-            id=builder._new_id("goal", room.id),
-            location=room.id,
-            description="",
-            state=LOCKED_STATE,
-            interactable=True,
-            takeable=False,
+    goal: WorldObject | None = None
+    location = room.id
+    for i in range(n_links):
+        lock = builder.add(
+            WorldObject(
+                id=builder._new_id("goal", room.id),
+                location=room.id,
+                description="",
+                state=LOCKED_STATE,
+                interactable=True,
+                takeable=False,
+            )
         )
-    )
-    room_objs.append(goal)
+        room_objs.append(lock)
 
-    mechanic = builder.pick_mechanic()
-    helpers = builder.gate(goal, room.id, mechanic)
-    for h in helpers:
-        builder.add(h)
-        room_objs.append(h)
+        mechanic = builder.pick_mechanic()
+        helpers = builder.gate(lock, room.id, location, mechanic)
+        for h in helpers:
+            builder.add(h)
+            room_objs.append(h)
 
-    log.debug(
-        "Room {!r}: goal={!r}  mechanic={}  helpers={}",
-        room.id, goal.id, mechanic, [h.id for h in helpers],
-    )
+        log.debug(
+            "Room {!r}: link {}/{} lock={!r}  mechanic={}  helpers={} @ {!r}",
+            room.id, i + 1, n_links, lock.id, mechanic, [h.id for h in helpers], location,
+        )
+
+        # Next link's helper is hidden inside this lock until it's unlocked.
+        location = lock.id
+        goal = lock
+
     return goal, room_objs
 
 
@@ -166,13 +190,15 @@ def build_solvable_world(
 
     ``skeleton`` supplies scenario/objective/rooms/adjacency (from world_builder).
     This function discards any goal_completion the skeleton carried and installs a
-    constructed, guaranteed-solvable single-lock structure per room: one locked goal
-    object opened by one mechanic (code, tool, or power) whose helpers are all
-    directly visible. Object descriptions are left blank for the theming pass.
+    constructed, guaranteed-solvable lock-chain per room: a sequence of locked
+    objects, each opened by one mechanic (code, tool, or power) whose helper is
+    revealed by the previous lock. The number of links is sized so each room has
+    at least ``min_objects_per_room`` objects, and the final lock becomes the
+    room's goal object. Object descriptions are left blank for the theming pass.
 
-    ``chain_depth`` is unused at the intra-room level (each room has exactly one
-    locked object). Depth is a property of the multi-room sequence, not individual
-    rooms.
+    ``chain_depth`` is unused directly — chain length is now driven by
+    ``min_objects_per_room`` (2 objects per link), which also deepens the
+    dependency chain.
     """
     log.info(
         "build_solvable_world: {} room(s)  chain_depth={}  min_objects_per_room={}  seed={}",
@@ -183,7 +209,7 @@ def build_solvable_world(
 
     rooms: list[Room] = []
     for room in skeleton.rooms:
-        goal, room_objs = _build_room_chain(builder, room, chain_depth)
+        goal, room_objs = _build_room_chain(builder, room, chain_depth, min_objects_per_room)
         rooms.append(
             Room(
                 id=room.id,
@@ -230,6 +256,10 @@ def classify_role(obj: WorldObject, world: GameWorld) -> str:
         return "locked-goal"
     if obj.takeable:
         return "locked-tool" if obj.state in ("locked", "hidden") else "tool"
+    if obj.state == LOCKED_STATE:
+        # A non-goal locked object is an intermediate link in the room's chain —
+        # opening it reveals the next link's helper, not the room's win object.
+        return "intermediate-lock"
     return "locked-goal"
 
 
@@ -239,6 +269,7 @@ _FALLBACK = {
     "tool": "A handy implement, just the thing for prying something open.",
     "locked-tool": "A sealed cache; force it open and a useful tool is inside.",
     "locked-goal": "A stubbornly locked fixture — the heart of this room's puzzle.",
+    "intermediate-lock": "A locked compartment — forcing it open reveals something useful.",
 }
 
 
@@ -246,15 +277,34 @@ def _fallback_description(obj: WorldObject, world: GameWorld) -> str:
     return _FALLBACK.get(classify_role(obj, world), _FALLBACK["locked-goal"])
 
 
+def _room_of(obj: WorldObject, by_id: dict[str, WorldObject], room_ids: set[str]) -> str | None:
+    """Walk an object's location chain up to its anchoring room id."""
+    seen: set[str] = set()
+    cur = obj
+    while cur.id not in seen:
+        seen.add(cur.id)
+        if cur.location in room_ids:
+            return cur.location
+        parent = by_id.get(cur.location)
+        if parent is None:
+            return None
+        cur = parent
+    return None
+
+
 def _graph_spec(world: GameWorld) -> str:
+    by_id = {o.id: o for o in world.objects}
+    room_ids = {r.id for r in world.rooms}
     lines: list[str] = []
     for room in world.rooms:
         lines.append(f'Room "{room.id}" — goal: {room.goal}')
         for obj in world.objects:
-            if obj.location != room.id:
-                continue  # constructor anchors every object directly in a room
+            if _room_of(obj, by_id, room_ids) != room.id:
+                continue
             role = classify_role(obj, world)
             parts = [f"  - {obj.id} [{role}]"]
+            if obj.location not in room_ids:
+                parts.append(f"hidden-inside={obj.location}")
             if obj.requires_tool:
                 parts.append(f"unlocked-by={obj.requires_tool}")
             if obj.requires_code:
