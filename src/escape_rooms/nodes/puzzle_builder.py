@@ -13,8 +13,11 @@ import re
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.escape_rooms.utils.settings import Settings, get_llm
+from src.escape_rooms.utils.logging import get_node_logger
 from src.escape_rooms.prompts import load_prompt
 from src.escape_rooms.state import GameState, GameWorld, Prerequisite, Room, WorldObject, derive_win_condition
+
+log = get_node_logger("puzzle_builder")
 
 SYSTEM_PROMPT = load_prompt("puzzle_builder", "system")
 GENERATION_PROMPT = load_prompt("puzzle_builder", "generation")
@@ -799,73 +802,48 @@ def _build_puzzle(
     rooms = world.rooms
     room_ids = {r.id for r in rooms}
 
+    log.debug("_build_puzzle: parsing raw objects for {} room(s)", len(rooms))
     objects = _build_objects(data.get("objects", []), room_ids)
+    log.debug("_build_puzzle: {} valid object(s) after initial parse", len(objects))
 
     objects, merges = _dedup_objects(objects, rooms)
     if merges:
-        print(
-            f"[puzzle_builder] merged duplicate objects: {', '.join(merges)}",
-            flush=True,
-        )
+        log.debug("Merged {} duplicate object(s): {}", len(merges), ", ".join(merges))
 
     object_ids = {o.id for o in objects}
     rooms = _scrub_room_refs(rooms, object_ids)
 
     tool_repairs = _repair_tool_refs(objects)
     if tool_repairs:
-        print(
-            f"[puzzle_builder] repaired tool refs: {', '.join(tool_repairs)}",
-            flush=True,
-        )
+        log.debug("Repaired {} tool ref(s): {}", len(tool_repairs), ", ".join(tool_repairs))
 
     takeable_repairs = _make_required_tools_takeable(objects)
     if takeable_repairs:
-        print(
-            f"[puzzle_builder] made required tools takeable: {', '.join(takeable_repairs)}",
-            flush=True,
-        )
+        log.debug("Made {} tool(s) takeable: {}", len(takeable_repairs), ", ".join(takeable_repairs))
 
     win_repairs = _repair_missing_win_condition(rooms, objects)
     if win_repairs:
-        print(
-            f"[puzzle_builder] repaired missing win condition: {', '.join(win_repairs)}",
-            flush=True,
-        )
+        log.warning("Repaired missing win condition: {}", ", ".join(win_repairs))
 
     gate_repairs = _repair_unsolvable_gates(rooms, objects)
     if gate_repairs:
-        print(
-            f"[puzzle_builder] repaired unsolvable gates: {', '.join(gate_repairs)}",
-            flush=True,
-        )
+        log.debug("Repaired {} unsolvable gate(s): {}", len(gate_repairs), ", ".join(gate_repairs))
 
     power_repairs = _repair_power_gates(rooms, objects)
     if power_repairs:
-        print(
-            f"[puzzle_builder] repaired power gates: {', '.join(power_repairs)}",
-            flush=True,
-        )
+        log.debug("Repaired {} power gate(s): {}", len(power_repairs), ", ".join(power_repairs))
 
     patched = _patch_missing_info(rooms, objects)
     if patched:
-        print(
-            f"[puzzle_builder] auto-patched missing clues: {', '.join(patched)}",
-            flush=True,
-        )
+        log.debug("Auto-patched {} missing clue(s): {}", len(patched), ", ".join(patched))
 
     self_clue = _rebind_self_clue_locks(objects)
     if self_clue:
-        print(
-            f"[puzzle_builder] rebound self-clue locks: {', '.join(self_clue)}",
-            flush=True,
-        )
+        log.debug("Rebound {} self-clue lock(s): {}", len(self_clue), ", ".join(self_clue))
 
     rewrites = _bind_goals(rooms)
     if rewrites:
-        print(
-            f"[puzzle_builder] rebound goals to completion: {', '.join(rewrites)}",
-            flush=True,
-        )
+        log.debug("Rebound {} goal(s) to completion: {}", len(rewrites), ", ".join(rewrites))
 
     rules = [r for r in data.get("rules", []) if isinstance(r, str)]
     # The LLM no longer authors the solution path — it is derived from the oracle's
@@ -875,16 +853,12 @@ def _build_puzzle(
 
     objects, orphans = _prune_orphan_objects(rooms, objects)
     if orphans:
-        print(
-            f"[puzzle_builder] pruned orphan objects: {', '.join(orphans)}", flush=True
-        )
+        log.debug("Pruned {} orphan object(s): {}", len(orphans), ", ".join(orphans))
         rooms = _scrub_room_refs(rooms, {o.id for o in objects})
 
     coherence = _check_coherence(rooms, objects)
-    if coherence:
-        print(
-            f"[puzzle_builder] coherence warnings: {'; '.join(coherence)}", flush=True
-        )
+    for w in coherence:
+        log.warning("Coherence: {}", w)
 
     return GameWorld(
         scenario=world.scenario,
@@ -1219,16 +1193,11 @@ def _print_solvability_check(world: GameWorld) -> None:
         return
     report = check_solvable(world)
     if report.solvable:
-        print(
-            "[puzzle_builder] static check: SOLVABLE — no structural issues", flush=True
-        )
+        log.info("Static check: SOLVABLE — no structural issues")
     else:
-        print(
-            f"[puzzle_builder] static check: {len(report.issues)} structural issue(s):",
-            flush=True,
-        )
+        log.warning("Static check: {} structural issue(s):", len(report.issues))
         for issue in report.issues:
-            print(f"  • {issue}", flush=True)
+            log.warning("  • {}", issue)
 
 
 def _print_policy_benchmark(world: GameWorld) -> None:
@@ -1241,18 +1210,14 @@ def _print_policy_benchmark(world: GameWorld) -> None:
 
     rows = compute_policy_benchmark(world)
     header = f"{'policy':<12} {'win%':>6} {'t2win':>7} {'t_all':>7} {'objs':>6}"
-    print("\n[puzzle_builder] policy benchmark (this world):", flush=True)
-    print("  " + header, flush=True)
-    print("  " + "-" * len(header), flush=True)
+    log.info("Policy benchmark:")
+    log.info("  {}", header)
     for s in rows:
-        print(
-            "  "
-            f"{s['policy']:<12} "
-            f"{s['win_rate'] * 100:>5.0f}% "
-            f"{_fmt(s['mean_ticks_to_win']):>7} "
-            f"{_fmt(s['mean_ticks_all']):>7} "
-            f"{_fmt(s['mean_objects_resolved'], '.1f'):>6}",
-            flush=True,
+        log.info(
+            "  {:<12} {:>5.0f}%  {:>7}  {:>7}  {:>6}",
+            s["policy"], s["win_rate"] * 100,
+            _fmt(s["mean_ticks_to_win"]), _fmt(s["mean_ticks_all"]),
+            _fmt(s["mean_objects_resolved"], ".1f"),
         )
 
 
@@ -1303,16 +1268,12 @@ def _build_puzzle_for_world(
     while issues and attempts < max_attempts:
         attempt_log.append({"attempt": attempts, "issues": issues, "raw": raw})
         all_attempt_issues.append((attempts, issues))
-        print(
-            f"[puzzle_builder] attempt {attempts} rejected — {len(issues)} issue(s):",
-            flush=True,
-        )
+        log.warning("Attempt {} rejected — {} issue(s):", attempts, len(issues))
         for issue in issues:
-            print(f"  • {issue}", flush=True)
-        print(
-            f"[puzzle_builder] regenerating with feedback "
-            f"(attempt {attempts + 1}/{max_attempts}, {len(all_attempt_issues)} failure(s) in history)...",
-            flush=True,
+            log.warning("  • {}", issue)
+        log.info(
+            "Regenerating with feedback (attempt {}/{}, {} failure(s) in history)...",
+            attempts + 1, max_attempts, len(all_attempt_issues),
         )
         world, raw = _generate_puzzle_with_feedback(
             llm, base_world, chain_depth, min_objs, all_attempt_issues
@@ -1333,6 +1294,7 @@ def puzzle_builder_node(state: GameState) -> dict:
     fall back to the legacy LLM-generated repair loop (kept below) to recover.
     """
     if not state.world or not state.world.rooms:
+        log.warning("puzzle_builder_node called with no world/rooms — skipping")
         return {}
 
     import time
@@ -1361,13 +1323,9 @@ def puzzle_builder_node(state: GameState) -> dict:
     if issues:
         # Should be rare-to-never: the graph is built solvable. If a check still
         # fires (e.g. chain-depth target unmet), fall back to the legacy LLM loop.
-        print(
-            f"[puzzle_builder] constructive build flagged {len(issues)} issue(s) — "
-            f"falling back to LLM generation loop:",
-            flush=True,
-        )
+        log.warning("Constructive build flagged {} issue(s) — falling back to LLM loop:", len(issues))
         for issue in issues:
-            print(f"  • {issue}", flush=True)
+            log.warning("  • {}", issue)
         max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
         world, raw, issues, attempt_log, _ = _build_puzzle_for_world(
             llm, base_world, chain_depth, chain_depth_target, min_objs, max_attempts
@@ -1381,28 +1339,26 @@ def puzzle_builder_node(state: GameState) -> dict:
     elapsed = time.perf_counter() - start
 
     if issues:
-        print(
-            f"[puzzle_builder] WARNING: {len(issues)} issue(s) remain:", flush=True
-        )
+        log.warning("{} issue(s) remain after puzzle build:", len(issues))
         for issue in issues:
-            print(f"  • {issue}", flush=True)
+            log.warning("  • {}", issue)
     else:
-        print(
-            f"[puzzle_builder] built solvable puzzle constructively in {elapsed:.2f}s "
-            f"({len(world.objects)} object(s))",
-            flush=True,
+        log.success(
+            "Built solvable puzzle constructively in {:.2f}s — {} object(s)",
+            elapsed, len(world.objects),
         )
+        for obj in world.objects:
+            log.trace(
+                "  obj {!r} @ {!r}  state={!r}  requires_tool={}  requires_code={}  contains_info={}",
+                obj.id, obj.location, obj.state, obj.requires_tool, obj.requires_code, obj.contains_info,
+            )
 
     if world.solution_path:
-        print(
-            f"[puzzle_builder] solution path: {len(world.solution_path)} step(s)",
-            flush=True,
-        )
+        log.info("Solution path: {} step(s)", len(world.solution_path))
+        for i, step in enumerate(world.solution_path, 1):
+            log.debug("  Step {:02d}: {}", i, step)
     else:
-        print(
-            "[puzzle_builder] WARNING: no solution path — world ships without ground-truth steps",
-            flush=True,
-        )
+        log.warning("No solution path — world ships without ground-truth steps")
 
     _print_solvability_check(world)
     _print_policy_benchmark(world)

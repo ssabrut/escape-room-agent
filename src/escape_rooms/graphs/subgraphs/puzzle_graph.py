@@ -27,6 +27,9 @@ import json
 import re
 
 from src.escape_rooms.state import GameWorld, Prerequisite, Room, WorldObject
+from src.escape_rooms.utils.logging import get_node_logger
+
+log = get_node_logger("puzzle_graph")
 
 # States the engine treats as "needs unlocking". The goal/win target is always
 # "unlocked" — never a trivial default ("visible"/"fixed") that check_solvable
@@ -123,13 +126,7 @@ class _Builder:
 def _build_room_chain(
     builder: _Builder, room: Room, chain_depth: int
 ) -> tuple[WorldObject, list[WorldObject]]:
-    """Construct a single-lock room: one locked goal object opened by one mechanic.
-
-    Returns (goal_object, all_room_objects). Only the goal starts LOCKED; all
-    helpers (clue, tool, or panel) are directly visible — no intermediate locks.
-    ``chain_depth`` is ignored here; depth is expressed across rooms, not within
-    a single room's object set.
-    """
+    """Construct a single-lock room: one locked goal object opened by one mechanic."""
     room_objs: list[WorldObject] = []
 
     goal = builder.add(
@@ -150,6 +147,10 @@ def _build_room_chain(
         builder.add(h)
         room_objs.append(h)
 
+    log.debug(
+        "Room {!r}: goal={!r}  mechanic={}  helpers={}",
+        room.id, goal.id, mechanic, [h.id for h in helpers],
+    )
     return goal, room_objs
 
 
@@ -160,6 +161,7 @@ def build_solvable_world(
     min_objects_per_room: int = MIN_OBJECTS_PER_ROOM_DEFAULT,
     seed: int | None = None,
 ) -> GameWorld:
+
     """Build a fully-formed, solvable GameWorld from a rooms-only skeleton.
 
     ``skeleton`` supplies scenario/objective/rooms/adjacency (from world_builder).
@@ -172,6 +174,10 @@ def build_solvable_world(
     locked object). Depth is a property of the multi-room sequence, not individual
     rooms.
     """
+    log.info(
+        "build_solvable_world: {} room(s)  chain_depth={}  min_objects_per_room={}  seed={}",
+        len(skeleton.rooms), chain_depth, min_objects_per_room, seed,
+    )
     rng = random.Random(seed)
     builder = _Builder(rng)
 
@@ -193,6 +199,7 @@ def build_solvable_world(
 
     from src.escape_rooms.state import derive_win_condition
 
+    log.debug("build_solvable_world: {} total object(s) constructed", len(builder.objects))
     return GameWorld(
         scenario=skeleton.scenario,
         objective=skeleton.objective,
@@ -331,13 +338,8 @@ def _parse_theming_response(text: str) -> dict[str, dict[str, str]]:
 
 
 def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
-    """Fill object names and descriptions from an LLM theming pass, with code fallbacks.
-
-    The structure and puzzle mechanics of ``world`` are never touched — only ``id``
-    and ``description`` strings are updated. Objects the LLM omits keep generated,
-    role-appropriate values. LLM-suggested names are applied to objects and used
-    throughout the world (rooms and object references are updated accordingly).
-    """
+    """Fill object names and descriptions from an LLM theming pass, with code fallbacks."""
+    log.info("apply_theming: theme={!r}  {} object(s) to theme", theme, len(world.objects))
     names: dict[str, str] = {}  # original_id -> creative_name
     descs: dict[str, str] = {}
     if llm is not None:
@@ -359,7 +361,10 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
             parsed = _parse_theming_response(resp.content)
             names = parsed.get("names", {})
             descs = parsed.get("descriptions", {})
-        except Exception:
+            log.debug("apply_theming: LLM returned {} name(s) and {} description(s)", len(names), len(descs))
+            log.trace("apply_theming names: {}", names)
+        except Exception as exc:
+            log.warning("apply_theming: LLM theming failed ({}) — using fallback descriptions", exc)
             names = {}
             descs = {}
 
@@ -413,8 +418,17 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
         slug_descs[new_id] = desc
 
     # Apply descriptions with fallback
+    themed_count = 0
+    fallback_count = 0
     for obj in world.objects:
         themed = slug_descs.get(obj.id)
-        obj.description = themed if themed else _fallback_description(obj, world)
+        if themed:
+            obj.description = themed
+            themed_count += 1
+        else:
+            obj.description = _fallback_description(obj, world)
+            fallback_count += 1
+        log.trace("  obj {!r} [{:>12}] -> {!r}", obj.id, classify_role(obj, world), obj.description[:60])
+    log.info("apply_theming: {} themed, {} fallback", themed_count, fallback_count)
     return world
 

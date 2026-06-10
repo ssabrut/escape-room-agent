@@ -6,6 +6,10 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
 from api.routers import generate
+from src.escape_rooms.utils.logging import setup_logging, get_node_logger
+
+setup_logging()
+log = get_node_logger("api")
 
 API_KEY = os.getenv("API_KEY", "")
 

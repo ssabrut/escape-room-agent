@@ -194,3 +194,4 @@ class GameState(BaseModel):
     party: list[PartyMember] = Field(default_factory=list)
     party_state: PartyState | None = None
     solver_result: SolverResult | None = None
+    solve: bool = False  # when True, solver_node runs after puzzle_builder

@@ -15,7 +15,10 @@ from collections import deque
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.escape_rooms.utils.settings import get_llm
+from src.escape_rooms.utils.logging import get_node_logger
 from src.escape_rooms.prompts import load_prompt
+
+log = get_node_logger("gameplay")
 from src.escape_rooms.state import (
     GameState,
     GameWorld,
@@ -114,6 +117,8 @@ PANEL_WIDTH = 94
 
 def _stream(line: str = "") -> None:
     print(line, flush=True)
+    if line.strip():
+        log.trace("stream | {}", line.rstrip())
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -1547,10 +1552,7 @@ def gameplay_node(state: GameState) -> dict:
         ps.observed_rooms.add(ps.current_room)
         ps.last_fingerprint = _room_fingerprint(world, ps)
         elapsed = time.perf_counter() - _tick_start
-        print(
-            f"[gameplay] tick {ps.tick} (observe+plan) elapsed {elapsed:.2f}s",
-            flush=True,
-        )
+        log.debug("Tick {} (observe+plan) elapsed {:.2f}s", ps.tick, elapsed)
         return {"messages": new_messages, "party_state": ps}
 
     # If last tick changed the room picture (revealed an object, took an item,
@@ -1717,7 +1719,10 @@ def gameplay_node(state: GameState) -> dict:
         )
 
     elapsed = time.perf_counter() - _tick_start
-    print(f"[gameplay] tick {ps.tick} elapsed {elapsed:.2f}s", flush=True)
+    log.debug(
+        "Tick {} elapsed {:.2f}s — room={!r}  inventory={}  known_info={}  victory={}",
+        ps.tick, elapsed, ps.current_room, ps.inventory, ps.known_info, ps.victory,
+    )
 
     return {
         "messages": new_messages,

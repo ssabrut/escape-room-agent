@@ -20,8 +20,12 @@ from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
 from src.escape_rooms.state import GameState, GameWorld
+from src.escape_rooms.utils.logging import setup_logging, get_node_logger
 from src.escape_rooms.utils.pixel_art import generate_world_sprites
 from src.escape_rooms.utils.renderer import render_room_layout, render_world
+
+setup_logging()
+log = get_node_logger("main")
 
 THEMES = [
     "Haunted House",
@@ -289,6 +293,7 @@ def run(
     theme: str = "",
     trace_eval: bool = False,
     api: bool = False,
+    solve: bool = False,
 ) -> None:
     log_nodes = log_nodes or []
     if not theme:
@@ -329,11 +334,19 @@ def run(
     _print_timing_table(node_times)
     _report_eval_failures(eval_failures)
 
-    if api:
+    solver_result = None
+    if solve:
         from src.escape_rooms.nodes.solver import solver_node
         world = result.get("world")
         if world:
+            t0 = time.perf_counter()
             solver_result = solver_node(state.model_copy(update={"world": world})).get("solver_result")
+            node_times["solver"] = time.perf_counter() - t0
+            _print_timing_table({"solver": node_times["solver"]})
+
+    if api:
+        world = result.get("world")
+        if world:
             out_path = _write_api_run(world, theme, solver_result)
             print(f"  [api] wrote {out_path}")
 
@@ -758,8 +771,8 @@ if __name__ == "__main__":
             "  python main.py --struct-eval            # fast per-node structural eval\n"
             "  python main.py --node world_builder --theme pirate   # run one node\n"
             "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
+            "  python main.py --solve                  # also run the LLM solver\n"
             "  python main.py --api                    # also dump api_runs/<ts>_<theme>.json\n"
-            "  (solver runs automatically as part of the generation graph)\n"
         ),
     )
     parser.add_argument(
@@ -817,6 +830,11 @@ if __name__ == "__main__":
         "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
     )
     parser.add_argument(
+        "--solve",
+        action="store_true",
+        help="Run the LLM solver after generation and print its result.",
+    )
+    parser.add_argument(
         "--api",
         action="store_true",
         help="Also dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json.",
@@ -871,4 +889,5 @@ if __name__ == "__main__":
             theme=theme,
             trace_eval=args.trace_eval,
             api=args.api,
+            solve=args.solve,
         )

@@ -22,15 +22,18 @@ import random
 from typing import TYPE_CHECKING
 
 from PIL import Image
+from src.escape_rooms.utils.logging import get_node_logger
 
 if TYPE_CHECKING:
     from src.escape_rooms.state.schema import WorldObject
 
+log = get_node_logger("pixel_art")
+
 # ---------------------------------------------------------------------------
-# FLUX.1-schnell backend
+# SD pixel-art item/object backend
 # ---------------------------------------------------------------------------
 
-_SD_MODEL = "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
+_SD_MODEL = "nerijs/pixel-art-xl"
 _OUTPUT_SIZE = 64    # final sprite size after downscale
 _GEN_SIZE = 512      # size to generate at (nearest-neighbour → pixel art look)
 _SD_STEPS = 20       # SD 1.5 needs ~20 steps for good results
@@ -48,39 +51,43 @@ def _get_pipeline():
         return None
     try:
         import torch
-        from diffusers import StableDiffusionPipeline
+        from diffusers import DiffusionPipeline
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"[pixel_art] loading SD_PixelArt_SpriteSheet on {device}...", flush=True)
+        log.info("Loading SD_PixelArt_SpriteSheet on {} ...", device)
 
-        pipe = StableDiffusionPipeline.from_pretrained(
-            _SD_MODEL,
-            torch_dtype=torch.float16,
-            safety_checker=None,
-            requires_safety_checker=False,
+        device_map = "cuda" if torch.cuda.is_available() else None
+        pipe = DiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            torch_dtype=torch.bfloat16,
+            device_map=device_map,
         )
-        pipe = pipe.to(device)
+        if device_map is None:
+            pipe = pipe.to(device)
+        pipe.load_lora_weights(_SD_MODEL)
         pipe.set_progress_bar_config(disable=True)
         _pipeline = pipe
-        print("[pixel_art] SD pipeline ready", flush=True)
+        log.success("SD pipeline ready on {}", device)
         return _pipeline
     except Exception as exc:
         _pipeline_error = exc
-        print(f"[pixel_art] SD unavailable ({exc}), using procedural fallback", flush=True)
+        log.warning("SD unavailable ({}) — using procedural fallback", exc)
         return None
 
 
 def _build_prompt(obj: "WorldObject") -> str:
     desc = obj.description.strip() if obj.description else obj.id.replace("_", " ")
     return (
-        f"pixel art sprite of {desc}, "
-        "retro RPG game item icon, flat 2D, solid dark background, "
-        "escape room puzzle object, vibrant limited palette, no text, crisp pixels"
+        f"pixelsprite, {desc}, "
+        "RPG game item icon, flat 2D top-down view, solid black background, "
+        "16-bit pixel art, limited color palette, no text, crisp pixels, single object, "
+        "centered, no other views, no variations, no grid, no spritesheet, no multiple objects, isolated icon"
     )
 
 _NEGATIVE_PROMPT = (
+    "human, person, character, humanoid, figure, body, face, limbs, "
     "blurry, photorealistic, 3d render, text, watermark, "
-    "signature, extra limbs, low quality, grainy"
+    "signature, low quality, grainy, multiple items"
 )
 
 
@@ -108,9 +115,11 @@ def _generate_via_sd(obj: "WorldObject") -> str | None:
         img = img.resize((_OUTPUT_SIZE, _OUTPUT_SIZE), Image.NEAREST)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        log.debug("SD sprite generated for {!r} ({} bytes b64)", obj.id, len(b64))
+        return b64
     except Exception as exc:
-        print(f"[pixel_art] SD generate failed for {obj.id!r}: {exc}", flush=True)
+        log.warning("SD generate failed for {!r}: {}", obj.id, exc)
         return None
 
 
@@ -394,4 +403,10 @@ def generate_object_sprite(obj: "WorldObject") -> str:
 
 def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
     """Return a mapping of object_id → base64 PNG for every object in *objects*."""
-    return {obj.id: generate_object_sprite(obj) for obj in objects}
+    log.info("Generating sprites for {} object(s)...", len(objects))
+    sprites = {}
+    for obj in objects:
+        log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
+        sprites[obj.id] = generate_object_sprite(obj)
+    log.info("Sprite generation complete — {} sprite(s)", len(sprites))
+    return sprites

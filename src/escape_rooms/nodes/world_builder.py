@@ -13,8 +13,11 @@ import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.escape_rooms.utils.settings import Settings, get_llm
+from src.escape_rooms.utils.logging import get_node_logger
 from src.escape_rooms.prompts import load_prompt
 from src.escape_rooms.state import GameState, GameWorld, Prerequisite, Room
+
+log = get_node_logger("world_builder")
 
 SYSTEM_PROMPT = load_prompt("world_builder", "system")
 GENERATION_PROMPT = load_prompt("world_builder", "generation")
@@ -43,9 +46,13 @@ def _parse_json(text: str) -> dict | None:
     brace_match = re.search(r"\{.*\}", text, re.DOTALL)
     if brace_match:
         try:
-            return json.loads(brace_match.group())
+            result = json.loads(brace_match.group())
+            log.trace("_parse_json: extracted JSON via brace-match fallback")
+            return result
         except json.JSONDecodeError:
+            log.warning("_parse_json: all JSON parse strategies failed (len={})", len(text))
             return None
+    log.warning("_parse_json: no JSON structure found in LLM response (len={})", len(text))
     return None
 
 
@@ -54,6 +61,7 @@ def _build_prerequisite(raw) -> Prerequisite | None:
         return None
     ptype = raw.get("type")
     if ptype not in _VALID_PREREQ_TYPES:
+        log.trace("_build_prerequisite: unknown type {!r}, skipping", ptype)
         return None
     return Prerequisite(
         type=ptype,
@@ -68,12 +76,15 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
     rooms: list[Room] = []
     for raw_room in raw_rooms:
         if isinstance(raw_room, str):
+            log.trace("_build_rooms: bare string room id={!r}", raw_room)
             rooms.append(Room(id=raw_room, description="", adjacency={}))
             continue
         if not isinstance(raw_room, dict):
+            log.trace("_build_rooms: skipping non-dict entry: {!r}", raw_room)
             continue
         room_id = raw_room.get("id") or raw_room.get("name")
         if not room_id:
+            log.trace("_build_rooms: skipping room with no id: {!r}", raw_room)
             continue
         raw_adj = raw_room.get("adjacency", {})
         adjacency = (
@@ -87,20 +98,27 @@ def _build_rooms(raw_rooms: list) -> list[Room]:
             if isinstance(key_objects_raw, list)
             else []
         )
-        rooms.append(
-            Room(
-                id=room_id,
-                description=raw_room.get("description", ""),
-                adjacency=adjacency,
-                goal=raw_room.get("goal", ""),
-                goal_completion=_build_prerequisite(raw_room.get("goal_completion")),
-                key_objects=key_objects,
-            )
+        room = Room(
+            id=room_id,
+            description=raw_room.get("description", ""),
+            adjacency=adjacency,
+            goal=raw_room.get("goal", ""),
+            goal_completion=_build_prerequisite(raw_room.get("goal_completion")),
+            key_objects=key_objects,
         )
+        log.trace(
+            "_build_rooms: parsed room id={!r} adj={} goal_completion={}",
+            room.id,
+            list(room.adjacency.keys()),
+            room.goal_completion.type if room.goal_completion else "none",
+        )
+        rooms.append(room)
+    log.debug("_build_rooms: built {} room(s)", len(rooms))
     return rooms
 
 
 def _repair_adjacency(rooms: list[Room]) -> list[Room]:
+    log.debug("_repair_adjacency: checking {} room(s)", len(rooms))
     known = {r.id for r in rooms}
 
     cleaned: dict[str, dict[str, str]] = {}
@@ -114,6 +132,10 @@ def _repair_adjacency(rooms: list[Room]) -> list[Room]:
             reverse = OPPOSITES[direction]
             neighbor_adj = cleaned.get(neighbor_id, {})
             if reverse not in neighbor_adj:
+                log.debug(
+                    "_repair_adjacency: adding missing reverse edge {} ←{} {}",
+                    neighbor_id, reverse, room_id,
+                )
                 neighbor_adj[reverse] = room_id
                 cleaned[neighbor_id] = neighbor_adj
 
@@ -175,12 +197,23 @@ def _generation_prompt(theme: str) -> str:
 
 
 def _generate_world(llm, theme: str, max_rooms: int) -> tuple[GameWorld, str]:
+    log.info("Calling LLM to generate world — theme={!r} max_rooms={}", theme, max_rooms)
+    t0 = time.perf_counter()
     prompt = _generation_prompt(theme)
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
+    elapsed = time.perf_counter() - t0
+    log.debug("LLM response received in {:.2f}s — {} chars", elapsed, len(response.content))
+    log.trace("LLM raw response:\n{}", response.content[:2000])
     data = _parse_json(response.content) or {}
-    return _build_world(data, max_rooms), response.content
+    world = _build_world(data, max_rooms)
+    log.debug(
+        "World parsed — {} room(s), scenario={!r}",
+        len(world.rooms),
+        world.scenario[:60] if world.scenario else "",
+    )
+    return world, response.content
 
 
 def _room_ids_from_issues(issues: list[str]) -> set[str]:
@@ -195,14 +228,16 @@ def _room_ids_from_issues(issues: list[str]) -> set[str]:
 
 def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, str]:
     """Ask the LLM to fix only the rooms mentioned in `issues`, then merge back."""
+    log.info("Surgical repair — {} issue(s): {}", len(issues), issues)
     broken_ids = _room_ids_from_issues(issues)
 
     # Issues with no room reference (e.g. "missing scenario") can't be targeted —
     # fall back to a full regeneration for those; here we repair what we can.
     rooms_to_fix = [r for r in world.rooms if r.id in broken_ids]
     if not rooms_to_fix:
-        # No room-level target: nothing to patch surgically.
+        log.debug("_repair_world: no room-level targets found — skipping surgical repair")
         return world, ""
+    log.debug("_repair_world: targeting rooms {}", [r.id for r in rooms_to_fix])
 
     repairs_payload = [
         {"id": r.id, "issues": [i for i in issues if f"room '{r.id}'" in i]}
@@ -236,11 +271,16 @@ def _repair_world(llm, world: GameWorld, issues: list[str]) -> tuple[GameWorld, 
         world_json=world_json,
         repairs_json=json.dumps(repairs_payload, indent=2),
     )
+    log.info("Calling LLM for surgical room repair — {} room(s)", len(rooms_to_fix))
+    t0 = time.perf_counter()
     response = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
     )
+    log.debug("Repair LLM response in {:.2f}s — {} chars", time.perf_counter() - t0, len(response.content))
+    log.trace("Repair LLM raw response:\n{}", response.content[:2000])
     data = _parse_json(response.content) or {}
     fixed_rooms = _build_rooms(data.get("rooms", []))
+    log.debug("_repair_world: LLM returned {} fixed room(s)", len(fixed_rooms))
 
     # Merge: replace only the rooms that were sent for repair.
     fixed_by_id = {r.id: r for r in fixed_rooms}
@@ -341,6 +381,8 @@ def world_builder_node(state: GameState) -> dict:
     mode = "HARD" if s.hard_mode else "standard"
     max_attempts = s.gen_max_attempts if s.gen_max_attempts > 0 else 1
 
+    log.info("Starting — theme={!r} mode={} max_rooms={} max_attempts={}", state.theme, mode, max_rooms, max_attempts)
+
     attempt_log: list[dict] = []
 
     start = time.perf_counter()
@@ -348,51 +390,47 @@ def world_builder_node(state: GameState) -> dict:
 
     attempts = 1
     issues = _eval_world_structure(world, max_rooms)
+    log.debug("Structural eval after attempt {}: {} issue(s)", attempts, len(issues))
 
     while issues and attempts < max_attempts:
         attempt_log.append({"attempt": attempts, "issues": issues})
-        print(
-            f"[world_builder] attempt {attempts} rejected — "
-            f"{len(issues)} structural issue(s):",
-            flush=True,
-        )
+        log.warning("Attempt {} rejected — {} structural issue(s):", attempts, len(issues))
         for issue in issues:
-            print(f"  • {issue}", flush=True)
+            log.warning("  • {}", issue)
 
         broken_ids = _room_ids_from_issues(issues)
         if broken_ids:
-            print(
-                f"[world_builder] repairing room(s) {sorted(broken_ids)} "
-                f"(attempt {attempts + 1}/{max_attempts})...",
-                flush=True,
+            log.info(
+                "Repairing room(s) {} (attempt {}/{})...",
+                sorted(broken_ids), attempts + 1, max_attempts,
             )
             world, raw = _repair_world(llm, world, issues)
         else:
-            print(
-                f"[world_builder] regenerating (attempt {attempts + 1}/{max_attempts})...",
-                flush=True,
-            )
+            log.info("Regenerating world (attempt {}/{})...", attempts + 1, max_attempts)
             world, raw = _generate_world(llm, state.theme, max_rooms)
 
         attempts += 1
         issues = _eval_world_structure(world, max_rooms)
+        log.debug("Structural eval after attempt {}: {} issue(s)", attempts, len(issues))
 
     elapsed = time.perf_counter() - start
 
     if issues:
-        print(
-            f"[world_builder] WARNING: {len(issues)} issue(s) remain after "
-            f"{attempts} attempt(s):",
-            flush=True,
+        log.warning(
+            "{} issue(s) remain after {} attempt(s):", len(issues), attempts,
         )
         for issue in issues:
-            print(f"  • {issue}", flush=True)
+            log.warning("  • {}", issue)
     else:
-        print(
-            f"[world_builder] generated {mode} world ({len(world.rooms)} room(s)) "
-            f"in {attempts} attempt(s) in {elapsed:.2f}s",
-            flush=True,
+        log.success(
+            "Generated {} world — {} room(s), {} attempt(s), {:.2f}s",
+            mode, len(world.rooms), attempts, elapsed,
         )
+        for room in world.rooms:
+            log.debug(
+                "  Room {!r} — adj={} goal={!r} key_objects={}",
+                room.id, list(room.adjacency.keys()), room.goal[:60] if room.goal else "", room.key_objects,
+            )
 
     messages: list[AIMessage] = []
     for entry in attempt_log:
