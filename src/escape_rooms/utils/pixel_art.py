@@ -27,6 +27,7 @@ import base64
 import hashlib
 import io
 import os
+import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -72,6 +73,11 @@ _SD_STEPS = 25       # steps for good results with the pixel-art-xl LoRA
 
 # Module-level lazy singleton — loaded once, reused across all calls.
 _pipeline = None
+
+# The pipeline's scheduler holds mutable per-call state (step index, sigmas),
+# so concurrent pipe(...) calls from multiple threads corrupt each other's
+# denoising loop. Serialize all local inference through this lock.
+_pipeline_lock = threading.Lock()
 
 
 def _get_pipeline():
@@ -127,15 +133,16 @@ def _generate_via_sd(obj: "WorldObject") -> str:
     seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
-    result = pipe(
-        prompt=_build_prompt(obj),
-        negative_prompt=_NEGATIVE_PROMPT,
-        width=_GEN_SIZE,
-        height=_GEN_SIZE,
-        num_inference_steps=_SD_STEPS,
-        guidance_scale=7.5,
-        generator=generator,
-    )
+    with _pipeline_lock:
+        result = pipe(
+            prompt=_build_prompt(obj),
+            negative_prompt=_NEGATIVE_PROMPT,
+            width=_GEN_SIZE,
+            height=_GEN_SIZE,
+            num_inference_steps=_SD_STEPS,
+            guidance_scale=7.5,
+            generator=generator,
+        )
     img: Image.Image = result.images[0]
     # Nearest-neighbour downscale gives the blocky pixel-art look
     img = img.resize((_OUTPUT_SIZE, _OUTPUT_SIZE), Image.NEAREST)
