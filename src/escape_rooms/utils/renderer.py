@@ -487,10 +487,30 @@ def render_world(
     max_col = max(c for c, _ in grid.values())
     max_row = max(r for _, r in grid.values())
 
+    room_ids = {r.id for r in rooms}
+    objects_by_id = {o.id: o for o in objects}
+
+    def _resolve_room(obj: WorldObject) -> str | None:
+        """Walk an object's location chain until it reaches a room id.
+
+        Objects can be nested inside other objects (location = another
+        object's id); follow that chain to find the room they ultimately
+        belong to. Guards against cycles with a visited set.
+        """
+        seen: set[str] = set()
+        loc = obj.location
+        while loc not in room_ids:
+            if loc in seen or loc not in objects_by_id:
+                return None
+            seen.add(loc)
+            loc = objects_by_id[loc].location
+        return loc
+
     objects_by_room: dict[str, list[WorldObject]] = {r.id: [] for r in rooms}
     for obj in objects:
-        if obj.location in objects_by_room:
-            objects_by_room[obj.location].append(obj)
+        room_id = _resolve_room(obj)
+        if room_id is not None:
+            objects_by_room[room_id].append(obj)
 
     room_list = []
     for room in rooms:
@@ -517,13 +537,16 @@ def render_world(
                 "locked": locked,
             })
 
-        # Place non-door objects naturally: furniture against walls, small/
-        # interactive items near furniture, details filling what's left.
-        non_door_objs = [o for o in room_objs if "door" not in o.id.lower()]
+        # Place all of this room's objects naturally: furniture against walls,
+        # small/interactive items near furniture, details filling what's left.
+        # Objects whose id contains "door" are puzzle objects in their own
+        # right (e.g. a locked cell door with its own code) and are rendered
+        # like everything else; the synthetic nav-doors below are independent
+        # tiles derived from room.adjacency.
         door_tiles = {(d["tileX"], d["tileY"]) for d in doors}
-        placements = _place_objects(non_door_objs, room.id, door_tiles)
+        placements = _place_objects(room_objs, room.id, door_tiles)
         rendered_objects = []
-        for obj in non_door_objs:
+        for obj in room_objs:
             tx, ty = placements.get(obj.id, (ROOM_W // 2, ROOM_H // 2))
             rendered_objects.append({
                 "id": obj.id,
