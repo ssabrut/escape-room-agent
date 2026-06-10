@@ -8,6 +8,17 @@ the first call and kept in memory for subsequent calls. Model weights are
 
 One-time setup:
     pip install torch torchvision diffusers transformers accelerate sentencepiece peft
+
+Distributed generation:
+    Sprite jobs are independent, so they can be fanned out across this
+    machine plus one or more remote workers (see sprite_worker.py) running
+    the same pipeline on other machines. Set SPRITE_WORKERS to a comma
+    separated list of worker base URLs, e.g.:
+
+        SPRITE_WORKERS=http://192.168.1.50:8001
+
+    Jobs are split round-robin across the local pipeline and every
+    configured remote worker, generated concurrently.
 """
 
 from __future__ import annotations
@@ -15,15 +26,24 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+import requests
+from dotenv import load_dotenv
 from PIL import Image
 from src.escape_rooms.utils.logging import get_node_logger
 
 if TYPE_CHECKING:
     from src.escape_rooms.state.schema import WorldObject
 
+load_dotenv()
 log = get_node_logger("pixel_art")
+
+# Comma-separated base URLs of remote sprite workers (see sprite_worker.py).
+_REMOTE_WORKERS = [u.strip().rstrip("/") for u in os.getenv("SPRITE_WORKERS", "").split(",") if u.strip()]
+_REMOTE_TIMEOUT = 300  # seconds — SDXL generation can take a while
 
 # ---------------------------------------------------------------------------
 # SD pixel-art item/object backend
@@ -108,6 +128,19 @@ def _generate_via_sd(obj: "WorldObject") -> str:
     return b64
 
 
+def _generate_via_remote(worker_url: str, obj: "WorldObject") -> str:
+    desc = obj.description.strip() if obj.description else obj.id.replace("_", " ")
+    resp = requests.post(
+        f"{worker_url}/sprite",
+        json={"id": obj.id, "description": desc},
+        timeout=_REMOTE_TIMEOUT,
+    )
+    resp.raise_for_status()
+    b64 = resp.json()["sprite"]
+    log.debug("Remote sprite generated for {!r} via {} ({} bytes b64)", obj.id, worker_url, len(b64))
+    return b64
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -122,11 +155,40 @@ def generate_object_sprite(obj: "WorldObject") -> str:
 
 
 def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
-    """Return a mapping of object_id → base64 PNG for every object in *objects*."""
+    """Return a mapping of object_id → base64 PNG for every object in *objects*.
+
+    If SPRITE_WORKERS lists one or more remote workers (see sprite_worker.py),
+    the batch of objects is split round-robin between this machine's local
+    pipeline and each remote worker, generated concurrently — each machine
+    still generates its share sequentially on its own pipeline, but the
+    shares run in parallel with each other.
+    """
     log.info("Generating sprites for {} object(s)...", len(objects))
-    sprites = {}
-    for obj in objects:
-        log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
-        sprites[obj.id] = generate_object_sprite(obj)
+
+    if not _REMOTE_WORKERS or len(objects) <= 1:
+        sprites = {}
+        for obj in objects:
+            log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
+            sprites[obj.id] = generate_object_sprite(obj)
+        log.info("Sprite generation complete — {} sprite(s)", len(sprites))
+        return sprites
+
+    # One slot for the local pipeline, one per remote worker.
+    slots: list = [generate_object_sprite] + [
+        (lambda obj, _url=url: _generate_via_remote(_url, obj)) for url in _REMOTE_WORKERS
+    ]
+    log.info("Distributing sprite generation across {} machine(s) (1 local + {} remote)", len(slots), len(_REMOTE_WORKERS))
+
+    sprites: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(slots)) as pool:
+        futures = {
+            pool.submit(slots[i % len(slots)], obj): obj
+            for i, obj in enumerate(objects)
+        }
+        for future in futures:
+            obj = futures[future]
+            sprites[obj.id] = future.result()
+            log.trace("  Generated sprite for {!r}", obj.id)
+
     log.info("Sprite generation complete — {} sprite(s)", len(sprites))
     return sprites

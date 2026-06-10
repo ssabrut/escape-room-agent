@@ -39,6 +39,7 @@ langgraph-checkpoint==4.1.1
 langgraph-prebuilt==1.1.0
 langgraph-sdk==0.3.15
 langsmith==0.8.5
+loguru==0.7.3
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
@@ -52,6 +53,7 @@ orjson==3.11.9
 ormsgpack==1.12.2
 packaging==26.0
 pathspec==1.1.1
+peft==0.19.1
 pillow==12.2.0
 platformdirs==4.9.6
 prompt_toolkit==3.0.52

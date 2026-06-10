@@ -37,6 +37,7 @@ class GenerateRequest(BaseModel):
     theme: str = Field(..., description=f"Escape room theme. One of: {THEMES}")
     hard_mode: bool = Field(False, description="Multi-room world with deep puzzle chains")
     num_rooms: int = Field(4, ge=2, le=10, description="Number of rooms (hard mode only)")
+    solve: bool = Field(False, description="Run the LLM solver after generation")
 
 
 class SolverLog(BaseModel):
@@ -88,9 +89,11 @@ def generate(req: GenerateRequest) -> GenerateResponse:
     if world is None:
         raise HTTPException(status_code=500, detail="puzzle_builder produced no world")
 
-    state = state.model_copy(update={"world": world})
-    solver_update = solver_node(state)
-    solver_result = solver_update.get("solver_result")
+    solver_result = None
+    if req.solve:
+        state = state.model_copy(update={"world": world})
+        solver_update = solver_node(state)
+        solver_result = solver_update.get("solver_result")
 
     solver_log = None
     if solver_result is not None:

@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-10 10:43:12 WIB
+
+### What changed
+- Pixel-art sprite generation can now be distributed across multiple machines: a new standalone FastAPI worker (`sprite_worker.py`) runs the SDXL pipeline on a remote machine and exposes a `/sprite` endpoint. The main process splits a batch of sprite jobs round-robin between its own local pipeline and any workers listed in the new `SPRITE_WORKERS` env var, generating all shares concurrently.
+- The `/generate` API endpoint now only runs the LLM solver when the new `solve` request flag is explicitly set to true; previously every generation request ran the solver and returned its trace, adding latency to plain world-generation calls.
+
+### Why
+SDXL sprite generation for a full world's objects was slow when run sequentially on one machine; fanning jobs out to additional machines running `sprite_worker.py` cuts wall-clock time roughly in proportion to the number of workers. Making the solver opt-in via `solve` lets callers that only need a generated world skip the extra solver pass and its cost.
+
+---
+
 ## 2026-06-09 09:32:17 WIB
 
 ### What changed
