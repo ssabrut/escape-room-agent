@@ -126,14 +126,22 @@ _NEGATIVE_PROMPT = (
 )
 
 
-def _generate_via_sd(obj: "WorldObject") -> str:
+def _is_blank(img: Image.Image) -> bool:
+    """True if *img* is a single solid color (the NaN-VAE-decode failure mode on MPS)."""
+    extrema = img.convert("RGB").getextrema()
+    return all(lo == hi for lo, hi in extrema)
+
+
+def _run_pipeline(obj: "WorldObject") -> Image.Image:
     import torch
 
-    pipe = _get_pipeline()
-    seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
-    generator = torch.Generator(device="cpu").manual_seed(seed)
+    global _pipeline
 
-    with _pipeline_lock:
+    seed = int(hashlib.md5(obj.id.encode()).hexdigest(), 16) % (2**32)
+
+    def run_once() -> Image.Image:
+        pipe = _get_pipeline()
+        generator = torch.Generator(device="cpu").manual_seed(seed)
         result = pipe(
             prompt=_build_prompt(obj),
             negative_prompt=_NEGATIVE_PROMPT,
@@ -143,7 +151,24 @@ def _generate_via_sd(obj: "WorldObject") -> str:
             guidance_scale=7.5,
             generator=generator,
         )
-    img: Image.Image = result.images[0]
+        return result.images[0]
+
+    with _pipeline_lock:
+        img = run_once()
+        if _is_blank(img):
+            # MPS occasionally degrades into NaN VAE output after the pipeline
+            # has been used once; a fresh pipeline instance recovers.
+            log.warning("Blank sprite for {!r} — reloading pipeline and retrying", obj.id)
+            _pipeline = None
+            img = run_once()
+            if _is_blank(img):
+                log.error("Sprite for {!r} still blank after pipeline reload", obj.id)
+
+    return img
+
+
+def _generate_via_sd(obj: "WorldObject") -> str:
+    img = _run_pipeline(obj)
     # Nearest-neighbour downscale gives the blocky pixel-art look
     img = img.resize((_OUTPUT_SIZE, _OUTPUT_SIZE), Image.NEAREST)
     buf = io.BytesIO()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from collections import deque
 from typing import Any
 
@@ -301,27 +302,164 @@ def _sprite_for(obj_id: str) -> str:
     return "item"  # generic fallback
 
 
-# Wall-hugging slots for non-door objects: walk clockwise around the interior
-# perimeter (1-tile inset from the door positions), then fill the center.
-def _perimeter_slots(w: int, h: int) -> list[tuple[int, int]]:
-    slots: list[tuple[int, int]] = []
-    # Top row (left to right, skip corners used by doors)
-    for x in range(1, w - 1):
-        slots.append((x, 1))
-    # Right column (top to bottom)
-    for y in range(1, h - 1):
-        slots.append((w - 2, y))
-    # Bottom row (right to left)
-    for x in range(w - 2, 0, -1):
-        slots.append((x, h - 2))
-    # Left column (bottom to top)
-    for y in range(h - 2, 0, -1):
-        slots.append((1, y))
-    # Center fill
+# Placement category per sprite — drives which slot pool an object draws from.
+# "wall": large furniture anchored to a wall tile (not a corner, not a door tile).
+# "wall_decor": mounted on a wall tile, can share a wall with "wall" furniture.
+# "floor": floor coverings, centered in the room.
+# "small": interactive/portable items, placed in interior tiles near furniture.
+# "detail": atmospheric overlays, lowest priority, fill whatever is left.
+_PLACEMENT_CATEGORY: dict[str, str] = {
+    "chest": "wall",
+    "dresser": "wall",
+    "bookshelf": "wall",
+    "table": "wall",
+    "bed": "wall",
+    "sofa": "wall",
+    "altar": "wall",
+    "machine": "wall",
+    "barrel": "wall",
+    "mirror": "wall_decor",
+    "clock": "wall_decor",
+    "painting": "wall_decor",
+    "window": "wall_decor",
+    "rug": "floor",
+    "chair": "small",
+    "note": "small",
+    "key": "small",
+    "lever": "small",
+    "artifact": "small",
+    "light": "small",
+    "plant": "small",
+    "item": "small",
+    "floor_detail": "detail",
+    "wall_detail": "detail",
+}
+
+
+def _placement_category(sprite: str) -> str:
+    return _PLACEMENT_CATEGORY.get(sprite, "small")
+
+
+def _wall_tiles(w: int, h: int, door_tiles: set[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Interior wall-adjacent tiles (1-tile inset), excluding corners and door tiles."""
+    tiles: list[tuple[int, int]] = []
+    for x in range(2, w - 2):
+        tiles.append((x, 1))
+        tiles.append((x, h - 2))
     for y in range(2, h - 2):
-        for x in range(2, w - 2):
-            slots.append((x, y))
-    return slots
+        tiles.append((1, y))
+        tiles.append((w - 2, y))
+    return [t for t in tiles if t not in door_tiles]
+
+
+def _floor_tiles(w: int, h: int) -> list[tuple[int, int]]:
+    """Center tiles, away from walls."""
+    tiles: list[tuple[int, int]] = []
+    for y in range(3, h - 3):
+        for x in range(3, w - 3):
+            tiles.append((x, y))
+    return tiles
+
+
+def _interior_tiles(w: int, h: int, door_tiles: set[tuple[int, int]]) -> list[tuple[int, int]]:
+    """All non-wall interior tiles, excluding door tiles."""
+    tiles: list[tuple[int, int]] = []
+    for y in range(1, h - 1):
+        for x in range(1, w - 1):
+            tiles.append((x, y))
+    return [t for t in tiles if t not in door_tiles]
+
+
+def _adjacent_tiles(tile: tuple[int, int]) -> list[tuple[int, int]]:
+    x, y = tile
+    return [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+
+
+def _place_objects(
+    objs: list[WorldObject],
+    room_id: str,
+    door_tiles: set[tuple[int, int]],
+    w: int = ROOM_W,
+    h: int = ROOM_H,
+) -> dict[str, tuple[int, int]]:
+    """Assign each object a (tileX, tileY), grouped by placement category.
+
+    Large furniture anchors to wall tiles first; small/interactive items
+    prefer a tile next to a placed furniture piece (so they read as "on" or
+    "beside" it); leftover items and atmospheric details fill whatever floor
+    tiles remain. Each room gets its own seeded shuffle so layouts vary
+    between rooms but stay stable across re-renders of the same world.
+    """
+    rng = random.Random(room_id)
+
+    wall_slots = _wall_tiles(w, h, door_tiles)
+    floor_slots = _floor_tiles(w, h)
+    interior_slots = _interior_tiles(w, h, door_tiles)
+    rng.shuffle(wall_slots)
+    rng.shuffle(floor_slots)
+    rng.shuffle(interior_slots)
+
+    occupied: set[tuple[int, int]] = set()
+    placements: dict[str, tuple[int, int]] = {}
+    furniture_tiles: list[tuple[int, int]] = []
+
+    by_category: dict[str, list[WorldObject]] = {"wall": [], "wall_decor": [], "floor": [], "small": [], "detail": []}
+    for obj in objs:
+        by_category[_placement_category(_sprite_for(obj.id))].append(obj)
+
+    def take(pool: list[tuple[int, int]]) -> tuple[int, int] | None:
+        while pool:
+            tile = pool.pop()
+            if tile not in occupied:
+                occupied.add(tile)
+                return tile
+        return None
+
+    # Large furniture and wall decor anchor to the walls first.
+    for obj in by_category["wall"] + by_category["wall_decor"]:
+        tile = take(wall_slots) or take(interior_slots)
+        if tile is None:
+            continue
+        placements[obj.id] = tile
+        if _placement_category(_sprite_for(obj.id)) == "wall":
+            furniture_tiles.append(tile)
+
+    # Floor coverings (rugs) take center tiles.
+    for obj in by_category["floor"]:
+        tile = take(floor_slots) or take(interior_slots)
+        if tile is None:
+            continue
+        placements[obj.id] = tile
+
+    # Small/interactive items prefer a tile beside a furniture piece.
+    rng.shuffle(furniture_tiles)
+    for obj in by_category["small"]:
+        tile = None
+        for anchor in furniture_tiles:
+            for candidate in _adjacent_tiles(anchor):
+                if candidate in occupied or candidate not in interior_slots:
+                    continue
+                interior_slots.remove(candidate)
+                occupied.add(candidate)
+                tile = candidate
+                break
+            if tile:
+                break
+        if tile is None:
+            tile = take(interior_slots) or take(wall_slots)
+        if tile is None:
+            continue
+        placements[obj.id] = tile
+
+    # Atmospheric details fill whatever is left, allowing overlap as a last resort.
+    leftover = interior_slots + floor_slots + wall_slots
+    for obj in by_category["detail"]:
+        tile = take(leftover)
+        if tile is None:
+            tile = (w // 2, h // 2)
+        placements[obj.id] = tile
+
+    return placements
 
 
 def render_world(
@@ -354,8 +492,6 @@ def render_world(
         if obj.location in objects_by_room:
             objects_by_room[obj.location].append(obj)
 
-    slots = _perimeter_slots(ROOM_W, ROOM_H)
-
     room_list = []
     for room in rooms:
         col, row = grid[room.id]
@@ -381,12 +517,14 @@ def render_world(
                 "locked": locked,
             })
 
-        # Place non-door objects at perimeter/center slots.
+        # Place non-door objects naturally: furniture against walls, small/
+        # interactive items near furniture, details filling what's left.
         non_door_objs = [o for o in room_objs if "door" not in o.id.lower()]
-        slot_iter = iter(slots)
+        door_tiles = {(d["tileX"], d["tileY"]) for d in doors}
+        placements = _place_objects(non_door_objs, room.id, door_tiles)
         rendered_objects = []
         for obj in non_door_objs:
-            tx, ty = next(slot_iter, (ROOM_W // 2, ROOM_H // 2))
+            tx, ty = placements.get(obj.id, (ROOM_W // 2, ROOM_H // 2))
             rendered_objects.append({
                 "id": obj.id,
                 "sprite": _sprite_for(obj.id),
