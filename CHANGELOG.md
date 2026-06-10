@@ -2,6 +2,16 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-10 14:55:40 WIB
+
+### What changed
+- Sprite generation can now report progress as it runs: `generate_world_sprites` accepts an optional progress callback that fires after each sprite finishes, reporting how many sprites are done out of the total and which object was just generated.
+
+### Why
+Lets callers stream live progress updates during what can be a long-running sprite generation batch, instead of only seeing a result once the whole batch completes.
+
+---
+
 ## 2026-06-10 10:43:12 WIB
 
 ### What changed

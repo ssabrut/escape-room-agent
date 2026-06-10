@@ -31,7 +31,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import requests
 from diffusers.utils import logging as diffusers_logging
@@ -237,7 +237,10 @@ def generate_object_sprite(obj: "WorldObject") -> str:
     return _generate_via_sd(obj)
 
 
-def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
+def generate_world_sprites(
+    objects: list["WorldObject"],
+    on_progress: "Callable[[int, int, str], None] | None" = None,
+) -> dict[str, str]:
     """Return a mapping of object_id → base64 PNG for every object in *objects*.
 
     If SPRITE_WORKERS lists one or more remote workers (see sprite_worker.py),
@@ -245,6 +248,9 @@ def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
     pipeline and each remote worker, generated concurrently — each machine
     still generates its share sequentially on its own pipeline, but the
     shares run in parallel with each other.
+
+    If *on_progress* is given, it is called as ``on_progress(done, total, object_id)``
+    after each sprite finishes, so callers can stream progress updates.
     """
     total = len(objects)
     log.info("Generating sprites for {} object(s)...", total)
@@ -259,6 +265,8 @@ def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
                 elapsed = time.monotonic() - start
                 log.info("  [{}/{}] Generated sprite for {!r} in {:.1f}s", i, total, obj.id, elapsed)
                 pbar.update(1)
+                if on_progress:
+                    on_progress(i, total, obj.id)
         log.info("Sprite generation complete — {} sprite(s)", len(sprites))
         return sprites
 
@@ -282,6 +290,8 @@ def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
                 elapsed = time.monotonic() - batch_start
                 log.info("  [{}/{}] Generated sprite for {!r} (batch elapsed {:.1f}s)", i, total, obj.id, elapsed)
                 pbar.update(1)
+                if on_progress:
+                    on_progress(i, total, obj.id)
 
     log.info("Sprite generation complete — {} sprite(s)", len(sprites))
     return sprites
