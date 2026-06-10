@@ -27,12 +27,17 @@ import base64
 import hashlib
 import io
 import os
+import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import requests
+from diffusers.utils import logging as diffusers_logging
 from dotenv import load_dotenv
 from PIL import Image
+from tqdm import tqdm
+
 from src.escape_rooms.utils.logging import get_node_logger
 
 if TYPE_CHECKING:
@@ -40,6 +45,17 @@ if TYPE_CHECKING:
 
 load_dotenv()
 log = get_node_logger("pixel_art")
+
+# Silence the "input was truncated because CLIP can only handle ..." notice —
+# our prompts are intentionally long and the truncation is expected/harmless.
+diffusers_logging.set_verbosity_error()
+
+# Silence diffusers' upcast_vae FutureWarning (deprecated kwarg, not actionable here).
+warnings.filterwarnings(
+    "ignore",
+    message=r"`upcast_vae` is deprecated.*",
+    category=FutureWarning,
+)
 
 # Comma-separated base URLs of remote sprite workers (see sprite_worker.py).
 _REMOTE_WORKERS = [u.strip().rstrip("/") for u in os.getenv("SPRITE_WORKERS", "").split(",") if u.strip()]
@@ -80,6 +96,8 @@ def _get_pipeline():
         pipe = pipe.to(device)
     pipe.load_lora_weights(_SD_MODEL)
     pipe.set_progress_bar_config(disable=True)
+    pipe.enable_attention_slicing()
+    pipe.enable_vae_slicing()
     _pipeline = pipe
     log.success("SD pipeline ready on {}", device)
     return _pipeline
@@ -163,13 +181,19 @@ def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
     still generates its share sequentially on its own pipeline, but the
     shares run in parallel with each other.
     """
-    log.info("Generating sprites for {} object(s)...", len(objects))
+    total = len(objects)
+    log.info("Generating sprites for {} object(s)...", total)
 
-    if not _REMOTE_WORKERS or len(objects) <= 1:
+    if not _REMOTE_WORKERS or total <= 1:
         sprites = {}
-        for obj in objects:
-            log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
-            sprites[obj.id] = generate_object_sprite(obj)
+        with tqdm(total=total, desc="Sprites", unit="obj") as pbar:
+            for i, obj in enumerate(objects, start=1):
+                log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
+                start = time.monotonic()
+                sprites[obj.id] = generate_object_sprite(obj)
+                elapsed = time.monotonic() - start
+                log.info("  [{}/{}] Generated sprite for {!r} in {:.1f}s", i, total, obj.id, elapsed)
+                pbar.update(1)
         log.info("Sprite generation complete — {} sprite(s)", len(sprites))
         return sprites
 
@@ -181,14 +205,18 @@ def generate_world_sprites(objects: list["WorldObject"]) -> dict[str, str]:
 
     sprites: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=len(slots)) as pool:
+        batch_start = time.monotonic()
         futures = {
             pool.submit(slots[i % len(slots)], obj): obj
             for i, obj in enumerate(objects)
         }
-        for future in futures:
-            obj = futures[future]
-            sprites[obj.id] = future.result()
-            log.trace("  Generated sprite for {!r}", obj.id)
+        with tqdm(total=total, desc="Sprites", unit="obj") as pbar:
+            for i, future in enumerate(futures, start=1):
+                obj = futures[future]
+                sprites[obj.id] = future.result()
+                elapsed = time.monotonic() - batch_start
+                log.info("  [{}/{}] Generated sprite for {!r} (batch elapsed {:.1f}s)", i, total, obj.id, elapsed)
+                pbar.update(1)
 
     log.info("Sprite generation complete — {} sprite(s)", len(sprites))
     return sprites
