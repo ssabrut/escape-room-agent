@@ -292,31 +292,29 @@ def _room_of(obj: WorldObject, by_id: dict[str, WorldObject], room_ids: set[str]
     return None
 
 
-def _graph_spec(world: GameWorld) -> str:
+def _room_graph_spec(world: GameWorld, room: Room) -> str:
     by_id = {o.id: o for o in world.objects}
     room_ids = {r.id for r in world.rooms}
-    lines: list[str] = []
-    for room in world.rooms:
-        lines.append(f'Room "{room.id}" — goal: {room.goal}')
-        for obj in world.objects:
-            if _room_of(obj, by_id, room_ids) != room.id:
-                continue
-            role = classify_role(obj, world)
-            parts = [f"  - {obj.id} [{role}]"]
-            if obj.location not in room_ids:
-                parts.append(f"hidden-inside={obj.location}")
-            if obj.requires_tool:
-                parts.append(f"unlocked-by={obj.requires_tool}")
-            if obj.requires_code:
-                parts.append("unlocked-by=code")
-            if obj.requires_power:
-                parts.append(f"unlocked-by=power({obj.requires_power})")
-            if obj.contains_info:
-                parts.append("reveals=code")
-            if obj.fuses:
-                labels = ",".join(obj.fuses.keys())
-                parts.append(f"controls-power({labels})")
-            lines.append(" | ".join(parts))
+    lines: list[str] = [f'Room "{room.id}" — goal: {room.goal}']
+    for obj in world.objects:
+        if _room_of(obj, by_id, room_ids) != room.id:
+            continue
+        role = classify_role(obj, world)
+        parts = [f"  - {obj.id} [{role}]"]
+        if obj.location not in room_ids:
+            parts.append(f"hidden-inside={obj.location}")
+        if obj.requires_tool:
+            parts.append(f"unlocked-by={obj.requires_tool}")
+        if obj.requires_code:
+            parts.append("unlocked-by=code")
+        if obj.requires_power:
+            parts.append(f"unlocked-by=power({obj.requires_power})")
+        if obj.contains_info:
+            parts.append("reveals=code")
+        if obj.fuses:
+            labels = ",".join(obj.fuses.keys())
+            parts.append(f"controls-power({labels})")
+        lines.append(" | ".join(parts))
     return "\n".join(lines)
 
 
@@ -387,36 +385,59 @@ def _parse_theming_response(text: str) -> dict[str, dict[str, str]]:
     }
 
 
+def _theme_room(world: GameWorld, room: Room, theme: str, llm) -> dict[str, dict[str, str]]:
+    """Run one theming LLM call scoped to a single room's object graph."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from src.escape_rooms.prompts import load_prompt
+
+    system = load_prompt("puzzle_builder", "system")
+    prompt = load_prompt("puzzle_builder", "theming").format(
+        theme=theme,
+        scenario=world.scenario,
+        objective=world.objective,
+        graph=_room_graph_spec(world, room),
+    )
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=prompt)])
+    return _parse_theming_response(resp.content)
+
+
 def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
-    """Fill object names and descriptions from an LLM theming pass, with code fallbacks."""
+    """Fill object names and descriptions from an LLM theming pass, with code fallbacks.
+
+    One theming call is fired per room, concurrently — each call's prompt only
+    carries that room's object graph, so per-call output is smaller and rooms
+    theme in parallel instead of one large sequential call for the whole world.
+    """
     log.info("apply_theming: theme={!r}  {} object(s) to theme", theme, len(world.objects))
     names: dict[str, str] = {}  # original_id -> creative_name
     descs: dict[str, str] = {}
     if llm is not None:
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage
+        from concurrent.futures import ThreadPoolExecutor
 
-            from src.escape_rooms.prompts import load_prompt
-
-            system = load_prompt("puzzle_builder", "system")
-            prompt = load_prompt("puzzle_builder", "theming").format(
-                theme=theme,
-                scenario=world.scenario,
-                objective=world.objective,
-                graph=_graph_spec(world),
-            )
-            resp = llm.invoke(
-                [SystemMessage(content=system), HumanMessage(content=prompt)]
-            )
-            parsed = _parse_theming_response(resp.content)
-            names = parsed.get("names", {})
-            descs = parsed.get("descriptions", {})
-            log.debug("apply_theming: LLM returned {} name(s) and {} description(s)", len(names), len(descs))
-            log.trace("apply_theming names: {}", names)
-        except Exception as exc:
-            log.warning("apply_theming: LLM theming failed ({}) — using fallback descriptions", exc)
-            names = {}
-            descs = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(world.rooms))) as pool:
+            futures = {
+                pool.submit(_theme_room, world, room, theme, llm): room
+                for room in world.rooms
+            }
+            for future, room in futures.items():
+                try:
+                    parsed = future.result()
+                except Exception as exc:
+                    log.warning(
+                        "apply_theming: LLM theming failed for room {!r} ({}) — using fallback descriptions",
+                        room.id, exc,
+                    )
+                    continue
+                room_names = parsed.get("names", {})
+                room_descs = parsed.get("descriptions", {})
+                names.update(room_names)
+                descs.update(room_descs)
+                log.debug(
+                    "apply_theming: room {!r} -> {} name(s), {} description(s)",
+                    room.id, len(room_names), len(room_descs),
+                )
+        log.trace("apply_theming names: {}", names)
 
     # Build old_id -> new_id mapping for updating references.
     # Slugify LLM names to snake_case so they remain valid single-token action

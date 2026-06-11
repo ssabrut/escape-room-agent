@@ -2,6 +2,16 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 10:55:24 WIB
+
+### What changed
+- World theming now runs one LLM call per room, concurrently, instead of a single sequential call covering the whole world's object graph. Each room's call only sees that room's own objects, dependencies, and goal; if a room's theming call fails, only that room falls back to default descriptions instead of the entire world losing its themed names/descriptions.
+
+### Why
+A single world-wide theming prompt grew with the number of rooms and objects, and any failure discarded all themed names/descriptions for the whole world. Scoping each call to one room keeps prompts smaller and lets rooms theme in parallel, while isolating failures to the affected room.
+
+---
+
 ## 2026-06-11 10:31:27 WIB
 
 ### What changed
