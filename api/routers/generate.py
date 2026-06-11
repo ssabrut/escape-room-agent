@@ -6,11 +6,11 @@ import queue
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
@@ -175,14 +175,14 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     return payload
 
 
-def _stream_generate(req: GenerateRequest) -> Iterator[bytes]:
+def _stream_pipeline(run: "Callable[[queue.Queue[dict]], dict]") -> Iterator[bytes]:
     events: "queue.Queue[dict]" = queue.Queue()
     result: dict = {}
     error: dict = {}
 
     def worker() -> None:
         try:
-            result["payload"] = _run_pipeline(req, events)
+            result["payload"] = run(events)
         except Exception as exc:  # noqa: BLE001 - surface any failure to the client
             error["detail"] = str(exc)
         finally:
@@ -215,4 +215,76 @@ def generate(req: GenerateRequest) -> StreamingResponse:
             detail=f"Unknown theme {req.theme!r}. Valid themes: {THEMES}",
         )
 
-    return StreamingResponse(_stream_generate(req), media_type="application/x-ndjson")
+    return StreamingResponse(_stream_pipeline(lambda emit: _run_pipeline(req, emit)), media_type="application/x-ndjson")
+
+
+class SolveRequest(BaseModel):
+    world: dict = Field(..., description="A previously generated world (the 'world' field of a /generate response)")
+
+
+class SolveResponse(BaseModel):
+    render: dict
+    solution_path: list[str]
+    solver: SolverLog | None = None
+
+
+def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
+    """Run only the solver against an already-built world, streaming ticks."""
+    try:
+        world = GameWorld.model_validate(req.world)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid world: {exc}") from exc
+
+    if not world.rooms:
+        raise ValueError("World has no rooms")
+    if not world.win_condition.object_id:
+        raise ValueError("World has no win condition — cannot solve")
+
+    state = GameState(theme=world.scenario or "mystery", world=world)
+
+    emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
+
+    last_render: dict | None = None
+
+    def on_tick(record: dict, ps: PartyState, tick_world: GameWorld) -> None:
+        nonlocal last_render
+        last_render = render_world(
+            rooms=tick_world.rooms,
+            objects=tick_world.objects,
+            current_room=ps.current_room,
+            inventory=ps.inventory,
+            object_states=ps.object_states,
+            tick=ps.tick,
+        )
+        emit.put({"type": "tick", "render": last_render, **record})
+
+    solver_update = solver_node(state, on_tick=on_tick)
+    solver_result = solver_update.get("solver_result")
+
+    solver_log = None
+    if solver_result is not None:
+        solver_log = SolverLog(
+            won=solver_result.won,
+            ticks=solver_result.ticks,
+            optimal=solver_result.optimal,
+            reward=solver_result.reward,
+            efficiency=solver_result.efficiency,
+            wasted=solver_result.wasted,
+            history=solver_result.history,
+        )
+
+    response = SolveResponse(
+        render=last_render or render_world(
+            rooms=world.rooms,
+            objects=world.objects,
+            current_room=world.rooms[0].id if world.rooms else "",
+        ),
+        solution_path=world.solution_path or [],
+        solver=solver_log,
+    )
+    return response.model_dump()
+
+
+@router.post("/solve")
+def solve(req: SolveRequest) -> StreamingResponse:
+    return StreamingResponse(_stream_pipeline(lambda emit: _run_solve_pipeline(req, emit)), media_type="application/x-ndjson")

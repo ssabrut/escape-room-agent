@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 14:53:50 WIB
+
+### What changed
+- Added a new `/generate/solve` API endpoint that takes a previously generated world (the `world` field from a `/generate` response) and runs only the solver against it, streaming live per-tick progress and a final render plus solver log as newline-delimited JSON — without re-running world or puzzle generation.
+- The streaming machinery behind `/generate` was generalized into a reusable `_stream_pipeline` helper that wraps any pipeline function emitting progress events, so both `/generate` and the new `/generate/solve` share the same NDJSON streaming behavior.
+
+### Why
+Lets a client re-solve or re-verify an already-generated world (e.g. after editing it) without paying the cost of regenerating the world and puzzle from scratch, while reusing the existing live progress-streaming infrastructure.
+
+---
+
 ## 2026-06-11 13:35:57 WIB
 
 ### What changed
