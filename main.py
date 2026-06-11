@@ -62,6 +62,12 @@ API_RUNS_DIR = Path("api_runs")
 NODE_NAMES = (
     "world_builder",
     "puzzle_builder",
+    "solver",
+)
+# Subset runnable standalone via --node (backed by _node_registry()).
+RUNNABLE_NODE_NAMES = (
+    "world_builder",
+    "puzzle_builder",
 )
 
 
@@ -165,10 +171,16 @@ def _write_node_log(node: str, update: dict, root: Path = LOG_DIR) -> Path:
             json.dumps(attempt_log, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+    debug_log = update.get("_solver_debug_log")
+    if debug_log:
+        (node_dir / "debug.json").write_text(
+            json.dumps(debug_log, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+
     parsed = {
         k: _jsonable(v)
         for k, v in update.items()
-        if k not in ("messages", "_attempt_log")
+        if k not in ("messages", "_attempt_log", "_solver_debug_log")
     }
     (node_dir / "output.json").write_text(
         json.dumps(parsed, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -360,9 +372,13 @@ def run(
         world = result.get("world")
         if world:
             t0 = time.perf_counter()
-            solver_result = solver_node(state.model_copy(update={"world": world})).get("solver_result")
+            solver_update = solver_node(state.model_copy(update={"world": world}))
+            solver_result = solver_update.get("solver_result")
             node_times["solver"] = time.perf_counter() - t0
             _print_timing_table({"solver": node_times["solver"]})
+
+            node_dir = _write_node_log("solver", solver_update)
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt + {node_dir}/debug.json")
 
     world = result.get("world")
     if world:
@@ -682,11 +698,23 @@ def _write_bfs_path(world, path: Path) -> str:
     return f" + {path.name}"
 
 
+def _write_solver_result(solver_result, path: Path) -> str:
+    """Dump a SolverResult to JSON. Returns a short suffix for the console line."""
+    if solver_result is None:
+        return ""
+    path.write_text(
+        json.dumps(_jsonable(solver_result), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return f" + {path.name}"
+
+
 def smoke(
     n: int,
     log_nodes: list[str] | None = None,
     trace_eval: bool = False,
     theme: str = "pirate",
+    solve: bool = False,
 ) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -718,13 +746,32 @@ def smoke(
             bfs_note = _write_bfs_path(
                 result.get("world"), run_dir / f"run_{i:03d}.bfs_path.txt"
             )
+
+            solver_result = None
+            if solve and result.get("world"):
+                from src.escape_rooms.nodes.solver import solver_node
+                from src.escape_rooms.state import GameState as _GS
+
+                t0 = time.perf_counter()
+                solver_update = solver_node(_GS(theme=theme, world=result["world"]))
+                node_times["solver"] = time.perf_counter() - t0
+                solver_result = solver_update.get("solver_result")
+
+                node_dir = _write_node_log(
+                    "solver", solver_update, root=log_root or (run_dir / f"run_{i:03d}_logs")
+                )
+                print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt + {node_dir}/debug.json")
+
+            solver_note = _write_solver_result(
+                solver_result, run_dir / f"run_{i:03d}.solver.json"
+            )
             api_note = _write_api_payload(
-                result.get("world"), run_dir / f"run_{i:03d}.api.json"
+                result.get("world"), run_dir / f"run_{i:03d}.api.json", solver_result
             )
             total_elapsed = sum(node_times.values())
             print(
                 f"done in {total_elapsed:.1f}s → "
-                f"{out_file.name}{world_note}{bench_note}{bfs_note}{api_note}"
+                f"{out_file.name}{world_note}{bench_note}{bfs_note}{solver_note}{api_note}"
             )
             _print_timing_table(node_times)
 
@@ -847,16 +894,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--node",
-        choices=list(NODE_NAMES),
+        choices=list(RUNNABLE_NODE_NAMES),
         metavar="NAME",
         help="Run a SINGLE node independently against saved upstream state "
         "(see --from). world_builder runs from --theme alone. Output is written "
-        "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
+        "to logs/<node>/output.json. Choices: " + ", ".join(RUNNABLE_NODE_NAMES),
     )
     parser.add_argument(
         "--solve",
         action="store_true",
-        help="Run the LLM solver after generation and print its result.",
+        help="Run the LLM solver after generation. With --smoke, runs the solver "
+        "for each generated world and writes run_<NNN>.solver.json.",
     )
     parser.add_argument(
         "--from",
@@ -901,6 +949,7 @@ if __name__ == "__main__":
             log_nodes=log_nodes,
             trace_eval=args.trace_eval,
             theme=theme,
+            solve=args.solve,
         )
     else:
         run(

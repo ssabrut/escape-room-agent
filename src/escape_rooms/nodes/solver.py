@@ -29,7 +29,8 @@ def solver_node(state: GameState) -> dict:
     )
 
     trace: list[str] = []
-    result, optimal = solve_world(world, trace=trace)
+    debug_log: list[dict] = []
+    result, optimal = solve_world(world, trace=trace, debug_log=debug_log)
     score = objective(world, result, optimal_len=len(optimal))
 
     verdict = "ESCAPED" if score["won"] else "FAILED"
@@ -58,4 +59,5 @@ def solver_node(state: GameState) -> dict:
                         f"optimal={score['optimal']} reward={score['reward']}"
             )
         ],
+        "_solver_debug_log": debug_log,
     }

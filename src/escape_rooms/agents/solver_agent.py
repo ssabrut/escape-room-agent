@@ -296,20 +296,24 @@ def _load_world(path: Path) -> GameWorld:
 
 def solve_world(
     world: GameWorld, role: str = "solver", trace: list | None = None,
-    strategy: str = "cognitive",
+    strategy: str = "cognitive", debug_log: list[dict] | None = None,
 ):
     """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps).
 
     ``strategy="cognitive"`` (default) uses the TeamCognition + ActionPlanner
     policy (see ``agents.multi_solver``). ``strategy="react"`` uses the
     single-pass ReAct policy.
+
+    ``debug_log``, if given, is only populated by the ``"cognitive"`` strategy:
+    one dict per tick with the LLM's thought/plan, the planner's ranked
+    candidates, any gate overrides, and the final action.
     """
     from benchmark.engine import HeadlessEpisode
     from benchmark.policies import bfs_solution_path
 
     if strategy == "cognitive":
         from src.escape_rooms.agents.multi_solver import cognitive_solver_policy
-        policy = cognitive_solver_policy(role, trace=trace)
+        policy = cognitive_solver_policy(role, trace=trace, debug_log=debug_log)
     elif strategy == "react":
         policy = react_solver_policy(role, trace=trace)
     else:

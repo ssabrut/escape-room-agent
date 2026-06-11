@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 10:03:41 WIB
+
+### What changed
+- The cognitive solver now records a per-tick debug log capturing everything needed to reconstruct a run after the fact: the LLM's raw thought/plan/action, the planner's recommended action and full ranked candidate list, any gate overrides (stuck/cycle/dominance), the previous tick's outcome, new milestones, and the final chosen action. `solve_world` and `solver_node` thread this log through via a new `debug_log` parameter, and `main.py` writes it to `logs/solver/debug.json` whenever the solver runs.
+- The standalone `--node` CLI flag now only lists `world_builder` and `puzzle_builder` as runnable single-node choices (the new `solver` node was added to the pipeline's node list but isn't independently runnable via `--node`).
+- `--solve` now also works with `--smoke`: each generated world is run through the cognitive solver, with its result written to `run_NNN.solver.json`, its debug log written alongside the run's logs, and a `+solver.json` suffix shown in the per-run summary line. The `--solve` help text was updated to describe this smoke-mode behavior.
+
+### Why
+The cognitive solver's gates (stuck override, cycle override, dominance override) and planner recommendations were opaque from the outside — when a run behaved unexpectedly there was no way to see what the LLM proposed versus what the planner ranked versus what gate fired and why. The per-tick debug log makes every decision point inspectable after a run completes, and wiring `--solve` into `--smoke` lets that debug data be captured across a batch of generated worlds rather than only a single run.
+
+---
+
 ## 2026-06-11 09:24:44 WIB
 
 ### What changed

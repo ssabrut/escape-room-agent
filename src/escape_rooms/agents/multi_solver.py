@@ -43,6 +43,7 @@ def cognitive_solver_policy(
     role: str = "solver",
     scratchpad_limit: int = 30,
     trace: list | None = None,
+    debug_log: list[dict] | None = None,
     *,
     enforce_candidate_policy: bool = True,
 ):
@@ -52,6 +53,10 @@ def cognitive_solver_policy(
     ``react_solver_policy``, plus a deterministic cognition layer that compiles
     policy candidates, derives the current goal/plan, and gates the LLM's choice
     against a short-horizon beam search.
+
+    If ``debug_log`` is given, one dict per tick is appended to it, capturing the
+    LLM's raw thought/plan, the planner's ranked candidates, any gate overrides,
+    and the final action — everything needed to debug a run after the fact.
     """
     llm = get_llm(role)
     cognition = TeamCognition(config=CognitionConfig())
@@ -98,6 +103,8 @@ def cognitive_solver_policy(
         # the (world, ps, action_space) -> action contract intact: HeadlessEpisode
         # resolves the action *after* the policy returns, so we can't observe the
         # post-action state until the next call.
+        prev_outcome = None
+        new_milestones: list[str] = []
         if state["prev_ps"] is not None and state["prev_action"] is not None:
             last_entry = ps.log[-1] if ps.log else None
             last_note = last_entry.note if last_entry else ""
@@ -105,7 +112,13 @@ def cognitive_solver_policy(
             update = cognition.observe(
                 state["prev_action"], last_note, state["prev_ps"], ps, world, ps.tick, success
             )
+            prev_outcome = {
+                "action": state["prev_action"],
+                "note": last_note,
+                "success": success,
+            }
             if update.new_milestones:
+                new_milestones = update.new_milestones
                 scratchpad.append(f"Milestones: {', '.join(update.new_milestones)}")
 
         board = derive_board(world, ps)
@@ -140,9 +153,13 @@ def cognitive_solver_policy(
             data = _parse_json(response.content) or {}
             thought = str(data.get("thought", "")).strip()
             plan = str(data.get("plan", "")).strip()
-            action = _resolve_choice(str(data.get("action", "")).strip(), action_space)
+            raw_action = str(data.get("action", "")).strip()
+            action = _resolve_choice(raw_action, action_space)
         except Exception:
-            thought, plan, action = "(parse error)", "", action_space[0]
+            thought, plan, raw_action, action = "(parse error)", "", "", action_space[0]
+
+        llm_action = action
+        gate_notes: list[str] = []
 
         # --- Gates (ported from GameOrchestrator._take_turn, single-agent) ---
         gate_note = None
@@ -185,6 +202,7 @@ def cognitive_solver_policy(
                         action = forced
 
         if gate_note:
+            gate_notes.append(gate_note)
             scratchpad.append(gate_note)
             if trace is not None:
                 trace.append(f"t{ps.tick} {gate_note}")
@@ -198,9 +216,13 @@ def cognitive_solver_policy(
                 alternatives = [a for a in action_space if a != action]
             if alternatives:
                 forced = alternatives[0]
-                scratchpad.append(
+                cycle_note = (
                     f"[override] cycle detected {action_history[-(2*_MAX_PERIOD):]} — forcing '{forced}'"
                 )
+                gate_notes.append(cycle_note)
+                scratchpad.append(cycle_note)
+                if trace is not None:
+                    trace.append(f"t{ps.tick} {cycle_note}")
                 action = forced
                 action_history[-1] = forced
 
@@ -211,6 +233,30 @@ def cognitive_solver_policy(
             if trace is not None:
                 trace.append(f"t{ps.tick} THINK: {thought}")
         scratchpad.append(f"Action: {action}")
+
+        if debug_log is not None:
+            debug_log.append({
+                "tick": ps.tick,
+                "room": ps.current_room,
+                "prev_outcome": prev_outcome,
+                "new_milestones": new_milestones,
+                "current_goal": current_goal,
+                "next_plan_step": next_plan_step,
+                "stuck": cognition.stuck,
+                "reflect": reflect,
+                "critical_note": critical_note,
+                "planner_recommended": decision.best_action,
+                "planner_ranked": [
+                    {"action": o.action, "score": o.score, "rationale": o.rationale}
+                    for o in decision.ranked
+                ],
+                "thought": thought,
+                "plan": plan,
+                "llm_raw_action": raw_action,
+                "llm_resolved_action": llm_action,
+                "gates_fired": gate_notes,
+                "final_action": action,
+            })
 
         state["prev_ps"] = ps.model_copy(deep=True)
         state["prev_action"] = action
