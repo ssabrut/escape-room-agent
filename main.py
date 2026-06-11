@@ -117,12 +117,15 @@ def _build_api_payload(world, solver_result=None) -> dict:
     }
 
 
-def _write_api_run(world, theme: str, solver_result=None) -> Path:
-    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json."""
+def _write_api_run(world, theme: str, solver_result=None, suffix: str = "") -> Path:
+    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>[_<suffix>].json."""
     API_RUNS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = theme.lower().replace(" ", "_")
-    out_path = API_RUNS_DIR / f"{timestamp}_{slug}.json"
+    name = f"{timestamp}_{slug}"
+    if suffix:
+        name += f"_{suffix}"
+    out_path = API_RUNS_DIR / f"{name}.json"
 
     payload = _build_api_payload(world, solver_result)
     out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -768,10 +771,16 @@ def smoke(
             api_note = _write_api_payload(
                 result.get("world"), run_dir / f"run_{i:03d}.api.json", solver_result
             )
+            api_run_note = ""
+            if result.get("world"):
+                api_run_path = _write_api_run(
+                    result["world"], theme, solver_result, suffix=f"{i:03d}"
+                )
+                api_run_note = f" + {api_run_path}"
             total_elapsed = sum(node_times.values())
             print(
                 f"done in {total_elapsed:.1f}s → "
-                f"{out_file.name}{world_note}{bench_note}{bfs_note}{solver_note}{api_note}"
+                f"{out_file.name}{world_note}{bench_note}{bfs_note}{solver_note}{api_note}{api_run_note}"
             )
             _print_timing_table(node_times)
 

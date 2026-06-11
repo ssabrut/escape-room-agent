@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[4]
 if str(ROOT) not in sys.path:
@@ -297,6 +298,7 @@ def _load_world(path: Path) -> GameWorld:
 def solve_world(
     world: GameWorld, role: str = "solver", trace: list | None = None,
     strategy: str = "cognitive", debug_log: list[dict] | None = None,
+    on_tick: Callable[[dict], None] | None = None,
 ):
     """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps).
 
@@ -307,13 +309,17 @@ def solve_world(
     ``debug_log``, if given, is only populated by the ``"cognitive"`` strategy:
     one dict per tick with the LLM's thought/plan, the planner's ranked
     candidates, any gate overrides, and the final action.
+
+    ``on_tick``, if given, is also only used by the ``"cognitive"`` strategy: it's
+    called with that same per-tick dict as soon as it's produced, e.g. to stream
+    live progress to a client.
     """
     from benchmark.engine import HeadlessEpisode
     from benchmark.policies import bfs_solution_path
 
     if strategy == "cognitive":
         from src.escape_rooms.agents.multi_solver import cognitive_solver_policy
-        policy = cognitive_solver_policy(role, trace=trace, debug_log=debug_log)
+        policy = cognitive_solver_policy(role, trace=trace, debug_log=debug_log, on_tick=on_tick)
     elif strategy == "react":
         policy = react_solver_policy(role, trace=trace)
     else:

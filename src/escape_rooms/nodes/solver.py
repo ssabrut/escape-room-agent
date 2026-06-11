@@ -7,6 +7,8 @@ SolverResult on GameState so downstream nodes or callers can inspect it.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from langchain_core.messages import AIMessage
 
 from src.escape_rooms.agents.solver_agent import objective, solve_world
@@ -16,7 +18,7 @@ from src.escape_rooms.utils.logging import get_node_logger
 log = get_node_logger("solver")
 
 
-def solver_node(state: GameState) -> dict:
+def solver_node(state: GameState, on_tick: Callable[[dict], None] | None = None) -> dict:
     world = state.world
     if world is None or not world.rooms or not world.win_condition.object_id:
         log.warning("solver_node: no world or win condition — skipping")
@@ -30,7 +32,7 @@ def solver_node(state: GameState) -> dict:
 
     trace: list[str] = []
     debug_log: list[dict] = []
-    result, optimal = solve_world(world, trace=trace, debug_log=debug_log)
+    result, optimal = solve_world(world, trace=trace, debug_log=debug_log, on_tick=on_tick)
     score = objective(world, result, optimal_len=len(optimal))
 
     verdict = "ESCAPED" if score["won"] else "FAILED"

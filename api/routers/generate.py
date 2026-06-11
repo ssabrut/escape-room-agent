@@ -98,7 +98,11 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     if req.solve:
         emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
         state = state.model_copy(update={"world": world})
-        solver_update = solver_node(state)
+
+        def on_tick(record: dict) -> None:
+            emit.put({"type": "tick", **record})
+
+        solver_update = solver_node(state, on_tick=on_tick)
         solver_result = solver_update.get("solver_result")
 
     solver_log = None

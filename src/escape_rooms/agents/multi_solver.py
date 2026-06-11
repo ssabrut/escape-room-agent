@@ -12,6 +12,8 @@ Exposes ``cognitive_solver_policy(...)``, a drop-in alternative to
 
 from __future__ import annotations
 
+from typing import Callable
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.escape_rooms.agents.action_planner import ActionPlanner, _action_succeeded, _is_free
@@ -44,6 +46,7 @@ def cognitive_solver_policy(
     scratchpad_limit: int = 30,
     trace: list | None = None,
     debug_log: list[dict] | None = None,
+    on_tick: Callable[[dict], None] | None = None,
     *,
     enforce_candidate_policy: bool = True,
 ):
@@ -57,6 +60,9 @@ def cognitive_solver_policy(
     If ``debug_log`` is given, one dict per tick is appended to it, capturing the
     LLM's raw thought/plan, the planner's ranked candidates, any gate overrides,
     and the final action — everything needed to debug a run after the fact.
+
+    If ``on_tick`` is given, it is called with that same per-tick dict as soon as
+    it's produced — e.g. to stream live progress to a client.
     """
     llm = get_llm(role)
     cognition = TeamCognition(config=CognitionConfig())
@@ -234,8 +240,8 @@ def cognitive_solver_policy(
                 trace.append(f"t{ps.tick} THINK: {thought}")
         scratchpad.append(f"Action: {action}")
 
-        if debug_log is not None:
-            debug_log.append({
+        if debug_log is not None or on_tick is not None:
+            tick_record = {
                 "tick": ps.tick,
                 "room": ps.current_room,
                 "prev_outcome": prev_outcome,
@@ -256,7 +262,11 @@ def cognitive_solver_policy(
                 "llm_resolved_action": llm_action,
                 "gates_fired": gate_notes,
                 "final_action": action,
-            })
+            }
+            if debug_log is not None:
+                debug_log.append(tick_record)
+            if on_tick is not None:
+                on_tick(tick_record)
 
         state["prev_ps"] = ps.model_copy(deep=True)
         state["prev_action"] = action

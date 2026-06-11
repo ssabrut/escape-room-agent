@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 10:31:27 WIB
+
+### What changed
+- The cognitive solver can now stream its per-tick debug record live as it's produced, via an optional `on_tick` callback threaded through `cognitive_solver_policy` -> `solve_world` -> `solver_node`, alongside the existing batch `debug_log` accumulation.
+- The `/generate` API endpoint now wires this callback into its progress queue: when `solve` is requested, each solver tick is emitted to the client as a `{"type": "tick", ...}` event in real time, instead of only surfacing solver results once the whole solve finishes.
+- Smoke runs now also write each generated world's full API-shaped JSON to `api_runs/<timestamp>_<theme>_<run-index>.json` (via a new `suffix` parameter on `_write_api_run`), with the path shown in the per-run summary line.
+
+### Why
+The `/generate` endpoint's progress stream previously went quiet during the (potentially long) solver pass, giving clients no visibility into solver progress tick-by-tick. Adding a live `on_tick` callback lets the API surface each tick as it happens. The smoke-run API JSON dump lets per-run API payloads from a batch be inspected individually rather than only the latest single-run output.
+
+---
+
 ## 2026-06-11 10:03:41 WIB
 
 ### What changed
