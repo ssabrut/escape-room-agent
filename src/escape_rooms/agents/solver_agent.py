@@ -295,26 +295,39 @@ def _load_world(path: Path) -> GameWorld:
 
 
 def solve_world(
-    world: GameWorld, role: str = "solver", trace: list | None = None
+    world: GameWorld, role: str = "solver", trace: list | None = None,
+    strategy: str = "cognitive",
 ):
-    """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps)."""
+    """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps).
+
+    ``strategy="cognitive"`` (default) uses the TeamCognition + ActionPlanner
+    policy (see ``agents.multi_solver``). ``strategy="react"`` uses the
+    single-pass ReAct policy.
+    """
     from benchmark.engine import HeadlessEpisode
     from benchmark.policies import bfs_solution_path
 
-    policy = react_solver_policy(role, trace=trace)
+    if strategy == "cognitive":
+        from src.escape_rooms.agents.multi_solver import cognitive_solver_policy
+        policy = cognitive_solver_policy(role, trace=trace)
+    elif strategy == "react":
+        policy = react_solver_policy(role, trace=trace)
+    else:
+        raise ValueError(f"Unknown strategy: {strategy!r}. Expected 'react' or 'cognitive'.")
+
     result = HeadlessEpisode(world).run(policy, record_history=True)
     optimal = bfs_solution_path(world)
     return result, optimal
 
 
-def benchmark(paths: list[Path], role: str = "solver") -> None:
+def benchmark(paths: list[Path], role: str = "solver", strategy: str = "cognitive") -> None:
     """Run the LLM solver over many worlds; report solve-rate, ticks-vs-optimal, and
     the objective reward (optimal/ticks on a win, -1 on failure).
 
     Only worlds the BFS oracle can solve count toward the solve-rate denominator
     (an unsolvable world is not the agent's fault).
     """
-    print(f"LLM solver benchmark — role={role}, mode=ReAct, {len(paths)} world(s)\n")
+    print(f"LLM solver benchmark — role={role}, strategy={strategy}, {len(paths)} world(s)\n")
     header = (
         f"{'world':<40} {'result':<8} {'ticks':>5} {'optimal':>7} "
         f"{'wasted':>6} {'reward':>7}"
@@ -326,7 +339,7 @@ def benchmark(paths: list[Path], role: str = "solver") -> None:
     rewards: list[float] = []
     for p in paths:
         world = _load_world(p)
-        result, optimal = solve_world(world, role)
+        result, optimal = solve_world(world, role, strategy=strategy)
         score = objective(world, result, optimal_len=len(optimal))
         solvable += int(score["optimal"] > 0)
         solved += int(score["won"])
@@ -364,22 +377,29 @@ def main() -> None:
         default="solver",
         help="LLM role from settings: solver (default), game_master, or player",
     )
+    parser.add_argument(
+        "--strategy",
+        default="cognitive",
+        choices=["react", "cognitive"],
+        help="solver strategy: cognitive (default, TeamCognition + ActionPlanner) "
+             "or react (single-pass ReAct)",
+    )
     args = parser.parse_args()
 
     if args.bench:
         paths = [Path(p) for p in sorted(glob.glob(args.bench))]
         if not paths:
             parser.error(f"no worlds matched: {args.bench}")
-        benchmark(paths, args.role)
+        benchmark(paths, args.role, args.strategy)
         return
 
     world = _load_world(Path(args.world))
-    print(f"Solving: {args.world}  (mode=ReAct)")
+    print(f"Solving: {args.world}  (mode={args.strategy})")
     print(f"  scenario : {world.scenario[:80]}...")
     print(f"  win when : {world.win_condition.object_id} -> {world.win_condition.state}")
 
     trace: list[str] = []
-    result, optimal = solve_world(world, args.role, trace=trace)
+    result, optimal = solve_world(world, args.role, trace=trace, strategy=args.strategy)
     print(
         f"\n=== LLM solver: {'ESCAPED' if result.victory else 'FAILED'} "
         f"in {result.ticks} tick(s) ==="
