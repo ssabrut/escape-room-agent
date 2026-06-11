@@ -139,6 +139,13 @@ class PartyState(BaseModel):
 
     current_room: str = ""
     inventory: list[str] = Field(default_factory=list)  # object ids the party carries
+    # current_room/inventory double as the "active perspective" slot for
+    # whichever agent is taking its turn — swapped via gameplay's
+    # _load_agent_view/_save_agent_view around each agent's action.
+    agent_rooms: dict[str, str] = Field(default_factory=dict)  # agent_id -> room_id
+    agent_inventories: dict[str, list[str]] = Field(
+        default_factory=dict
+    )  # agent_id -> object ids that agent personally carries
     visited: set[str] = Field(default_factory=set)
     object_states: dict[str, str] = Field(
         default_factory=dict

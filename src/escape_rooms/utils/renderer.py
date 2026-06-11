@@ -469,6 +469,8 @@ def render_world(
     inventory: list[str] | None = None,
     object_states: dict[str, str] | None = None,
     tick: int = 0,
+    agent_rooms: dict[str, str] | None = None,
+    agent_inventories: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Return a SwiftUI tile-map render payload.
 
@@ -476,12 +478,26 @@ def render_world(
     tile hint, doors placed on the correct walls, and every object assigned a
     (tileX, tileY) position and a sprite key. Corridors are deduplicated
     undirected edges between rooms.
+
+    ``agent_rooms``/``agent_inventories`` (agent_id -> room_id / inventory)
+    describe a cooperative multi-agent run; when omitted, a single agent
+    ("agent_1") is derived from ``current_room``/``inventory``.
     """
     if not rooms:
         return {"grid": {"cols": 0, "rows": 0, "tileSize": TILE_SIZE}, "rooms": [], "corridors": [], "party": {}}
 
     inventory = inventory or []
     object_states = object_states or {}
+
+    if agent_rooms is None:
+        agent_rooms = {"agent_1": current_room}
+    if agent_inventories is None:
+        agent_inventories = {"agent_1": list(inventory)}
+
+    all_inventories: set[str] = set()
+    for inv in agent_inventories.values():
+        all_inventories.update(inv)
+    occupied_rooms = set(agent_rooms.values())
 
     grid = _place_rooms(rooms)
     max_col = max(c for c, _ in grid.values())
@@ -554,7 +570,7 @@ def render_world(
                 "tileX": tx,
                 "tileY": ty,
                 "state": object_states.get(obj.id, obj.state),
-                "interacted": obj.id in inventory,
+                "interacted": obj.id in all_inventories,
                 "takeable": obj.takeable,
                 "interactable": obj.interactable,
             })
@@ -568,7 +584,8 @@ def render_world(
             "heightTiles": ROOM_H,
             "floorTile": "floor_wood",
             "wallTile": "wall_stone",
-            "isCurrentRoom": room.id == current_room,
+            "isCurrentRoom": room.id in occupied_rooms,
+            "agentsHere": [aid for aid, r in agent_rooms.items() if r == room.id],
             "doors": doors,
             "objects": rendered_objects,
         })
@@ -582,13 +599,23 @@ def render_world(
                 corridors.append({"fromRoom": room.id, "toRoom": neighbor_id, "direction": direction})
                 seen.add(key)
 
+    first_agent = next(iter(agent_rooms))
     return {
         "grid": {"cols": max_col + 1, "rows": max_row + 1, "tileSize": TILE_SIZE},
         "rooms": room_list,
         "corridors": corridors,
         "party": {
-            "currentRoom": current_room,
-            "inventory": inventory,
+            "currentRoom": agent_rooms[first_agent],
+            "inventory": agent_inventories.get(first_agent, []),
             "tick": tick,
         },
+        "parties": [
+            {
+                "agentId": aid,
+                "currentRoom": room,
+                "inventory": agent_inventories.get(aid, []),
+                "tick": tick,
+            }
+            for aid, room in agent_rooms.items()
+        ],
     }

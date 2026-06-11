@@ -2,6 +2,78 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 19:28:26 WIB
+
+### What changed
+- The solver can now run with multiple cooperating agents in the same world: `solver_node(state, on_tick=..., num_agents=1)` accepts a new `num_agents` param (1-4), and `/generate` and `/generate/solve` API requests gained a matching `num_agents: int = Field(1, ge=1, le=4, ...)` field that flows through to the solver.
+- Added `cognitive_solver_policy_multi(agent_ids, ...)` and `solve_world_cooperative(world, num_agents=1, ...)` in `multi_solver.py`, which spin up one `TeamCognition`/`ActionPlanner`/scratchpad per agent (agent ids `agent_1`..`agent_N`), sharing a single `PartyState` and a `shared_milestones` set so agents see each other's discovered milestones and the full shared `ps.log` (dead-ends/blocked exits).
+- `PartyState` gained `agent_rooms: dict[str, str]` and `agent_inventories: dict[str, list[str]]` (agent_id -> room/inventory); `current_room`/`inventory` now act as a per-turn "active perspective" slot, swapped via two new `gameplay` helpers: `_load_agent_view(ps, agent_id)` (loads that agent's room/inventory into the active slot) and `_save_agent_view(ps, agent_id)` (writes the active slot back to that agent's dict). `_build_initial_party_state(world, agent_ids=None)` now seeds both dicts for all agents (defaulting to `["agent_1"]`).
+- Added `benchmark.engine.MultiAgentEpisode` (with `AgentEpisodeResult` and `CooperativeEpisodeResult` dataclasses), which runs a world to victory/timeout with N agents taking turns per tick — checking victory before the tick and after every individual agent action — and records per-agent final room/inventory/history plus an interleaved global history.
+- `TeamCognition` gained agent-to-agent coordination: `_compile_candidates`, `is_policy_candidate`, `policy_candidates`, `_candidate_actions`, and `brief_for` all take an optional `teammate_rooms: dict[str, str] | None` (other agents' current rooms). When no PROGRESS candidate exists, a `COORDINATION`-tagged `go <teammate_room>` candidate is surfaced to regroup with a teammate elsewhere; `TeamBrief` gained a `teammates` field rendered as a `"TEAMMATES: agent_2 is in room_x; ..."` line.
+- `render_world(...)` gained optional `agent_rooms`/`agent_inventories` params describing a multi-agent run. The response now includes a new `"parties"` list (one entry per agent with `agentId`/`currentRoom`/`inventory`/`tick`), each room gains an `"agentsHere"` list of agent ids currently in it, `"isCurrentRoom"` is true for any room occupied by any agent, and `"interacted"` on objects is true if the object is in *any* agent's inventory. The top-level `"party"` field is preserved (populated from the first agent) for backward compatibility. `solver.py`'s `on_tick` callback signature changed from `(record, ps, world)` to `(record, ps, world, agent_id)`, and `/generate`/`/generate/solve`'s `on_tick` handlers now build the render using `ps.agent_rooms`/`ps.agent_inventories` plus the new `agent_rooms`/`agent_inventories` render params.
+
+### Why
+Extends the solver from a single agent to N cooperating agents that can split up exploration and converge on solving multi-room puzzles together, building on the per-agent perspective groundwork (`agent_rooms`/`agent_inventories`) and exposing it end-to-end through the API and tile-map renderer so the SwiftUI client can display multiple party members at once.
+
+### Files changed
+- `api/routers/generate.py` — `GenerateRequest` and new `SolveRequest` gained `num_agents: int = Field(1, ge=1, le=4, ...)`; `_run_pipeline` and `_run_solve_pipeline`'s `on_tick` closures now take `agent_id` and render via `ps.agent_rooms`/`ps.agent_inventories`; both pass `num_agents=req.num_agents` to `solver_node`.
+- `benchmark/engine.py` — added `AgentEpisodeResult`, `CooperativeEpisodeResult` dataclasses and `MultiAgentEpisode` class with a `run(policy, record_history=False)` method.
+- `src/escape_rooms/agents/cognition.py` — `TeamBrief` gained `teammates: dict[str, str] | None = None` field and renders a `TEAMMATES:` line; `_compile_candidates`, `is_policy_candidate`, `policy_candidates`, `_candidate_actions`, `brief_for` all gained `teammate_rooms: dict[str, str] | None = None` param; `_compile_candidates` adds a `COORDINATION`-tagged candidate when no `PROGRESS` candidate exists; updated module docstring to remove the old "future multi-agent extension" note.
+- `src/escape_rooms/agents/multi_solver.py` — added `cognitive_solver_policy_multi(agent_ids, role="solver", scratchpad_limit=30, trace=None, debug_log=None, on_tick=None, *, enforce_candidate_policy=True)` returning a per-agent `_policy(agent_id, world, ps, action_space) -> action`, and `solve_world_cooperative(world, num_agents=1, role="solver", trace=None, debug_log=None, on_tick=None)` which builds `agent_ids = [f"agent_{i+1}" for i in range(num_agents)]` and runs them via `MultiAgentEpisode`; updated module docstring.
+- `src/escape_rooms/nodes/gameplay.py` — `_build_initial_party_state(world, agent_ids=None)` now seeds `agent_rooms`/`agent_inventories` for all agents (default `["agent_1"]`); added `_load_agent_view(ps, agent_id)` and `_save_agent_view(ps, agent_id)` helpers.
+- `src/escape_rooms/nodes/solver.py` — `solver_node(state, on_tick=None, num_agents=1)` gained `num_agents` param, now imports and delegates to `solve_world_cooperative` instead of `solve_world`; `on_tick` type updated to include `agent_id: str`; log message now includes `agents={num_agents}`.
+- `src/escape_rooms/state/schema.py` — `PartyState` gained `agent_rooms: dict[str, str] = Field(default_factory=dict)` and `agent_inventories: dict[str, list[str]] = Field(default_factory=dict)`, with a comment documenting `current_room`/`inventory` as the swapped "active perspective" slot.
+- `src/escape_rooms/utils/renderer.py` — `render_world(...)` gained `agent_rooms`/`agent_inventories` params; computes `all_inventories`/`occupied_rooms`; each room dict gains `"agentsHere"`, `"isCurrentRoom"` now checks room membership in `occupied_rooms`; top-level response gains a `"parties"` list alongside the existing `"party"` field.
+- `.claude/skills/log/SKILL.md` — expanded the `/log` skill's entry format to require `### Files changed`, `### Key code`, and `### Verification` sections with more detailed "What changed" guidance; non-behavioral (tooling/process change).
+
+### Key code
+```python
+# src/escape_rooms/nodes/gameplay.py
+def _load_agent_view(ps: PartyState, agent_id: str) -> None:
+    """Swap ps.current_room/inventory to agent_id's perspective for this turn."""
+    ps.current_room = ps.agent_rooms.get(agent_id, ps.current_room)
+    ps.inventory = ps.agent_inventories.get(agent_id, [])
+
+
+def _save_agent_view(ps: PartyState, agent_id: str) -> None:
+    """Persist the active perspective back into the per-agent dicts."""
+    ps.agent_rooms[agent_id] = ps.current_room
+    ps.agent_inventories[agent_id] = list(ps.inventory)
+```
+
+```python
+# src/escape_rooms/agents/multi_solver.py
+def solve_world_cooperative(
+    world: GameWorld,
+    num_agents: int = 1,
+    role: str = "solver",
+    trace: list | None = None,
+    debug_log: list[dict] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
+):
+    agent_ids = [f"agent_{i + 1}" for i in range(num_agents)]
+    policy = cognitive_solver_policy_multi(
+        agent_ids, role, trace=trace, debug_log=debug_log, on_tick=on_tick
+    )
+    result = MultiAgentEpisode(world, agent_ids).run(policy, record_history=True)
+    optimal = bfs_solution_path(world)
+    return result, optimal
+```
+
+```diff
+# src/escape_rooms/agents/cognition.py — coordination candidate
++        if teammate_rooms and not any(c.tag == "PROGRESS" for c in out):
++            for _tid, troom in teammate_rooms.items():
++                if troom and troom != ps.current_room:
++                    push(f"go {troom}", "COORDINATION")
++                    break
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-11 14:53:50 WIB
 
 ### What changed

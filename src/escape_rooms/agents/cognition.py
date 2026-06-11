@@ -11,9 +11,15 @@ fingerprint of the world, an episodic memory of every attempt, which moves are n
 provably pointless (loop detection), how much real progress has been made
 (milestones), and when the agent has stalled.
 
-Extension point: ``CandidateAction.tag == "COORDINATION"`` and per-agent functional
-roles (Explorer/Solver/Critic) are intentionally not built — they only matter once
-escape-rooms' solver becomes multi-agent.
+Multi-agent note: each cooperating agent gets its own ``TeamCognition`` instance,
+sharing only the ``milestones`` set and the ``ps`` world state. Per-agent turns
+swap ``ps.current_room``/``ps.inventory`` to that agent's perspective via
+``gameplay._load_agent_view``/``_save_agent_view`` before calling into this
+module — see ``multi_solver.cognitive_solver_policy_multi``.
+``CandidateAction.tag == "COORDINATION"`` surfaces a teammate's room as a
+candidate destination via the optional ``teammate_rooms`` param threaded through
+``_compile_candidates``/``is_policy_candidate``/``policy_candidates``/
+``_candidate_actions``/``brief_for``.
 """
 
 from __future__ import annotations
@@ -338,6 +344,7 @@ class TeamBrief:
     critical_note: str | None
     stuck: bool
     reflect: bool
+    teammates: dict[str, str] | None = None
 
     def render(self) -> str:
         lines = [
@@ -356,6 +363,10 @@ class TeamBrief:
         )
         if self.team_memory:
             lines.append("MEMORY: " + "; ".join(self.team_memory))
+        if self.teammates:
+            lines.append(
+                "TEAMMATES: " + "; ".join(f"{aid} is in {room}" for aid, room in self.teammates.items())
+            )
         if self.failed_attempts:
             lines.append("RECENTLY FAILED (don't repeat): " + "; ".join(self.failed_attempts))
         if self.already_examined:
@@ -584,11 +595,14 @@ class TeamCognition:
         ps: PartyState,
         current_goal: str,
         next_plan_step: str = "",
+        teammate_rooms: dict[str, str] | None = None,
     ) -> list[CandidateAction]:
         """Filter/rank ``_build_action_space`` into a small, tagged candidate set.
 
-        Returns up to 8 ``CandidateAction``s with PROGRESS / EXPLORATION tags
-        (COORDINATION is reserved for a future multi-agent extension).
+        Returns up to 8 ``CandidateAction``s with PROGRESS / EXPLORATION /
+        COORDINATION tags. ``teammate_rooms`` (agent_id -> room_id for OTHER
+        cooperating agents) surfaces a COORDINATION candidate to regroup with a
+        teammate when no PROGRESS candidate is available.
         """
         visible = _objects_in_room(world, ps)
         space = _build_action_space(world, ps, visible)
@@ -665,6 +679,14 @@ class TeamCognition:
                 elif verb in ("enter_code", "use_tool", "insert_liquid", "flip_fuse", "open"):
                     push(action, "PROGRESS")
 
+        # Coordination: when no PROGRESS candidate exists, suggest regrouping
+        # with a teammate who is elsewhere.
+        if teammate_rooms and not any(c.tag == "PROGRESS" for c in out):
+            for _tid, troom in teammate_rooms.items():
+                if troom and troom != ps.current_room:
+                    push(f"go {troom}", "COORDINATION")
+                    break
+
         # Shared-plan bias: surface candidates matching the next open plan step.
         if plan_low:
             matched = [c for c in out if plan_match(c.action)]
@@ -674,32 +696,49 @@ class TeamCognition:
         return out[:8]
 
     def is_policy_candidate(
-        self, world: GameWorld, ps: PartyState, current_goal: str, action: str, next_plan_step: str = ""
+        self,
+        world: GameWorld,
+        ps: PartyState,
+        current_goal: str,
+        action: str,
+        next_plan_step: str = "",
+        teammate_rooms: dict[str, str] | None = None,
     ) -> bool:
         """True when an action is in the deterministic policy candidate set."""
         verb = action.split(" ", 1)[0]
         if verb in _FREE_VERBS:
             return True
         allowed = {
-            c.action for c in self._compile_candidates(world, ps, current_goal, next_plan_step)
+            c.action
+            for c in self._compile_candidates(world, ps, current_goal, next_plan_step, teammate_rooms)
         }
         return action in allowed
 
     def policy_candidates(
-        self, world: GameWorld, ps: PartyState, current_goal: str, next_plan_step: str = ""
+        self,
+        world: GameWorld,
+        ps: PartyState,
+        current_goal: str,
+        next_plan_step: str = "",
+        teammate_rooms: dict[str, str] | None = None,
     ) -> list[str]:
         """Deterministic valid/reachable action candidates for this turn."""
         return [
             c.action
-            for c in self._compile_candidates(world, ps, current_goal, next_plan_step)
+            for c in self._compile_candidates(world, ps, current_goal, next_plan_step, teammate_rooms)
         ]
 
     def _candidate_actions(
-        self, world: GameWorld, ps: PartyState, current_goal: str, next_plan_step: str = ""
+        self,
+        world: GameWorld,
+        ps: PartyState,
+        current_goal: str,
+        next_plan_step: str = "",
+        teammate_rooms: dict[str, str] | None = None,
     ) -> list[str]:
         return [
             f"[{c.tag}] {describe_action_brief(c.action)}"
-            for c in self._compile_candidates(world, ps, current_goal, next_plan_step)
+            for c in self._compile_candidates(world, ps, current_goal, next_plan_step, teammate_rooms)
         ]
 
     def _next_plan_step(self) -> str:
@@ -863,6 +902,7 @@ class TeamCognition:
         reflect: bool = False,
         critical_note: str | None = None,
         recommended_action: str = "",
+        teammate_rooms: dict[str, str] | None = None,
     ) -> TeamBrief:
         board = derive_board(world, ps)
         # Sync the shared plan against cumulative milestones each turn.
@@ -877,7 +917,7 @@ class TeamCognition:
             solved=board.solved,
             open_puzzles=board.unsolved,
             team_memory=self._team_memory(ps),
-            candidate_actions=self._candidate_actions(world, ps, current_goal, next_plan_step),
+            candidate_actions=self._candidate_actions(world, ps, current_goal, next_plan_step, teammate_rooms),
             recommended_action=describe_action_brief(recommended_action) if recommended_action else "",
             already_examined=self._examined_here(world, ps),
             next_plan_step=next_plan_step,
@@ -885,4 +925,5 @@ class TeamCognition:
             critical_note=critical_note,
             stuck=self.stuck,
             reflect=reflect,
+            teammates=teammate_rooms,
         )

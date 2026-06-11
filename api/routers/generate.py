@@ -42,6 +42,7 @@ class GenerateRequest(BaseModel):
     hard_mode: bool = Field(False, description="Multi-room world with deep puzzle chains")
     num_rooms: int = Field(4, ge=2, le=10, description="Number of rooms (hard mode only)")
     solve: bool = Field(False, description="Run the LLM solver after generation")
+    num_agents: int = Field(1, ge=1, le=4, description="Number of cooperating solver agents")
 
 
 class SolverLog(BaseModel):
@@ -121,19 +122,21 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
         emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
         state = state.model_copy(update={"world": world})
 
-        def on_tick(record: dict, ps: PartyState, tick_world: GameWorld) -> None:
+        def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
             nonlocal last_render
             last_render = render_world(
                 rooms=tick_world.rooms,
                 objects=tick_world.objects,
-                current_room=ps.current_room,
-                inventory=ps.inventory,
+                current_room=ps.agent_rooms.get(agent_id, ps.current_room),
+                inventory=ps.agent_inventories.get(agent_id, ps.inventory),
                 object_states=ps.object_states,
                 tick=ps.tick,
+                agent_rooms=dict(ps.agent_rooms),
+                agent_inventories={k: list(v) for k, v in ps.agent_inventories.items()},
             )
             emit.put({"type": "tick", "render": last_render, **record})
 
-        solver_update = solver_node(state, on_tick=on_tick)
+        solver_update = solver_node(state, on_tick=on_tick, num_agents=req.num_agents)
         solver_result = solver_update.get("solver_result")
 
     solver_log = None
@@ -220,6 +223,7 @@ def generate(req: GenerateRequest) -> StreamingResponse:
 
 class SolveRequest(BaseModel):
     world: dict = Field(..., description="A previously generated world (the 'world' field of a /generate response)")
+    num_agents: int = Field(1, ge=1, le=4, description="Number of cooperating solver agents")
 
 
 class SolveResponse(BaseModel):
@@ -246,19 +250,21 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
 
     last_render: dict | None = None
 
-    def on_tick(record: dict, ps: PartyState, tick_world: GameWorld) -> None:
+    def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
         nonlocal last_render
         last_render = render_world(
             rooms=tick_world.rooms,
             objects=tick_world.objects,
-            current_room=ps.current_room,
-            inventory=ps.inventory,
+            current_room=ps.agent_rooms.get(agent_id, ps.current_room),
+            inventory=ps.agent_inventories.get(agent_id, ps.inventory),
             object_states=ps.object_states,
             tick=ps.tick,
+            agent_rooms=dict(ps.agent_rooms),
+            agent_inventories={k: list(v) for k, v in ps.agent_inventories.items()},
         )
         emit.put({"type": "tick", "render": last_render, **record})
 
-    solver_update = solver_node(state, on_tick=on_tick)
+    solver_update = solver_node(state, on_tick=on_tick, num_agents=req.num_agents)
     solver_result = solver_update.get("solver_result")
 
     solver_log = None

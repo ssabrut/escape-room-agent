@@ -1,13 +1,17 @@
 """Cognitive solver policy — TeamCognition + ActionPlanner turn loop.
 
-Ported from Escapee's ``GameOrchestrator._take_turn``, simplified for a single
-actor (escape-rooms' solver is currently single-agent — see ``cognition.py``'s
-module docstring for the multi-agent extension point).
+Ported from Escapee's ``GameOrchestrator._take_turn``.
 
 Exposes ``cognitive_solver_policy(...)``, a drop-in alternative to
 ``solver_agent.react_solver_policy`` with the same
 ``(world, ps, action_space) -> action`` contract, so it runs under
 ``benchmark.engine.HeadlessEpisode`` exactly like the ReAct policy.
+
+Also exposes ``cognitive_solver_policy_multi(...)`` and
+``solve_world_cooperative(...)`` for N cooperating agents sharing one world via
+``benchmark.engine.MultiAgentEpisode`` — see that module and
+``gameplay._load_agent_view``/``_save_agent_view`` for the per-agent
+perspective-swap mechanism.
 """
 
 from __future__ import annotations
@@ -282,5 +286,279 @@ def solve_world_multi(world: GameWorld, role: str = "solver", trace: list | None
 
     policy = cognitive_solver_policy(role, trace=trace)
     result = HeadlessEpisode(world).run(policy, record_history=True)
+    optimal = bfs_solution_path(world)
+    return result, optimal
+
+
+def cognitive_solver_policy_multi(
+    agent_ids: list[str],
+    role: str = "solver",
+    scratchpad_limit: int = 30,
+    trace: list | None = None,
+    debug_log: list[dict] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
+    *,
+    enforce_candidate_policy: bool = True,
+):
+    """Cooperative variant of :func:`cognitive_solver_policy` for N agents.
+
+    Each agent gets its own ``TeamCognition``/``ActionPlanner`` and scratchpad,
+    but they share ``ps`` (world state) and a ``shared_milestones`` set. The
+    returned ``_policy(agent_id, world, ps, action_space) -> action`` matches
+    :class:`benchmark.engine.MultiAgentEpisode`'s policy contract; ``ps`` is
+    expected to already be in ``agent_id``'s perspective (see
+    ``gameplay._load_agent_view``) when this is called.
+    """
+    llm = get_llm(role)
+    cognitions = {a: TeamCognition(config=CognitionConfig()) for a in agent_ids}
+    planners = {a: ActionPlanner() for a in agent_ids}
+    shared_milestones: set[str] = set()
+
+    _CYCLE_REPS = 3
+    _MAX_PERIOD = 4
+
+    per_agent_state: dict[str, dict] = {
+        a: {
+            "scratchpad": [],
+            "dead_ends": set(),
+            "blocked_exits": set(),
+            "current_plan": ["(none yet)"],
+            "action_history": [],
+            "seen_log": 0,
+            "prev_ps": None,
+            "prev_action": None,
+        }
+        for a in agent_ids
+    }
+
+    def _is_cycling(history: list[str]) -> bool:
+        for period in range(1, _MAX_PERIOD + 1):
+            needed = period * _CYCLE_REPS
+            if len(history) < needed:
+                continue
+            tail = history[-needed:]
+            pattern = tail[:period]
+            if tail == pattern * _CYCLE_REPS:
+                return True
+        return False
+
+    def _policy(agent_id: str, world: GameWorld, ps: PartyState, action_space: list[str]) -> str:
+        st = per_agent_state[agent_id]
+        cognition = cognitions[agent_id]
+        planner = planners[agent_id]
+        scratchpad = st["scratchpad"]
+        dead_ends = st["dead_ends"]
+        blocked_exits = st["blocked_exits"]
+        current_plan = st["current_plan"]
+        action_history = st["action_history"]
+
+        if not action_space:
+            return IDLE_ACTION
+
+        cognition.milestones |= shared_milestones
+
+        # Ingest the FULL shared ps.log (dead-ends/blocked exits are world
+        # facts, not per-agent knowledge) using st["seen_log"] as this agent's
+        # cursor.
+        while st["seen_log"] < len(ps.log):
+            entry = ps.log[st["seen_log"]]
+            note = entry.note
+            if note:
+                parts = entry.action.split()
+                if "no hidden info" in note and len(parts) >= 2:
+                    dead_ends.add(parts[1])
+                if "is locked" in note and len(parts) >= 2 and parts[0] == "go":
+                    blocked_exits.add(parts[1])
+            st["seen_log"] += 1
+
+        # Observe the outcome of THIS agent's previous action.
+        prev_outcome = None
+        new_milestones: list[str] = []
+        if st["prev_ps"] is not None and st["prev_action"] is not None:
+            last_entry = ps.log[-1] if ps.log else None
+            last_note = last_entry.note if last_entry else ""
+            success = _action_succeeded(last_note)
+            update = cognition.observe(
+                st["prev_action"], last_note, st["prev_ps"], ps, world, ps.tick, success
+            )
+            prev_outcome = {
+                "action": st["prev_action"],
+                "note": last_note,
+                "success": success,
+            }
+            if update.new_milestones:
+                new_milestones = update.new_milestones
+                shared_milestones.update(update.new_milestones)
+                scratchpad.append(f"Milestones: {', '.join(update.new_milestones)}")
+
+        board = derive_board(world, ps)
+        current_goal = cognition._derive_positional_goal(world, ps, board)
+        next_plan_step = cognition._next_plan_step()
+
+        decision = planner.plan_turn(world, ps, cognition, current_goal, next_plan_step)
+
+        critical_note = cognition.critical_guidance_for(world, ps, ps.tick)
+        reflect = cognition.should_reflect(ps.tick)
+
+        teammate_rooms = {a: ps.agent_rooms.get(a, "") for a in agent_ids if a != agent_id}
+        brief = cognition.brief_for(
+            world, ps,
+            reflect=reflect,
+            critical_note=critical_note,
+            recommended_action=decision.best_action,
+            teammate_rooms=teammate_rooms,
+        )
+
+        visible = _objects_in_room(world, ps)
+
+        pad_lines = [f"Current plan: {current_plan[0]}"] + scratchpad[-scratchpad_limit:]
+        pad = "\n".join(pad_lines)
+        prompt = (
+            f"You are {agent_id}, one of {len(agent_ids)} agents cooperating in this room.\n"
+            + _build_prompt(world, ps, action_space, visible, dead_ends, blocked_exits)
+            + f"\nTEAM COGNITION BRIEF:\n{brief.render()}\n"
+            + f"\nSCRATCHPAD (plan + recent thought -> action -> observation):\n{pad}\n"
+        )
+
+        try:
+            response = llm.invoke(
+                [SystemMessage(content=REACT_SYSTEM), HumanMessage(content=prompt)]
+            )
+            data = _parse_json(response.content) or {}
+            thought = str(data.get("thought", "")).strip()
+            plan = str(data.get("plan", "")).strip()
+            raw_action = str(data.get("action", "")).strip()
+            action = _resolve_choice(raw_action, action_space)
+        except Exception:
+            thought, plan, raw_action, action = "(parse error)", "", "", action_space[0]
+
+        llm_action = action
+        gate_notes: list[str] = []
+
+        # --- Gates (ported from GameOrchestrator._take_turn, per-agent) ---
+        gate_note = None
+
+        if cognition.stuck and _is_free(action):
+            forced = decision.best_progress_action
+            if forced and forced in action_space:
+                gate_note = f"[stall override] forcing '{forced}' (was '{action}')"
+                action = forced
+
+        if (
+            gate_note is None
+            and enforce_candidate_policy
+            and not cognition.is_policy_candidate(
+                world, ps, current_goal, action, next_plan_step, teammate_rooms
+            )
+        ):
+            forced = decision.best_progress_action
+            if forced and forced in action_space and forced != action:
+                gate_note = f"[policy gate] forcing '{forced}' (was '{action}', off-policy)"
+                action = forced
+
+        if gate_note is None:
+            chosen_verb = action.split(" ", 1)[0]
+            if (
+                decision.ranked
+                and chosen_verb not in _PROGRESS_GATE_EXEMPT_VERBS
+                and decision.top_score >= _PROGRESS_GATE_DOMINANT_MIN
+            ):
+                chosen_value = planner.immediate_value(world, ps, action, cognition)
+                gap = decision.top_score - chosen_value
+                if gap >= _PROGRESS_GATE_GAP and chosen_value <= _PROGRESS_GATE_LOW_VALUE:
+                    forced = decision.best_progress_action
+                    if forced and forced in action_space and forced != action:
+                        gate_note = f"[progress gate] forcing '{forced}' (was '{action}', low value)"
+                        action = forced
+
+        if gate_note:
+            gate_notes.append(gate_note)
+            scratchpad.append(gate_note)
+            if trace is not None:
+                trace.append(f"t{ps.tick} [{agent_id}] {gate_note}")
+
+        # Cycle guard.
+        action_history.append(action)
+        if _is_cycling(action_history):
+            cycle_set = set(action_history[-(2 * _MAX_PERIOD):])
+            alternatives = [a for a in action_space if a not in cycle_set]
+            if not alternatives:
+                alternatives = [a for a in action_space if a != action]
+            if alternatives:
+                forced = alternatives[0]
+                cycle_note = (
+                    f"[override] cycle detected {action_history[-(2*_MAX_PERIOD):]} — forcing '{forced}'"
+                )
+                gate_notes.append(cycle_note)
+                scratchpad.append(cycle_note)
+                if trace is not None:
+                    trace.append(f"t{ps.tick} [{agent_id}] {cycle_note}")
+                action = forced
+                action_history[-1] = forced
+
+        if plan:
+            current_plan[0] = plan
+        if thought:
+            scratchpad.append(f"Thought: {thought}")
+            if trace is not None:
+                trace.append(f"t{ps.tick} [{agent_id}] THINK: {thought}")
+        scratchpad.append(f"Action: {action}")
+
+        if debug_log is not None or on_tick is not None:
+            tick_record = {
+                "tick": ps.tick,
+                "agent_id": agent_id,
+                "room": ps.current_room,
+                "prev_outcome": prev_outcome,
+                "new_milestones": new_milestones,
+                "current_goal": current_goal,
+                "next_plan_step": next_plan_step,
+                "stuck": cognition.stuck,
+                "reflect": reflect,
+                "critical_note": critical_note,
+                "planner_recommended": decision.best_action,
+                "planner_ranked": [
+                    {"action": o.action, "score": o.score, "rationale": o.rationale}
+                    for o in decision.ranked
+                ],
+                "thought": thought,
+                "plan": plan,
+                "llm_raw_action": raw_action,
+                "llm_resolved_action": llm_action,
+                "gates_fired": gate_notes,
+                "final_action": action,
+            }
+            if debug_log is not None:
+                debug_log.append(tick_record)
+            if on_tick is not None:
+                on_tick(tick_record, ps, world, agent_id)
+
+        st["prev_ps"] = ps.model_copy(deep=True)
+        st["prev_action"] = action
+        return action
+
+    return _policy
+
+
+def solve_world_cooperative(
+    world: GameWorld,
+    num_agents: int = 1,
+    role: str = "solver",
+    trace: list | None = None,
+    debug_log: list[dict] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
+):
+    """Run N cooperating cognitive-solver agents.
+
+    Returns ``(CooperativeEpisodeResult, optimal_path_steps)``.
+    """
+    from benchmark.engine import MultiAgentEpisode
+    from benchmark.policies import bfs_solution_path
+
+    agent_ids = [f"agent_{i + 1}" for i in range(num_agents)]
+    policy = cognitive_solver_policy_multi(
+        agent_ids, role, trace=trace, debug_log=debug_log, on_tick=on_tick
+    )
+    result = MultiAgentEpisode(world, agent_ids).run(policy, record_history=True)
     optimal = bfs_solution_path(world)
     return result, optimal

@@ -126,3 +126,129 @@ class HeadlessEpisode:
             chain_depth=chain_depth,
             history=history,
         )
+
+
+@dataclass
+class AgentEpisodeResult:
+    agent_id: str
+    final_room: str
+    inventory: list[str]
+    history: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CooperativeEpisodeResult:
+    victory: bool
+    ticks: int
+    rooms_visited: int
+    objects_resolved: int
+    known_info: int
+    win_object_state: str | None
+    chain_depth: int = 0
+    agents: list[AgentEpisodeResult] = field(default_factory=list)
+    history: list[str] = field(default_factory=list)
+
+
+class MultiAgentEpisode:
+    """Run one world to victory/timeout with N cooperating agents.
+
+    ``policy(agent_id, world, ps, action_space) -> str`` — same contract as
+    :class:`HeadlessEpisode`'s policy plus a leading ``agent_id``.
+
+    Per tick: ``ps.tick`` advances once, then each agent in ``agent_ids`` order
+    takes one turn (load its perspective, build action space, call policy,
+    resolve, save perspective, log). Victory is checked before the tick AND
+    after each agent's action so a winning move ends the episode immediately.
+    """
+
+    def __init__(
+        self, world: GameWorld, agent_ids: list[str], max_ticks: int = gp.MAX_TICKS
+    ) -> None:
+        self.world = world
+        self.agent_ids = agent_ids
+        self.max_ticks = max_ticks
+
+    def run(self, policy, record_history: bool = False) -> CooperativeEpisodeResult:
+        world = self.world
+        ps: PartyState = gp._build_initial_party_state(world, agent_ids=self.agent_ids)
+        history: list[str] = []
+        per_agent_history: dict[str, list[str]] = {a: [] for a in self.agent_ids}
+        chain_depth = 0
+
+        orig_stream = gp._stream
+        gp._stream = lambda line="": None
+
+        try:
+            while not ps.game_over and ps.tick < self.max_ticks:
+                if gp._check_victory(world, ps):
+                    ps.victory = True
+                    break
+                ps.tick += 1
+
+                for agent_id in self.agent_ids:
+                    if gp._check_victory(world, ps):
+                        ps.victory = True
+                        break
+
+                    gp._load_agent_view(ps, agent_id)
+                    visible = gp._objects_in_room(world, ps)
+                    action_space = gp._build_action_space(world, ps, visible)
+                    action = policy(agent_id, world, ps, action_space)
+                    if action not in action_space:
+                        action = gp.IDLE_ACTION
+                    note, target = gp._resolve_action(action, world, ps)
+                    gp._save_agent_view(ps, agent_id)
+
+                    verb = action.split(" ", 1)[0]
+                    lnote = note.lower()
+                    if (verb in _PROGRESS_VERBS or verb == "go") and any(
+                        p in lnote for p in _PROGRESS_NOTES
+                    ):
+                        chain_depth += 1
+
+                    ps.log.append(
+                        TickAction(
+                            tick=ps.tick,
+                            agent_id=agent_id,
+                            say="",
+                            action=action,
+                            target_object=target,
+                            note=note,
+                        )
+                    )
+                    if record_history:
+                        history.append(f"t{ps.tick} [{agent_id}] {action} -> {note}")
+                        per_agent_history[agent_id].append(f"t{ps.tick} {action} -> {note}")
+
+                if ps.victory:
+                    break
+        finally:
+            gp._stream = orig_stream
+
+        resolved: set[str] = set()
+        for a in self.agent_ids:
+            gp._load_agent_view(ps, a)
+            resolved |= gp._resolved_object_ids(world, ps)
+
+        win = world.win_condition
+        return CooperativeEpisodeResult(
+            victory=bool(ps.victory),
+            ticks=ps.tick,
+            rooms_visited=len(ps.visited),
+            objects_resolved=len(resolved),
+            known_info=len(ps.known_info),
+            win_object_state=(
+                ps.object_states.get(win.object_id) if win.object_id else None
+            ),
+            chain_depth=chain_depth,
+            agents=[
+                AgentEpisodeResult(
+                    agent_id=a,
+                    final_room=ps.agent_rooms.get(a, ""),
+                    inventory=list(ps.agent_inventories.get(a, [])),
+                    history=per_agent_history[a],
+                )
+                for a in self.agent_ids
+            ],
+            history=history,
+        )

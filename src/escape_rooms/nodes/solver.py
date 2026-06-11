@@ -11,7 +11,7 @@ from typing import Callable
 
 from langchain_core.messages import AIMessage
 
-from src.escape_rooms.agents.solver_agent import objective, solve_world
+from src.escape_rooms.agents.solver_agent import objective
 from src.escape_rooms.state import GameState, GameWorld, PartyState, SolverResult
 from src.escape_rooms.utils.logging import get_node_logger
 
@@ -20,7 +20,8 @@ log = get_node_logger("solver")
 
 def solver_node(
     state: GameState,
-    on_tick: Callable[[dict, PartyState, GameWorld], None] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
+    num_agents: int = 1,
 ) -> dict:
     world = state.world
     if world is None or not world.rooms or not world.win_condition.object_id:
@@ -28,14 +29,18 @@ def solver_node(
         return {"solver_result": None}
 
     log.info(
-        "Starting — win target: {!r} -> {!r}  rooms={}  objects={}",
+        "Starting — win target: {!r} -> {!r}  rooms={}  objects={}  agents={}",
         world.win_condition.object_id, world.win_condition.state,
-        len(world.rooms), len(world.objects),
+        len(world.rooms), len(world.objects), num_agents,
     )
+
+    from src.escape_rooms.agents.multi_solver import solve_world_cooperative
 
     trace: list[str] = []
     debug_log: list[dict] = []
-    result, optimal = solve_world(world, trace=trace, debug_log=debug_log, on_tick=on_tick)
+    result, optimal = solve_world_cooperative(
+        world, num_agents=num_agents, trace=trace, debug_log=debug_log, on_tick=on_tick,
+    )
     score = objective(world, result, optimal_len=len(optimal))
 
     verdict = "ESCAPED" if score["won"] else "FAILED"

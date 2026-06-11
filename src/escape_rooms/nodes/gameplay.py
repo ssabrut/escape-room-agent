@@ -1250,7 +1250,9 @@ def _render_unified_plan(room_id: str, plan: list[str], reasoning: str = "") -> 
 # ---------- initial state ----------
 
 
-def _build_initial_party_state(world: GameWorld) -> PartyState:
+def _build_initial_party_state(
+    world: GameWorld, agent_ids: list[str] | None = None
+) -> PartyState:
     starting_room = world.rooms[0].id if world.rooms else ""
     object_states = {o.id: o.state for o in world.objects}
     fuse_states = {o.id: dict(o.fuses) for o in world.objects if o.fuses is not None}
@@ -1259,13 +1261,28 @@ def _build_initial_party_state(world: GameWorld) -> PartyState:
         for label, state in fuses.items():
             if state == "ON":
                 power_active.add(f"sekring_{label}_ON")
+    agent_ids = agent_ids or ["agent_1"]
     return PartyState(
         current_room=starting_room,
         visited={starting_room} if starting_room else set(),
         object_states=object_states,
         fuse_states=fuse_states,
         power_active=power_active,
+        agent_rooms={aid: starting_room for aid in agent_ids},
+        agent_inventories={aid: [] for aid in agent_ids},
     )
+
+
+def _load_agent_view(ps: PartyState, agent_id: str) -> None:
+    """Swap ps.current_room/inventory to agent_id's perspective for this turn."""
+    ps.current_room = ps.agent_rooms.get(agent_id, ps.current_room)
+    ps.inventory = ps.agent_inventories.get(agent_id, [])
+
+
+def _save_agent_view(ps: PartyState, agent_id: str) -> None:
+    """Persist the active perspective back into the per-agent dicts."""
+    ps.agent_rooms[agent_id] = ps.current_room
+    ps.agent_inventories[agent_id] = list(ps.inventory)
 
 
 def _check_victory(world: GameWorld, ps: PartyState) -> bool:
