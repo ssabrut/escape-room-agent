@@ -2,6 +2,17 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 13:35:57 WIB
+
+### What changed
+- World theming can now distribute its per-room LLM calls across multiple Ollama instances: a new `OLLAMA_THEMING_WORKERS` setting takes a comma-separated list of additional Ollama base URLs, and rooms are split round-robin between the local Ollama instance and each configured worker, themed concurrently.
+- `get_llm` now accepts an optional `base_url` override so a role's model can be pointed at a remote Ollama instance instead of the default `OLLAMA_BASE_URL`, with its cache key extended to include the override.
+
+### Why
+Theming a world with many rooms previously ran all per-room LLM calls against a single local Ollama instance even though calls are already parallelized per room; spreading rooms across additional machines on the LAN (mirroring the existing `SPRITE_WORKERS` fan-out for sprite generation) cuts wall-clock theming time roughly in proportion to the number of available Ollama instances.
+
+---
+
 ## 2026-06-11 11:10:42 WIB
 
 ### What changed

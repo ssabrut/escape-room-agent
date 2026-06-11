@@ -24,6 +24,15 @@ def _parse_keep_alive(val: str) -> "int | str":
 
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    # Comma-separated base URLs of additional Ollama instances (e.g. another Mac
+    # on the LAN running the same BUILDER_MODEL). When set, per-room theming
+    # calls (puzzle_graph.apply_theming) are split round-robin across the local
+    # Ollama instance and each of these, generated concurrently — mirrors
+    # SPRITE_WORKERS but talks directly to Ollama's HTTP API (no extra worker
+    # process needed).
+    ollama_theming_workers: list[str] = [
+        u.strip().rstrip("/") for u in os.getenv("OLLAMA_THEMING_WORKERS", "").split(",") if u.strip()
+    ]
     builder_model: str = os.getenv("BUILDER_MODEL", "llama3.2")
     player_model: str = os.getenv(
         "PLAYER_MODEL", os.getenv("BUILDER_MODEL", "llama3.2")
@@ -64,8 +73,11 @@ _ROLE_CONFIG = {
 }
 
 
-@lru_cache(maxsize=4)
-def get_llm(role: str = "game_master") -> ChatOllama:
+@lru_cache(maxsize=16)
+def get_llm(role: str = "game_master", base_url: str | None = None) -> ChatOllama:
+    """Return a cached ChatOllama for `role`, optionally pointed at `base_url`
+    instead of the default OLLAMA_BASE_URL (used to fan work out to additional
+    Ollama instances — see Settings.ollama_theming_workers)."""
     s = Settings()
     resolver = _ROLE_CONFIG.get(role)
     if resolver is None:
@@ -75,7 +87,7 @@ def get_llm(role: str = "game_master") -> ChatOllama:
     model, temperature = resolver(s)
     return ChatOllama(
         model=model,
-        base_url=s.ollama_base_url,
+        base_url=base_url or s.ollama_base_url,
         temperature=temperature,
         num_predict=s.ollama_num_predict,
         reasoning=False,
