@@ -439,6 +439,19 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
                 )
         log.trace("apply_theming names: {}", names)
 
+    # Drop non-ASCII names/descriptions — _slugify strips all non a-z0-9 chars, so
+    # a CJK (or other script) name collapses to "object"/"object_2"/... and the
+    # matching description (also non-ASCII) would still be applied to that id.
+    # Reject both per-object so the fallback (auto id + _fallback_description) is
+    # used for that object instead of shipping unreadable/garbled content.
+    bad_names = {oid for oid, name in names.items() if not name.isascii()}
+    bad_descs = {oid for oid, desc in descs.items() if not desc.isascii()}
+    for oid in bad_names | bad_descs:
+        if names.pop(oid, None) is not None:
+            log.warning("apply_theming: dropping non-ASCII name for {!r}", oid)
+        if descs.pop(oid, None) is not None:
+            log.warning("apply_theming: dropping non-ASCII description for {!r}", oid)
+
     # Build old_id -> new_id mapping for updating references.
     # Slugify LLM names to snake_case so they remain valid single-token action
     # targets (the engine splits actions on whitespace and uses parts[1] as the id).

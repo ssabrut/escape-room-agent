@@ -2,6 +2,16 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 11:10:42 WIB
+
+### What changed
+- World theming now rejects non-ASCII LLM-generated object names and descriptions on a per-object basis: if a themed name or description contains any non-ASCII characters, it's dropped and that object falls back to its auto-generated id and default description instead of being applied.
+
+### Why
+The slugifier strips all non a-z0-9 characters, so a non-ASCII name (e.g. CJK script) collapses into a generic id like `object`/`object_2`, but its paired non-ASCII description would still be applied to that id — producing garbled or unreadable content. Rejecting both per-object before the id-mapping step ensures only the safe fallback is used for affected objects.
+
+---
+
 ## 2026-06-11 10:55:24 WIB
 
 ### What changed
