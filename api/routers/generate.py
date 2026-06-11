@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 from src.escape_rooms.nodes.solver import solver_node
-from src.escape_rooms.state import GameState
+from src.escape_rooms.state import GameState, GameWorld, PartyState
 from src.escape_rooms.utils.pixel_art import generate_world_sprites
 from src.escape_rooms.utils.renderer import render_world
 
@@ -94,29 +94,6 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     if world is None:
         raise RuntimeError("puzzle_builder produced no world")
 
-    solver_result = None
-    if req.solve:
-        emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
-        state = state.model_copy(update={"world": world})
-
-        def on_tick(record: dict) -> None:
-            emit.put({"type": "tick", **record})
-
-        solver_update = solver_node(state, on_tick=on_tick)
-        solver_result = solver_update.get("solver_result")
-
-    solver_log = None
-    if solver_result is not None:
-        solver_log = SolverLog(
-            won=solver_result.won,
-            ticks=solver_result.ticks,
-            optimal=solver_result.optimal,
-            reward=solver_result.reward,
-            efficiency=solver_result.efficiency,
-            wasted=solver_result.wasted,
-            history=solver_result.history,
-        )
-
     total_objects = len(world.objects)
     emit.put({
         "type": "progress",
@@ -136,10 +113,44 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
         })
 
     sprites = generate_world_sprites(world.objects, on_progress=on_sprite_progress)
+    emit.put({"type": "sprites", "sprites": sprites})
+
+    solver_result = None
+    last_render: dict | None = None
+    if req.solve:
+        emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
+        state = state.model_copy(update={"world": world})
+
+        def on_tick(record: dict, ps: PartyState, tick_world: GameWorld) -> None:
+            nonlocal last_render
+            last_render = render_world(
+                rooms=tick_world.rooms,
+                objects=tick_world.objects,
+                current_room=ps.current_room,
+                inventory=ps.inventory,
+                object_states=ps.object_states,
+                tick=ps.tick,
+            )
+            emit.put({"type": "tick", "render": last_render, **record})
+
+        solver_update = solver_node(state, on_tick=on_tick)
+        solver_result = solver_update.get("solver_result")
+
+    solver_log = None
+    if solver_result is not None:
+        solver_log = SolverLog(
+            won=solver_result.won,
+            ticks=solver_result.ticks,
+            optimal=solver_result.optimal,
+            reward=solver_result.reward,
+            efficiency=solver_result.efficiency,
+            wasted=solver_result.wasted,
+            history=solver_result.history,
+        )
 
     response = GenerateResponse(
         world=world.model_dump(mode="json", exclude_none=True),
-        render=render_world(
+        render=last_render or render_world(
             rooms=world.rooms,
             objects=world.objects,
             current_room=world.rooms[0].id if world.rooms else "",

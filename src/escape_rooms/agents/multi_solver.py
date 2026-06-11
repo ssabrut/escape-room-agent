@@ -46,7 +46,7 @@ def cognitive_solver_policy(
     scratchpad_limit: int = 30,
     trace: list | None = None,
     debug_log: list[dict] | None = None,
-    on_tick: Callable[[dict], None] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld], None] | None = None,
     *,
     enforce_candidate_policy: bool = True,
 ):
@@ -266,7 +266,7 @@ def cognitive_solver_policy(
             if debug_log is not None:
                 debug_log.append(tick_record)
             if on_tick is not None:
-                on_tick(tick_record)
+                on_tick(tick_record, ps, world)
 
         state["prev_ps"] = ps.model_copy(deep=True)
         state["prev_action"] = action

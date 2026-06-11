@@ -298,7 +298,7 @@ def _load_world(path: Path) -> GameWorld:
 def solve_world(
     world: GameWorld, role: str = "solver", trace: list | None = None,
     strategy: str = "cognitive", debug_log: list[dict] | None = None,
-    on_tick: Callable[[dict], None] | None = None,
+    on_tick: Callable[[dict, PartyState, GameWorld], None] | None = None,
 ):
     """Run the LLM solver once. Returns (EpisodeResult, optimal_path_steps).
 

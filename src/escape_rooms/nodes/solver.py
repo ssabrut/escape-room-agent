@@ -12,13 +12,16 @@ from typing import Callable
 from langchain_core.messages import AIMessage
 
 from src.escape_rooms.agents.solver_agent import objective, solve_world
-from src.escape_rooms.state import GameState, SolverResult
+from src.escape_rooms.state import GameState, GameWorld, PartyState, SolverResult
 from src.escape_rooms.utils.logging import get_node_logger
 
 log = get_node_logger("solver")
 
 
-def solver_node(state: GameState, on_tick: Callable[[dict], None] | None = None) -> dict:
+def solver_node(
+    state: GameState,
+    on_tick: Callable[[dict, PartyState, GameWorld], None] | None = None,
+) -> dict:
     world = state.world
     if world is None or not world.rooms or not world.win_condition.object_id:
         log.warning("solver_node: no world or win condition — skipping")
