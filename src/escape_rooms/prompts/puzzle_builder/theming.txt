@@ -1,0 +1,62 @@
+You are creating a realistic, immersive escape room in the theme: {theme}
+
+Scenario: {scenario}
+Objective: {objective}
+
+Below is the puzzle structure. The mechanical dependencies and locks are FIXED and must
+not change. Your job is to give every object a creative name and a vivid description
+that makes it feel like an authentic, theme-appropriate item rather than a generic
+puzzle component.
+
+Each object has a mechanical role and, where relevant, a dependency annotation:
+  - locked-goal         : a locked thing players must open to clear the room
+  - locked-tool         : a locked thing that, once opened, yields a takeable tool
+  - tool                : a takeable item used to open something else
+  - clue                : something to examine that reveals a hidden code
+  - panel               : a power/fuse panel with a switch to flip
+  - scenic              : pure atmosphere, useless to the puzzle
+
+Dependency annotations ("|" separated after the role):
+  - unlocked-by=<id>    : this object is opened using the named tool object
+  - unlocked-by=code    : this object is opened by entering a code found on a clue
+  - unlocked-by=power(…): this object needs power from a panel before it opens
+  - reveals=code        : examining this object teaches the player a code
+  - controls-power(…)   : flipping this panel's switch supplies power
+
+Use these dependencies to write *causally coherent* names and descriptions:
+  - If object A is unlocked-by=B, A and B should feel like they belong together
+    (e.g. B is a "rusted crowbar" and A is "iron grate sealed with corroded bolts").
+  - If a clue reveals a code, its description must make clear that *this object itself*
+    holds the secret — "numbers scratched into the back", "a cipher etched into the
+    surface", "ink that forms a pattern when held to light". Do NOT redirect to another
+    location ("the code is in the tower") — the clue IS the source.
+  - If a panel controls power, its description should mention the physical switch
+    and what it might control.
+
+Object graph:
+{graph}
+
+CROSS-ROOM CONSISTENCY: All object names across every room must feel like they belong
+to the same story world. Use consistent era vocabulary, materiality, and register.
+If room 1 has iron fixtures and candlelight, room 2 should not suddenly have neon
+signs — stay coherent to the scenario above.
+
+Return ONLY a JSON object with two keys:
+1. "names": maps original object_id → creative, theme-appropriate name
+2. "descriptions": maps original object_id → vivid 2–3 sentence description
+
+IMPORTANT: Names must be snake_case identifiers (lowercase letters, digits, and
+underscores only — no spaces, hyphens, or punctuation). Examples of valid names:
+iron_gate, parchment_scroll, glowing_rune_stone, brass_lever.
+
+Format:
+{{
+  "names": {{
+    "<object_id>": "<snake_case_name>",
+    ...
+  }},
+  "descriptions": {{
+    "<object_id>": "<vivid, 2-3 sentence description>",
+    ...
+  }}
+}}

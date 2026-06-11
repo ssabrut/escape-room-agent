@@ -1,80 +1,779 @@
-"""Main entrypoint — runs game_master once and prints output."""
+"""Main entrypoint — runs the world-generation pipeline.
+
+Generates and displays a world (world_builder -> puzzle_builder). Solving is handled
+separately by the deterministic oracle and the LLM solver agent (agents.solver_agent).
+"""
 
 from __future__ import annotations
 
 import argparse
 import io
+import json
+import os
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-from graph import graph
-from state import GameState
-from visualization import render_room_layout
+from langchain_core.messages import BaseMessage
+from pydantic import BaseModel
+
+from src.escape_rooms.state import GameState, GameWorld
+from src.escape_rooms.utils.logging import setup_logging, get_node_logger
+from src.escape_rooms.utils.pixel_art import generate_world_sprites
+from src.escape_rooms.utils.renderer import render_room_layout, render_world
+
+setup_logging()
+log = get_node_logger("main")
+
+THEMES = [
+    "Haunted House",
+    "Murder Mystery",
+    "Prison Break",
+    "Pirate Adventure",
+    "Bank Robbery",
+    "Cosmic Crisis",
+    "Treasure Hunt",
+    "Zombie Apocalypse",
+    "Secret Agents and Spies",
+    "Horror",
+]
+
+
+def _pick_theme() -> str:
+    """Prompt the user to choose a theme with arrow-key navigation."""
+    import questionary
+
+    choice = questionary.select(
+        "Choose your escape room theme:",
+        choices=THEMES,
+        use_shortcuts=False,
+    ).ask()
+    if choice is None:
+        print("No theme selected — exiting.")
+        sys.exit(0)
+    return choice
+
 
 SMOKE_DIR = Path("smoke_runs")
+LOG_DIR = Path("logs")
+API_RUNS_DIR = Path("api_runs")
+NODE_NAMES = (
+    "world_builder",
+    "puzzle_builder",
+)
+
+
+def _jsonable(value):
+    if isinstance(value, BaseModel):
+        # exclude_none drops always-null sibling fields (e.g. Prerequisite's
+        # unused type-fields, WorldObject's irrelevant precondition slots) so the
+        # logged JSON shows only the keys that carry meaning for each record.
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, BaseMessage):
+        return {"type": value.type, "content": value.content}
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _build_api_payload(world, solver_result=None) -> dict:
+    """Build the full API-shaped payload (render + solution + sprites) for `world`."""
+    from api.routers.generate import SolverLog
+
+    solver_log = None
+    if solver_result is not None:
+        solver_log = SolverLog(
+            won=solver_result.won,
+            ticks=solver_result.ticks,
+            optimal=solver_result.optimal,
+            reward=solver_result.reward,
+            efficiency=solver_result.efficiency,
+            wasted=solver_result.wasted,
+            history=solver_result.history,
+        ).model_dump()
+
+    return {
+        "world": _jsonable(world),
+        "render": render_world(
+            rooms=world.rooms,
+            objects=world.objects,
+            current_room=world.rooms[0].id if world.rooms else "",
+        ),
+        "solution_path": world.solution_path or [],
+        "num_rooms": len(world.rooms),
+        "num_objects": len(world.objects),
+        "solver": solver_log,
+        "sprites": generate_world_sprites(world.objects),
+    }
+
+
+def _write_api_run(world, theme: str, solver_result=None) -> Path:
+    """Dump the full API-shaped JSON to api_runs/<timestamp>_<theme>.json."""
+    API_RUNS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = theme.lower().replace(" ", "_")
+    out_path = API_RUNS_DIR / f"{timestamp}_{slug}.json"
+
+    payload = _build_api_payload(world, solver_result)
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return out_path
+
+
+def _write_api_payload(world, path: Path, solver_result=None) -> str:
+    """Write the API-shaped payload for `world` to `path`. Returns a status note.
+
+    Diagnostic only (used by smoke runs), so failures are swallowed rather than
+    aborting the smoke run.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        payload = _build_api_payload(world, solver_result)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return ""
+    return f" + {path.name}"
+
+
+def _write_world_json(world, path: Path) -> str:
+    """Serialize the final assembled GameWorld to JSON. Returns a status note."""
+    if world is None:
+        return ""
+    path.write_text(
+        json.dumps({"world": _jsonable(world)}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return f" + {path.name}"
+
+
+def _write_node_log(node: str, update: dict, root: Path = LOG_DIR) -> Path:
+    node_dir = root / node
+    node_dir.mkdir(parents=True, exist_ok=True)
+    messages = update.get("messages") or []
+    raw = "\n\n---\n\n".join(
+        m.content for m in messages if isinstance(m, BaseMessage) and m.content
+    )
+    (node_dir / "raw.txt").write_text(raw, encoding="utf-8")
+
+    attempt_log = update.get("_attempt_log")
+    if attempt_log:
+        (node_dir / "attempts.json").write_text(
+            json.dumps(attempt_log, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    parsed = {
+        k: _jsonable(v)
+        for k, v in update.items()
+        if k not in ("messages", "_attempt_log")
+    }
+    (node_dir / "output.json").write_text(
+        json.dumps(parsed, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return node_dir
 
 
 def _render(result: dict) -> None:
     world = result.get("world")
     rooms = world.rooms if world else []
+    objects = world.objects if world else []
 
     print("\n" + "=" * 94)
     print(" ESCAPE ROOM MAP")
     print("=" * 94 + "\n")
 
     if rooms:
-        render_room_layout(rooms)
+        render_room_layout(rooms, objects)
     else:
         print("  [No room layout could be parsed from the LLM response]\n")
 
-    messages = result.get("messages", [])
-    if messages:
-        print("\n[Game Master Narrative]:")
-        print(messages[-1].content)
+    if world:
+        print("\n" + "=" * 94)
+        print(" SCENARIO")
+        print("=" * 94 + "\n")
+        print(f"  {world.scenario}\n")
+        print(f"  Objective: {world.objective}")
+        win = world.win_condition
+        print(f"  Win when : {win.object_id} → {win.state}\n")
+        if world.solution_path:
+            print("  Solution path:")
+            for step in world.solution_path:
+                print(f"    {step}")
+            print()
 
 
-def run() -> None:
-    result = graph.invoke(GameState(theme="pirate"))
+
+def _format_timing_table(node_times: dict[str, float]) -> list[str]:
+    """Return lines for a per-node elapsed-time table."""
+    if not node_times:
+        return []
+    lines = ["", "-- Node timing " + "-" * 79]
+    total = sum(node_times.values())
+    for node, elapsed in node_times.items():
+        pct = elapsed / total * 100 if total else 0
+        bar = "#" * int(pct / 5)
+        lines.append(f"  {node:<22} {elapsed:6.2f}s  {pct:5.1f}%  {bar}")
+    lines.append(f"  {'TOTAL':<22} {total:6.2f}s")
+    return lines
+
+
+def _print_timing_table(node_times: dict[str, float]) -> None:
+    """Print the per-node timing table to stdout."""
+    for line in _format_timing_table(node_times):
+        print(line)
+    print()
+
+
+def _write_run_summary(
+    result: dict, path: Path, node_times: dict[str, float] | None = None
+) -> None:
+    """Write a clean, human-readable summary of the final output from each node."""
+    lines: list[str] = []
+    W = 94
+
+    def _h1(title: str) -> None:
+        lines.append("=" * W)
+        lines.append(f"  {title}")
+        lines.append("=" * W)
+
+    def _h2(title: str) -> None:
+        lines.append("")
+        lines.append(f"-- {title} " + "-" * max(0, W - len(title) - 4))
+
+    # --- world_builder ---
+    world = result.get("world")
+    _h1("WORLD BUILDER")
+    if world:
+        lines.append(f"  Scenario  : {world.scenario}")
+        lines.append(f"  Objective : {world.objective}")
+        win = world.win_condition
+        lines.append(f"  Win when  : {win.object_id} → {win.state}")
+        _h2("Rooms")
+        for r in world.rooms:
+            lines.append(f"  [{r.id}]  {r.description}")
+            lines.append(f"    Goal       : {r.goal}")
+            gc = (
+                r.goal_completion.model_dump(exclude_none=True)
+                if r.goal_completion
+                else "(none)"
+            )
+            lines.append(f"    Completion : {gc}")
+            lines.append(f"    Adjacency  : {r.adjacency}")
+    else:
+        lines.append("  (no world generated)")
+
+    # --- puzzle_builder ---
+    lines.append("")
+    _h1("PUZZLE BUILDER")
+    if world and world.objects:
+        _h2("Objects")
+        for o in world.objects:
+            parts = [f"  [{o.id}] @ {o.location} | state={o.state}"]
+            if o.requires_tool:
+                parts.append(f"requires_tool={o.requires_tool}")
+            if o.requires_code:
+                parts.append(f"requires_code={o.requires_code!r}")
+            if o.requires_liquid:
+                parts.append(f"requires_liquid={o.requires_liquid}")
+            if o.requires_power:
+                parts.append(f"requires_power={o.requires_power}")
+            if o.fuses:
+                parts.append(f"fuses={list(o.fuses.keys())}")
+            if o.contains_info:
+                parts.append(f"contains_info={o.contains_info!r}")
+            lines.append(" | ".join(parts))
+        if world.solution_path:
+            _h2("Solution path")
+            for step in world.solution_path:
+                lines.append(f"  {step}")
+    else:
+        lines.append("  (no objects generated)")
+
+    if node_times:
+        lines.extend(_format_timing_table(node_times))
+
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _report_eval_failures(eval_failures: list[str]) -> None:
+    """Print a final summary line for per-node eval tracing."""
+    if not eval_failures:
+        return
+    print(
+        f"\n  [eval] {len(eval_failures)} node(s) FAILED their eval: "
+        f"{', '.join(eval_failures)}"
+    )
+
+
+def run(
+    log_nodes: list[str] | None = None,
+    theme: str = "",
+    trace_eval: bool = False,
+    solve: bool = False,
+) -> None:
+    log_nodes = log_nodes or []
+    if not theme:
+        theme = _pick_theme()
+
+    node_times: dict[str, float] = {}
+    log_set = set(log_nodes)
+    eval_failures: list[str] = []
+    eval_root = LOG_DIR if trace_eval else None
+
+    from src.escape_rooms.nodes.world_builder import world_builder_node
+    from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+    from src.escape_rooms.state import GameState as _GS
+
+    state = _GS(theme=theme)
+    t0 = time.perf_counter()
+    wb_update = world_builder_node(state)
+    node_times["world_builder"] = time.perf_counter() - t0
+    if "world_builder" in log_set:
+        node_dir = _write_node_log("world_builder", wb_update)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+    if trace_eval and not _eval_node("world_builder", wb_update, eval_root):
+        eval_failures.append("world_builder")
+
+    state = state.model_copy(update={"world": wb_update.get("world")})
+    t0 = time.perf_counter()
+    pb_update = puzzle_builder_node(state)
+    node_times["puzzle_builder"] = time.perf_counter() - t0
+    if "puzzle_builder" in log_set:
+        node_dir = _write_node_log("puzzle_builder", pb_update)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+    result = {**wb_update, **pb_update}
+    if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
+        eval_failures.append("puzzle_builder")
+
     _render(result)
+    _print_timing_table(node_times)
+    _report_eval_failures(eval_failures)
+
+    solver_result = None
+    if solve:
+        from src.escape_rooms.nodes.solver import solver_node
+        world = result.get("world")
+        if world:
+            t0 = time.perf_counter()
+            solver_result = solver_node(state.model_copy(update={"world": world})).get("solver_result")
+            node_times["solver"] = time.perf_counter() - t0
+            _print_timing_table({"solver": node_times["solver"]})
+
+    world = result.get("world")
+    if world:
+        out_path = _write_api_run(world, theme, solver_result)
+        print(f"  [api] wrote {out_path}")
 
 
-def _run_once_captured() -> str:
-    """Run the graph once with stdout captured, returning the buffered output."""
+def _run_once_captured(
+    log_nodes: list[str] | None,
+    log_root: Path | None,
+    theme: str = "pirate",
+) -> tuple[str, dict, dict[str, float]]:
+    """Run the generation pipeline once with stdout captured.
+
+    If log_nodes is set, write per-node logs under log_root. Returns the captured
+    text, the merged result dict, and a per-node elapsed-time mapping.
+    """
+    log_set = set(log_nodes or [])
+    node_times: dict[str, float] = {}
     buf = io.StringIO()
     orig_stdout = sys.stdout
     sys.stdout = buf
     try:
-        result = graph.invoke(GameState(theme="pirate"))
+        from src.escape_rooms.nodes.world_builder import world_builder_node
+        from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+        from src.escape_rooms.state import GameState as _GS
+
+        state = _GS(theme=theme)
+
+        t0 = time.perf_counter()
+        wb_update = world_builder_node(state)
+        node_times["world_builder"] = time.perf_counter() - t0
+        if log_set and "world_builder" in log_set:
+            node_dir = _write_node_log(
+                "world_builder", wb_update, root=log_root or LOG_DIR
+            )
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+        state = state.model_copy(update={"world": wb_update.get("world")})
+
+        t0 = time.perf_counter()
+        pb_update = puzzle_builder_node(state)
+        node_times["puzzle_builder"] = time.perf_counter() - t0
+        if log_set and "puzzle_builder" in log_set:
+            node_dir = _write_node_log(
+                "puzzle_builder", pb_update, root=log_root or LOG_DIR
+            )
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+        result = {**wb_update, **pb_update}
         _render(result)
     finally:
         sys.stdout = orig_stdout
-    return buf.getvalue()
+    return buf.getvalue(), result, node_times
 
 
-def smoke(n: int) -> None:
+def _write_policy_benchmark(world, out_path: Path) -> None:
+    """Run the LLM-free policy benchmark for `world` and write it to `out_path`.
+
+    Diagnostic only — used by the --struct-eval flow so the per-node trace also
+    captures how the baseline policies fare on the assembled world. Failures are
+    swallowed so a benchmark hiccup never aborts the eval trace.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return
+    try:
+        from benchmark.run import compute_policy_benchmark
+
+        rows = compute_policy_benchmark(world)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"      [eval] wrote {out_path}")
+    except Exception as exc:
+        print(f"      [eval] policy benchmark skipped: {exc}")
+
+
+def _eval_node(
+    node: str, result: dict, out_root: Path | None = None
+) -> bool:
+    """Run the structural eval that belongs to `node` and print a PASS/FAIL trace.
+
+    Returns True if the node's eval passed (or had no eval to run). This is a
+    fast, deterministic check per pipeline stage.
+    """
+    world = result.get("world")
+    issues: list[str] = []
+
+    if node == "world_builder":
+        if world is None:
+            issues.append("no world produced")
+        else:
+            from src.escape_rooms.nodes.world_builder import _eval_world_structure, MAX_ROOMS
+            from benchmark.policies import check_solvable
+
+            issues += _eval_world_structure(world, len(world.rooms) or MAX_ROOMS)
+            # Solvability is only meaningful once objects exist; at this stage
+            # objects is usually empty, so skip the object-graph walk.
+            if world.objects:
+                issues += check_solvable(world).issues
+    elif node == "puzzle_builder":
+        if world is None:
+            issues.append("no world to check (puzzle_builder produced nothing)")
+        else:
+            from benchmark.policies import check_solvable, oracle_solve
+
+            issues += check_solvable(world).issues
+            # Dynamic verdict: actually play start->escape (BFS-first, complete
+            # within its budget) — catches solvability gaps the static walk misses.
+            result = oracle_solve(world)
+            if not result.victory:
+                issues.append(
+                    f"oracle failed to win in {result.ticks} tick(s) "
+                    f"(last room: {result.last_room}, "
+                    f"win object state: {result.win_object_state!r})"
+                )
+    else:
+        # No structural eval defined for this node. Nothing to trace.
+        return True
+
+    passed = not issues
+    status = "PASS" if passed else f"FAIL ({len(issues)} issue(s))"
+    print(f"  [eval:{node}] {status}")
+    for i, msg in enumerate(issues, 1):
+        print(f"      {i}. {msg}")
+
+    if out_root is not None:
+        out_path = out_root / node / "eval.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "node": node,
+                    "status": "PASS" if passed else "FAIL",
+                    "passed": passed,
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "issues": issues,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"      [eval] wrote {out_path}")
+
+        # The policy benchmark needs the fully-assembled world (objects exist
+        # only once puzzle_builder has run), so emit it at that stage.
+        if node == "puzzle_builder" and world is not None:
+            _write_policy_benchmark(world, out_root / node / "benchmark.json")
+
+    return passed
+
+
+def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None":
+    """Load a saved GameState from a node output.json (or a bare world.json).
+
+    Accepts either a full GameState dump (keys like world/characters/party) or a
+    bare world JSON (wrapped or unwrapped in a 'world' key). Returns a GameState
+    seeded with whatever upstream fields the file carries, so a single node can
+    run against it.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  [node] could not read {path}: {exc}")
+        return None
+    if not isinstance(raw, dict):
+        print(f"  [node] {path} is not a JSON object")
+        return None
+
+    # A GameState dump has top-level node fields; a bare world has rooms/scenario.
+    is_state = any(k in raw for k in ("characters", "party", "party_state")) or (
+        "world" in raw and "rooms" not in raw
+    )
+    fields: dict = {}
+    if is_state:
+        fields = {k: v for k, v in raw.items() if k != "messages"}
+    else:
+        fields = {"world": raw.get("world", raw)}
+    if theme:
+        fields["theme"] = theme
+
+    try:
+        return GameState.model_validate(fields)
+    except Exception as exc:
+        print(f"  [node] could not parse GameState from {path}: {exc}")
+        return None
+
+
+# Maps a node name to (entry function, required GameState fields it reads).
+# world_builder needs nothing but a theme, so its requirements are empty.
+def _node_registry() -> dict:
+    from src.escape_rooms.nodes.world_builder import world_builder_node
+    from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+
+    return {
+        "world_builder": (world_builder_node, ()),
+        "puzzle_builder": (puzzle_builder_node, ("world",)),
+    }
+
+
+def run_node(
+    node: str,
+    from_path: str | None = None,
+    theme: str = "",
+    trace_eval: bool = False,
+) -> None:
+    """Run a single pipeline node independently against saved upstream state.
+
+    world_builder runs from a theme alone; every other node loads its inputs
+    from --from PATH (a prior node's output.json or a world.json). The node's
+    output is written to logs/<node>/output.json.
+    """
+    registry = _node_registry()
+    if node not in registry:
+        print(f"  [node] unknown node '{node}'. Choices: {', '.join(registry)}")
+        sys.exit(1)
+    fn, required = registry[node]
+
+    # Build the seed state.
+    if node == "world_builder":
+        if not theme:
+            theme = _pick_theme()
+        state = GameState(theme=theme)
+    else:
+        if not from_path:
+            print(
+                f"  [node] '{node}' needs upstream state — pass --from PATH "
+                f"(a saved output.json carrying: {', '.join(required)})"
+            )
+            sys.exit(1)
+        loaded = _load_game_state_from_json(Path(from_path), theme=theme)
+        if loaded is None:
+            sys.exit(1)
+        state = loaded
+        # Verify the inputs this node depends on are actually present.
+        missing = [
+            f for f in required if not getattr(state, f, None)
+        ]
+        if missing:
+            print(
+                f"  [node] '{node}' is missing required input(s) {missing} in "
+                f"{from_path}. Run the upstream node first."
+            )
+            sys.exit(1)
+
+    print(f"  [node] running '{node}' independently...")
+    t0 = time.perf_counter()
+    update = fn(state)
+    elapsed = time.perf_counter() - t0
+
+    node_dir = _write_node_log(node, update)
+    print(f"  [node] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+    _print_timing_table({node: elapsed})
+
+    if trace_eval:
+        # Eval against the merged state so e.g. puzzle_builder sees the world.
+        merged = {**{k: getattr(state, k) for k in ("world",)}, **update}
+        if not _eval_node(node, merged, LOG_DIR):
+            _report_eval_failures([node])
+
+
+def _write_benchmark(world, path: Path) -> str:
+    """Write the LLM-free policy benchmark for `world` to `path` as JSON.
+
+    Returns a short suffix for the per-run console line (e.g. " + benchmark.json")
+    or "" if there was no usable world to benchmark. Diagnostic only, so failures
+    are swallowed rather than aborting the smoke run.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        from benchmark.run import compute_policy_benchmark
+
+        rows = compute_policy_benchmark(world)
+        path.write_text(
+            json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        return ""
+    return f" + {path.name}"
+
+
+def _write_bfs_path(world, path: Path) -> str:
+    """Solve `world` with the no-LLM oracle and write the winning action path.
+
+    Uses `bfs_policy` — an exhaustive breadth-first search that returns the
+    SHORTEST winning action sequence (or the greedy heuristic as a fallback when
+    no win is found within the search budget). The path is replayed through the
+    headless engine with history recording and written to `path`. Diagnostic
+    only, so failures are swallowed rather than aborting the smoke run.
+
+    Returns a short suffix for the per-run console line, or "" on no usable world.
+    """
+    if world is None or not getattr(world, "rooms", None):
+        return ""
+    try:
+        from benchmark.engine import HeadlessEpisode
+        from benchmark.policies import bfs_policy, heuristic_policy
+
+        policy = bfs_policy(world)
+        is_bfs = policy is not heuristic_policy  # bfs falls back to heuristic on miss
+        result = HeadlessEpisode(world).run(policy, record_history=True)
+
+        kind = "BFS shortest" if is_bfs else "heuristic best-effort (BFS found no path in budget)"
+        lines = [
+            f"solvable (oracle won): {result.victory}",
+            f"path source: {kind}",
+            f"ticks: {result.ticks}    chain_depth: {result.chain_depth}",
+            "",
+            "winning action path:" if result.victory else "action trace (no win reached):",
+            *(f"  {h}" for h in result.history),
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return ""
+    return f" + {path.name}"
+
+
+def smoke(
+    n: int,
+    log_nodes: list[str] | None = None,
+    trace_eval: bool = False,
+    theme: str = "pirate",
+) -> None:
     SMOKE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = SMOKE_DIR / timestamp
     run_dir.mkdir()
 
-    print(f"Smoke test: {n} run(s) → {run_dir}/")
+    print(f"Smoke test (theme: {theme}): {n} run(s) → {run_dir}/")
+    if log_nodes:
+        print(f"  [log] per-run node logs under {run_dir}/run_<NNN>_logs/")
 
     errors = 0
+    eval_records: list[dict] = []  # per-run structural eval outcomes for the roll-up
     for i in range(1, n + 1):
         print(f"  [{i}/{n}] generating...", end=" ", flush=True)
         try:
-            output = _run_once_captured()
+            log_root = run_dir / f"run_{i:03d}_logs" if log_nodes else None
             out_file = run_dir / f"run_{i:03d}.txt"
-            out_file.write_text(output, encoding="utf-8")
-            rooms_count = output.count("┌" + "─")
-            print(f"done ({rooms_count} room(s)) → {out_file.name}")
+            output, result, node_times = _run_once_captured(
+                log_nodes, log_root, theme=theme
+            )
+            _write_run_summary(result, out_file, node_times=node_times)
+            (run_dir / f"run_{i:03d}_stdout.txt").write_text(output, encoding="utf-8")
+            world_note = _write_world_json(
+                result.get("world"), run_dir / f"run_{i:03d}.world.json"
+            )
+            bench_note = _write_benchmark(
+                result.get("world"), run_dir / f"run_{i:03d}.benchmark.json"
+            )
+            bfs_note = _write_bfs_path(
+                result.get("world"), run_dir / f"run_{i:03d}.bfs_path.txt"
+            )
+            api_note = _write_api_payload(
+                result.get("world"), run_dir / f"run_{i:03d}.api.json"
+            )
+            total_elapsed = sum(node_times.values())
+            print(
+                f"done in {total_elapsed:.1f}s → "
+                f"{out_file.name}{world_note}{bench_note}{bfs_note}{api_note}"
+            )
+            _print_timing_table(node_times)
+
+            if trace_eval:
+                # Structural per-node eval (PASS/FAIL + status/timestamp), written
+                # to each node's eval.json under this run's log dir.
+                eval_root = run_dir / f"run_{i:03d}_logs"
+                nodes = ("world_builder", "puzzle_builder")
+                per_node = {node: _eval_node(node, result, eval_root) for node in nodes}
+                eval_failures = [node for node, ok in per_node.items() if not ok]
+                _report_eval_failures(eval_failures)
+                eval_records.append(
+                    {
+                        "run": i,
+                        "passed": not eval_failures,
+                        "nodes": {
+                            node: ("PASS" if ok else "FAIL")
+                            for node, ok in per_node.items()
+                        },
+                        "failures": eval_failures,
+                    }
+                )
         except Exception as e:
             errors += 1
             err_file = run_dir / f"run_{i:03d}.error.txt"
             err_file.write_text(traceback.format_exc(), encoding="utf-8")
             print(f"ERROR → {err_file.name} ({e})")
+
+    if eval_records:
+        passed = sum(1 for r in eval_records if r["passed"])
+        per_node_pass: dict[str, int] = {}
+        for r in eval_records:
+            for node, status in r["nodes"].items():
+                per_node_pass[node] = per_node_pass.get(node, 0) + (status == "PASS")
+        roll_up = {
+            "runs_evaluated": len(eval_records),
+            "passed": passed,
+            "failed": len(eval_records) - passed,
+            "per_node_pass": per_node_pass,
+            "records": eval_records,
+        }
+        summary_path = run_dir / "trace_eval_summary.json"
+        summary_path.write_text(
+            json.dumps(roll_up, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(
+            f"\n  [trace-eval] {passed}/{len(eval_records)} run(s) passed "
+            f"→ {summary_path.name}"
+        )
 
     summary = f"\nAll runs saved to {run_dir}/"
     if errors:
@@ -83,18 +782,130 @@ def smoke(n: int) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Escape room game master")
+    parser = argparse.ArgumentParser(
+        description="Escape room pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  python main.py                          # generate a world\n"
+            "  python main.py --smoke 5\n"
+            "  python main.py --log world_builder --log puzzle_builder\n"
+            "  python main.py --struct-eval            # fast per-node structural eval\n"
+            "  python main.py --node world_builder --theme pirate   # run one node\n"
+            "  python main.py --node puzzle_builder --from logs/world_builder/output.json\n"
+            "  python main.py --solve                  # also run the LLM solver\n"
+            "  # every run also dumps the API-shaped JSON (api_runs/<ts>_<theme>.json"
+            " for a normal run,\n"
+            "  # run_<NNN>.api.json per run under smoke_runs/<ts>/ for --smoke)\n"
+        ),
+    )
     parser.add_argument(
         "--smoke",
         metavar="N",
         type=int,
-        help="Run the generator N times and save each output to smoke_runs/<timestamp>/",
+        help="Run N times and save each output to smoke_runs/<timestamp>/",
+    )
+    parser.add_argument(
+        "--log",
+        metavar="NODE",
+        action="append",
+        choices=(*NODE_NAMES, "all"),
+        help=(
+            "Log a node's parsed output and raw LLM response. Repeatable. "
+            "Use 'all' to log every node. "
+            "Choices: " + ", ".join((*NODE_NAMES, "all"))
+        ),
+    )
+    parser.add_argument(
+        "--hard",
+        action="store_true",
+        help="Hard mode: generate multi-room worlds with deep puzzle chains, "
+        "validated solvable before play (default: 2-room mode).",
+    )
+    parser.add_argument(
+        "--rooms",
+        type=int,
+        metavar="N",
+        help="Number of rooms in hard mode (implies --hard). Default: 4.",
+    )
+    parser.add_argument(
+        "--struct-eval",
+        "--trace-eval",  # deprecated alias
+        dest="trace_eval",
+        action="store_true",
+        help="STRUCTURAL evaluator (fast, deterministic, no LLM). Runs inline as "
+        "each node finishes: world_builder is checked for room count/adjacency/goal "
+        "coherence; puzzle_builder is checked for SOLVABILITY (object-graph walk). "
+        "(alias: --trace-eval)",
+    )
+    parser.add_argument(
+        "--theme",
+        default="",
+        metavar="THEME",
+        help="Theme for generation (skips the interactive picker). "
+        "Used by --node world_builder and the normal pipeline.",
+    )
+    parser.add_argument(
+        "--node",
+        choices=list(NODE_NAMES),
+        metavar="NAME",
+        help="Run a SINGLE node independently against saved upstream state "
+        "(see --from). world_builder runs from --theme alone. Output is written "
+        "to logs/<node>/output.json. Choices: " + ", ".join(NODE_NAMES),
+    )
+    parser.add_argument(
+        "--solve",
+        action="store_true",
+        help="Run the LLM solver after generation and print its result.",
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_path",
+        metavar="PATH",
+        help="With --node: path to a saved output.json (or world.json) carrying "
+        "the upstream state the node needs as input.",
     )
     args = parser.parse_args()
+
+    # Translate hard-mode flags into env vars BEFORE the graph runs; Settings()
+    # is constructed fresh inside world_builder_node and reads these.
+    if args.hard or args.rooms is not None:
+        os.environ["HARD_MODE"] = "true"
+        if args.rooms is not None:
+            os.environ["NUM_ROOMS"] = str(args.rooms)
+
+    log_nodes = args.log
+    if log_nodes and "all" in log_nodes:
+        log_nodes = list(NODE_NAMES)
+
+    # --node NAME: run a single node independently against saved state, then exit.
+    # --smoke takes precedence — when both are given, --node is ignored.
+    if args.node and args.smoke is None:
+        run_node(
+            args.node,
+            from_path=args.from_path,
+            theme=args.theme,
+            trace_eval=args.trace_eval,
+        )
+        sys.exit(0)
+
+    # For all generation paths, ask the user to pick a theme now (once) unless
+    # one was supplied via --theme.
+    theme = args.theme or _pick_theme()
 
     if args.smoke is not None:
         if args.smoke < 1:
             parser.error("--smoke requires a positive integer")
-        smoke(args.smoke)
+        smoke(
+            args.smoke,
+            log_nodes=log_nodes,
+            trace_eval=args.trace_eval,
+            theme=theme,
+        )
     else:
-        run()
+        run(
+            log_nodes=log_nodes,
+            theme=theme,
+            trace_eval=args.trace_eval,
+            solve=args.solve,
+        )
