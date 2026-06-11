@@ -2,6 +2,18 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 09:24:44 WIB
+
+### What changed
+- The LLM solver now has a new "cognitive" strategy (the new default) that pairs the LLM with a deterministic planning layer: a `TeamCognition` module derives the current goal, a SOLVED/STILL-TO-DO board, milestones, loop/stall detection, and a ranked list of valid candidate actions each turn, while an `ActionPlanner` runs a short-horizon beam search over simulated future states to recommend and score actions.
+- The solver's turn loop now enforces several gates on the LLM's chosen action: it overrides free (examine/wait) actions when the agent is stuck, redirects off-policy actions back to a recommended candidate, and forces a higher-value action when the planner finds the LLM's choice is dominated by a much better option.
+- `solve_world` and the `benchmark` CLI now accept a `--strategy` option (`cognitive` or `react`) to choose between the new cognitive policy and the original single-pass ReAct policy.
+
+### Why
+Ports the cognitive architecture from the "Escapee" project (deterministic goal-tracking, milestone/loop detection, and beam-search action planning) to give the LLM solver explicit guardrails against stalling, looping, and low-value moves over long episodes, while keeping the existing ReAct policy available via `--strategy react` for comparison.
+
+---
+
 ## 2026-06-10 14:55:40 WIB
 
 ### What changed
