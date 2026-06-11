@@ -2,6 +2,38 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-11 20:22:54 WIB
+
+### What changed
+- Added a `GET /generate/runs` endpoint that lists previously generated worlds saved under `api_runs/`. For each `*.json` file (newest first), it returns a `SavedRunSummary` with `filename`, a human-readable `theme` (derived by stripping the `<timestamp>_` prefix from the filename and title-casing the remaining slug), `created_at` (parsed from the `YYYYMMDD_HHMMSS` filename prefix, falling back to the file's mtime if unparseable), `num_rooms`, `num_objects`, and the run's `solver` log if present. Files that fail to read or parse as JSON are silently skipped.
+- Added a `GET /generate/runs/{filename}` endpoint that returns the full API-shaped `GenerateResponse` for a single saved run. Rejects filenames containing `/` or `\` or not ending in `.json` with a 400, returns 404 if the file doesn't exist, and 500 if it can't be read or parsed as JSON.
+
+### Why
+Lets a client browse and re-load previously generated worlds (e.g. to re-run `/generate/solve` against one or inspect a past run's solver results) without needing direct filesystem access to `api_runs/`.
+
+### Files changed
+- `api/routers/generate.py` — added `SavedRunSummary` (BaseModel with `filename`, `theme`, `created_at`, `num_rooms`, `num_objects`, `solver: SolverLog | None`), `list_runs()` registered as `GET /runs`, and `get_run(filename: str)` registered as `GET /runs/{filename}`.
+
+### Key code
+```python
+@router.get("/runs")
+def list_runs() -> list[SavedRunSummary]:
+    """List previously generated worlds saved under api_runs/."""
+    ...
+
+@router.get("/runs/{filename}")
+def get_run(filename: str) -> GenerateResponse:
+    """Fetch a previously generated world's full API-shaped JSON."""
+    if "/" in filename or "\\" in filename or not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    ...
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-11 19:28:26 WIB
 
 ### What changed

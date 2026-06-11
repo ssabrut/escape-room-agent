@@ -221,6 +221,68 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     return StreamingResponse(_stream_pipeline(lambda emit: _run_pipeline(req, emit)), media_type="application/x-ndjson")
 
 
+class SavedRunSummary(BaseModel):
+    filename: str
+    theme: str
+    created_at: datetime
+    num_rooms: int
+    num_objects: int
+    solver: SolverLog | None = None
+
+
+@router.get("/runs")
+def list_runs() -> list[SavedRunSummary]:
+    """List previously generated worlds saved under api_runs/."""
+    if not OUTPUT_DIR.exists():
+        return []
+
+    summaries: list[SavedRunSummary] = []
+    for path in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        timestamp_part = path.stem.split("_")[:2]
+        try:
+            created_at = datetime.strptime("_".join(timestamp_part), "%Y%m%d_%H%M%S")
+        except ValueError:
+            created_at = datetime.fromtimestamp(path.stat().st_mtime)
+
+        theme_slug = path.stem[len("_".join(timestamp_part)) + 1:] or path.stem
+        theme = theme_slug.replace("_", " ").title()
+
+        solver_data = data.get("solver")
+        summaries.append(SavedRunSummary(
+            filename=path.name,
+            theme=theme,
+            created_at=created_at,
+            num_rooms=data.get("num_rooms", 0),
+            num_objects=data.get("num_objects", 0),
+            solver=SolverLog(**solver_data) if solver_data else None,
+        ))
+
+    return summaries
+
+
+@router.get("/runs/{filename}")
+def get_run(filename: str) -> GenerateResponse:
+    """Fetch a previously generated world's full API-shaped JSON."""
+    if "/" in filename or "\\" in filename or not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    path = OUTPUT_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read run: {exc}") from exc
+
+    return GenerateResponse(**data)
+
+
 class SolveRequest(BaseModel):
     world: dict = Field(..., description="A previously generated world (the 'world' field of a /generate response)")
     num_agents: int = Field(1, ge=1, le=4, description="Number of cooperating solver agents")
