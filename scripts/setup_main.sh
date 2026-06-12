@@ -16,6 +16,9 @@
 # up every "_sprite-worker._tcp.local." instance currently advertising on the
 # LAN. Either way, newly found URLs are merged (deduped) with any already in
 # SPRITE_WORKERS in .env, then each worker's /health endpoint is checked.
+# Only workers that pass the health check are written to SPRITE_WORKERS —
+# unreachable ones are dropped (and reported) so the main machine continues
+# distributing inference across the remaining healthy workers.
 #
 # Start each worker first with ./scripts/setup_worker.sh on that machine.
 
@@ -80,38 +83,48 @@ for u in "${URLS[@]+"${URLS[@]}"}" "${NEW_URLS[@]+"${NEW_URLS[@]}"}"; do
     [[ "${skip}" -eq 0 ]] && MERGED+=("${u}")
 done
 
-MERGED_CSV="$(IFS=,; echo "${MERGED[*]}")"
+echo ""
+echo "Checking worker health..."
+
+declare -a HEALTHY=()
+declare -a UNHEALTHY=()
+for url in "${MERGED[@]+"${MERGED[@]}"}"; do
+    if curl -fsS --max-time 5 "${url}/health" >/dev/null 2>&1; then
+        echo "  OK    ${url}"
+        HEALTHY+=("${url}")
+    else
+        echo "  FAIL  ${url}"
+        UNHEALTHY+=("${url}")
+    fi
+done
+
+HEALTHY_CSV="$(IFS=,; echo "${HEALTHY[*]+"${HEALTHY[*]}"}")"
 
 if grep -q "^SPRITE_WORKERS=" "${ENV_FILE}"; then
-    sed -i.bak "s|^SPRITE_WORKERS=.*|SPRITE_WORKERS=${MERGED_CSV}|" "${ENV_FILE}"
+    sed -i.bak "s|^SPRITE_WORKERS=.*|SPRITE_WORKERS=${HEALTHY_CSV}|" "${ENV_FILE}"
     rm -f "${ENV_FILE}.bak"
 else
     {
         echo ""
         echo "# Pixel-art sprite generation worker(s) (LAN)"
-        echo "SPRITE_WORKERS=${MERGED_CSV}"
+        echo "SPRITE_WORKERS=${HEALTHY_CSV}"
     } >> "${ENV_FILE}"
 fi
 
-echo "Set SPRITE_WORKERS=${MERGED_CSV} in ${ENV_FILE}"
+echo "Set SPRITE_WORKERS=${HEALTHY_CSV} in ${ENV_FILE}"
 echo ""
-echo "Checking worker health..."
 
-FAILED=0
-for url in "${MERGED[@]+"${MERGED[@]}"}"; do
-    if curl -fsS --max-time 5 "${url}/health" >/dev/null 2>&1; then
-        echo "  OK    ${url}"
-    else
-        echo "  FAIL  ${url}"
-        FAILED=1
-    fi
-done
+if [[ "${#UNHEALTHY[@]}" -gt 0 ]]; then
+    echo "Skipping ${#UNHEALTHY[@]} unreachable worker(s):" >&2
+    for url in "${UNHEALTHY[@]}"; do
+        echo "  - ${url}" >&2
+    done
+    echo "Make sure ./scripts/setup_worker.sh is running on each worker Mac to re-add them." >&2
+    echo "" >&2
+fi
 
-echo ""
-if [[ "${FAILED}" -eq 0 ]]; then
-    echo "All ${#MERGED[@]} worker(s) reachable. Distributed sprite generation is ready."
+if [[ "${#HEALTHY[@]}" -gt 0 ]]; then
+    echo "${#HEALTHY[@]} worker(s) reachable. Distributed sprite generation will use these workers."
 else
-    echo "One or more workers are unreachable." >&2
-    echo "Make sure ./scripts/setup_worker.sh is running on each worker Mac." >&2
-    exit 1
+    echo "No workers reachable — sprite generation will run locally only."
 fi

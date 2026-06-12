@@ -14,8 +14,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
 from src.escape_rooms.nodes.solver import solver_node
-from src.escape_rooms.state import GameState, GameWorld, PartyState
+from src.escape_rooms.state import GameState, GameWorld, PartyState, Storyboard
 from src.escape_rooms.utils.pixel_art import generate_world_sprites
 from src.escape_rooms.utils.renderer import render_world
 
@@ -63,6 +64,7 @@ class GenerateResponse(BaseModel):
     num_objects: int
     solver: SolverLog | None = None
     sprites: dict[str, str] = {}  # object_id → base64 PNG
+    storyboard: dict | None = None
 
 
 def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
@@ -94,6 +96,12 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     world = pb_update.get("world") or wb_update.get("world")
     if world is None:
         raise RuntimeError("puzzle_builder produced no world")
+
+    state = state.model_copy(update={"world": world})
+
+    emit.put({"type": "progress", "stage": "story", "message": "Writing the story and characters..."})
+    sb_update = storyboard_builder_node(state)
+    storyboard: Storyboard | None = sb_update.get("storyboard")
 
     total_objects = len(world.objects)
     emit.put({
@@ -163,6 +171,7 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
         num_objects=len(world.objects),
         solver=solver_log,
         sprites=sprites,
+        storyboard=storyboard.model_dump(mode="json", exclude_none=True) if storyboard else None,
     )
 
     OUTPUT_DIR.mkdir(exist_ok=True)

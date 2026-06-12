@@ -2,6 +2,62 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 09:21:11 WIB
+
+### What changed
+- The `/generate` API endpoint now runs `storyboard_builder_node` as part of `_run_pipeline`, after `puzzle_builder` and before sprite generation/solving. It emits a `{"type": "progress", "stage": "story", "message": "Writing the story and characters..."}` event, then calls `storyboard_builder_node(state)` (with `state` updated via `state.model_copy(update={"world": world})` so the node sees the assembled `GameWorld`) and extracts `sb_update.get("storyboard")` as a `Storyboard | None`.
+- `GenerateResponse` gained a new `storyboard: dict | None = None` field. The final response now includes `storyboard.model_dump(mode="json", exclude_none=True)` when a storyboard was produced, or `None` if the node returned nothing (e.g. non-mystery degrade or world is empty) — so API clients now receive the narrative layer (plot, personas, room stories, discovery beats, mystery/solution for mystery themes) alongside the generated world.
+- `./scripts/setup_main.sh`'s worker health check now runs *before* `SPRITE_WORKERS` is written to `.env`, and only workers that pass `/health` are written — unreachable workers are dropped from the saved list (previously all merged URLs, healthy or not, were written, and the script only reported failures afterward and exited non-zero if any worker was down). Reachable workers are collected into `HEALTHY` and written as `HEALTHY_CSV`; unreachable ones go into `UNHEALTHY` and are reported to stderr with a hint to start `./scripts/setup_worker.sh` on each. The script no longer exits 1 when some/all workers are unreachable — if zero workers are healthy it now prints "No workers reachable — sprite generation will run locally only." and exits 0, since local generation remains a valid fallback.
+
+### Why
+Surfaces the previously-generated-but-unused storyboard (added in the prior commit) through the public `/generate` API so clients can render narrative content alongside the world. The setup script change ensures `SPRITE_WORKERS` never contains stale/dead worker URLs that would otherwise need manual cleanup, and treats an unreachable worker as a degrade-to-local rather than a hard setup failure.
+
+### Files changed
+- `api/routers/generate.py` — imports `storyboard_builder_node` and `Storyboard`; `GenerateResponse` gained `storyboard: dict | None = None`; `_run_pipeline` calls `state.model_copy(update={"world": world})`, emits a `"story"` progress event, runs `storyboard_builder_node(state)`, and includes the serialized storyboard in the returned `GenerateResponse`.
+- `scripts/setup_main.sh` — reordered the script so the `/health` check over `MERGED` runs first, splitting results into `HEALTHY`/`UNHEALTHY` arrays; `SPRITE_WORKERS` is now written from `HEALTHY_CSV` instead of `MERGED_CSV`; unreachable workers are reported to stderr with a re-add hint; removed the `exit 1` on any/all workers unreachable, replaced with a "running locally only" message when `HEALTHY` is empty.
+
+### Key code
+```diff
+# api/routers/generate.py
+     if world is None:
+         raise RuntimeError("puzzle_builder produced no world")
+
++    state = state.model_copy(update={"world": world})
++
++    emit.put({"type": "progress", "stage": "story", "message": "Writing the story and characters..."})
++    sb_update = storyboard_builder_node(state)
++    storyboard: Storyboard | None = sb_update.get("storyboard")
++
+     total_objects = len(world.objects)
+```
+
+```diff
+# api/routers/generate.py — GenerateResponse
+     solver: SolverLog | None = None
+     sprites: dict[str, str] = {}  # object_id → base64 PNG
++    storyboard: dict | None = None
+```
+
+```bash
+# scripts/setup_main.sh
+declare -a HEALTHY=()
+declare -a UNHEALTHY=()
+for url in "${MERGED[@]+"${MERGED[@]}"}"; do
+    if curl -fsS --max-time 5 "${url}/health" >/dev/null 2>&1; then
+        HEALTHY+=("${url}")
+    else
+        UNHEALTHY+=("${url}")
+    fi
+done
+HEALTHY_CSV="$(IFS=,; echo "${HEALTHY[*]+"${HEALTHY[*]}"}")"
+# ... SPRITE_WORKERS=${HEALTHY_CSV} written to .env ...
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-12 09:13:28 WIB
 
 ### What changed
