@@ -401,6 +401,8 @@ def run(
         print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
     result = {**result, **sb_update}
+    if trace_eval and not _eval_node("storyboard_builder", result, eval_root):
+        eval_failures.append("storyboard_builder")
 
     _render(result)
     _print_timing_table(node_times)
@@ -419,6 +421,9 @@ def run(
 
             node_dir = _write_node_log("solver", solver_update)
             print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt + {node_dir}/debug.json")
+
+            if trace_eval:
+                _eval_node("solver", solver_update, eval_root)
 
     world = result.get("world")
     if world:
@@ -543,13 +548,32 @@ def _eval_node(
             issues += check_solvable(world).issues
             # Dynamic verdict: actually play start->escape (BFS-first, complete
             # within its budget) — catches solvability gaps the static walk misses.
-            result = oracle_solve(world)
-            if not result.victory:
+            oracle = oracle_solve(world)
+            if not oracle.victory:
                 issues.append(
-                    f"oracle failed to win in {result.ticks} tick(s) "
-                    f"(last room: {result.last_room}, "
-                    f"win object state: {result.win_object_state!r})"
+                    f"oracle failed to win in {oracle.ticks} tick(s) "
+                    f"(last room: {oracle.last_room}, "
+                    f"win object state: {oracle.win_object_state!r})"
                 )
+    elif node == "storyboard_builder":
+        storyboard = result.get("storyboard")
+        if world is None:
+            issues.append("no world to check storyboard against")
+        elif storyboard is None:
+            issues.append("no storyboard produced")
+        else:
+            from src.escape_rooms.nodes.storyboard_builder import _eval_storyboard
+
+            issues += _eval_storyboard(world, storyboard, result.get("characters"))
+    elif node == "solver":
+        solver_result = result.get("solver_result")
+        if solver_result is None:
+            issues.append("no solver result produced")
+        elif not solver_result.won:
+            issues.append(
+                f"solver failed to escape in {solver_result.ticks} tick(s) "
+                f"(optimal={solver_result.optimal}, wasted={solver_result.wasted})"
+            )
     else:
         # No structural eval defined for this node. Nothing to trace.
         return True
@@ -841,8 +865,12 @@ def smoke(
                 # Structural per-node eval (PASS/FAIL + status/timestamp), written
                 # to each node's eval.json under this run's log dir.
                 eval_root = run_dir / f"run_{i:03d}_logs"
-                nodes = ("world_builder", "puzzle_builder")
+                nodes = ("world_builder", "puzzle_builder", "storyboard_builder")
                 per_node = {node: _eval_node(node, result, eval_root) for node in nodes}
+                if solve and solver_result is not None:
+                    per_node["solver"] = _eval_node(
+                        "solver", {"solver_result": solver_result}, eval_root
+                    )
                 eval_failures = [node for node, ok in per_node.items() if not ok]
                 _report_eval_failures(eval_failures)
                 eval_records.append(

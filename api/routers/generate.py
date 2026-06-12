@@ -17,7 +17,7 @@ from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
 from src.escape_rooms.nodes.solver import solver_node
-from src.escape_rooms.state import GameState, GameWorld, PartyState, Storyboard
+from src.escape_rooms.state import GameState, GameWorld, PartyState, Storyboard, StoryboardSolution
 from src.escape_rooms.utils.pixel_art import generate_world_sprites
 from src.escape_rooms.utils.renderer import render_world
 
@@ -466,3 +466,58 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
 @router.post("/solve")
 def solve(req: SolveRequest) -> StreamingResponse:
     return StreamingResponse(_stream_pipeline(lambda emit: _run_solve_pipeline(req, emit)), media_type="application/x-ndjson")
+
+
+MAX_DEDUCTION_ATTEMPTS = 3
+
+
+class DeductionRequest(BaseModel):
+    storyboard: dict = Field(..., description="The 'storyboard' field from a /generate response")
+    suspect_name: str = Field(..., description="Display name of the suspect the player is accusing")
+    attempt: int = Field(1, ge=1, description="Which attempt this is (1-indexed)")
+
+
+class DeductionResponse(BaseModel):
+    correct: bool
+    attempt: int
+    max_attempts: int
+    attempts_remaining: int
+    hint: str | None = None
+    narration: str | None = None
+
+
+@router.post("/deduction")
+def submit_deduction(req: DeductionRequest) -> DeductionResponse:
+    """Validate a player's suspect accusation against the sealed solution.
+
+    The storyboard dict (echoed back by the client) carries the sealed
+    `solution` answer, but the client never decodes or displays it — only
+    this endpoint reads it, so the answer stays server-side.
+    """
+    solution_data = req.storyboard.get("solution")
+    solution = StoryboardSolution.model_validate(solution_data) if solution_data else StoryboardSolution()
+
+    if solution.is_empty():
+        raise HTTPException(status_code=422, detail="This case has no deduction to make")
+
+    correct = solution.matches(req.suspect_name)
+    attempts_remaining = max(0, MAX_DEDUCTION_ATTEMPTS - req.attempt)
+
+    if correct:
+        return DeductionResponse(
+            correct=True,
+            attempt=req.attempt,
+            max_attempts=MAX_DEDUCTION_ATTEMPTS,
+            attempts_remaining=attempts_remaining,
+            narration=solution.victory_narration_hook or None,
+        )
+
+    hint = solution.hint_1 if req.attempt == 1 else solution.hint_2
+    return DeductionResponse(
+        correct=False,
+        attempt=req.attempt,
+        max_attempts=MAX_DEDUCTION_ATTEMPTS,
+        attempts_remaining=attempts_remaining,
+        hint=hint or None,
+        narration=solution.defeat_narration_hook if attempts_remaining <= 0 else None,
+    )

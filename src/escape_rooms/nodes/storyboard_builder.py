@@ -546,6 +546,74 @@ def _build_storyboard(data: dict, world_id: str) -> Storyboard:
 
 
 # ---------------------------------------------------------------------------
+# Eval — deterministic structural check on the generated storyboard
+# ---------------------------------------------------------------------------
+
+
+def _eval_storyboard(world: GameWorld, storyboard: Storyboard, characters: list[Character] | None = None) -> list[str]:
+    """Return violation strings for the generated storyboard.
+
+    Genre-agnostic checks (apply to every theme):
+      - plot_victim/plot_threat/plot_stakes are non-empty
+      - every room has a room_stories entry
+      - ending_guidance has 'won' and 'lost' entries
+      - every character has an adapted_personas entry
+
+    Mystery-only checks (storyboard.mystery.killer_name is non-empty):
+      - mystery.proof_object_id references a real object in world.objects
+      - solution.answer is non-empty
+      - at least 2 suspects, with the killer among them
+      - discovery_beats has a non-empty entry for the proof object
+    """
+    issues: list[str] = []
+
+    if not storyboard.plot_victim:
+        issues.append("missing plot_victim")
+    if not storyboard.plot_threat:
+        issues.append("missing plot_threat")
+    if not storyboard.plot_stakes:
+        issues.append("missing plot_stakes")
+
+    for room in world.rooms:
+        if not storyboard.room_stories.get(room.id):
+            issues.append(f"room '{room.id}': missing room_stories entry")
+
+    for key in ("won", "lost"):
+        if not storyboard.ending_guidance.get(key):
+            issues.append(f"ending_guidance: missing '{key}' entry")
+
+    for character in characters or []:
+        if character.name not in storyboard.adapted_personas:
+            issues.append(f"missing adapted_personas entry for character '{character.name}'")
+
+    if storyboard.mystery.killer_name:
+        object_ids = {o.id for o in world.objects}
+        proof_id = storyboard.mystery.proof_object_id
+        if not proof_id:
+            issues.append("mystery: missing proof_object_id")
+        elif proof_id not in object_ids:
+            issues.append(f"mystery: proof_object_id '{proof_id}' is not a real object in world.objects")
+
+        if not storyboard.solution.answer:
+            issues.append("mystery: missing solution.answer")
+
+        if len(storyboard.suspects) < 2:
+            issues.append(f"mystery: expected at least 2 suspects, got {len(storyboard.suspects)}")
+
+        suspect_names = {s.get("name") for s in storyboard.suspects if isinstance(s, dict)}
+        if storyboard.mystery.killer_name not in suspect_names:
+            issues.append(
+                f"mystery: killer_name '{storyboard.mystery.killer_name}' is not among "
+                f"the generated suspects {sorted(n for n in suspect_names if n)}"
+            )
+
+        if proof_id and not storyboard.discovery_beats.get(proof_id):
+            issues.append(f"mystery: missing discovery_beats entry for proof object '{proof_id}'")
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
 
@@ -581,18 +649,14 @@ def storyboard_builder_node(state: GameState) -> dict:
             log.warning("storyboard_builder: core pass failed — relying on repair")
         case_facts = _case_facts(data)
 
-    # Passes 2 (beats) and 3 (flavor) are independent given case_facts — run them
-    # concurrently, each on its own Ollama instance if Settings.ollama_workers
-    # lists additional LAN instances (same fan-out pattern as
-    # puzzle_graph.apply_theming).
+    # Passes 2 (beats) and 3 (flavor) are independent given case_facts — run
+    # them concurrently on the local Ollama instance.
     from concurrent.futures import ThreadPoolExecutor
 
-    from src.escape_rooms.utils.settings import get_worker_llms
-
-    llms = get_worker_llms("storyboard")
+    llm = get_llm("storyboard")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        beats_future = pool.submit(_run_beats_pass, world_data, is_mystery, case_facts, llms[0])
-        flavor_future = pool.submit(_run_flavor_pass, world_data, is_mystery, case_facts, llms[1 % len(llms)])
+        beats_future = pool.submit(_run_beats_pass, world_data, is_mystery, case_facts, llm)
+        flavor_future = pool.submit(_run_flavor_pass, world_data, is_mystery, case_facts, llm)
         beats = beats_future.result()
         flavor = flavor_future.result()
 

@@ -8,17 +8,6 @@ the first call and kept in memory for subsequent calls. Model weights are
 
 One-time setup:
     pip install torch torchvision diffusers transformers accelerate sentencepiece peft
-
-Distributed generation:
-    Sprite jobs are independent, so they can be fanned out across this
-    machine plus one or more remote workers (see sprite_worker.py) running
-    the same pipeline on other machines. Set SPRITE_WORKERS to a comma
-    separated list of worker base URLs, e.g.:
-
-        SPRITE_WORKERS=http://192.168.1.50:8001
-
-    Jobs are split round-robin across the local pipeline and every
-    configured remote worker, generated concurrently.
 """
 
 from __future__ import annotations
@@ -30,7 +19,6 @@ import os
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable
 
 import requests
@@ -256,55 +244,22 @@ def generate_world_sprites(
 ) -> dict[str, str]:
     """Return a mapping of object_id → base64 PNG for every object in *objects*.
 
-    If SPRITE_WORKERS lists one or more remote workers (see sprite_worker.py),
-    the batch of objects is split round-robin between this machine's local
-    pipeline and each remote worker, generated concurrently — each machine
-    still generates its share sequentially on its own pipeline, but the
-    shares run in parallel with each other.
-
     If *on_progress* is given, it is called as ``on_progress(done, total, object_id)``
     after each sprite finishes, so callers can stream progress updates.
     """
     total = len(objects)
     log.info("Generating sprites for {} object(s)...", total)
 
-    if not _REMOTE_WORKERS or total <= 1:
-        sprites = {}
-        with tqdm(total=total, desc="Sprites", unit="obj") as pbar:
-            for i, obj in enumerate(objects, start=1):
-                log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
-                start = time.monotonic()
-                sprites[obj.id] = generate_object_sprite(obj)
-                elapsed = time.monotonic() - start
-                log.info("  [{}/{}] Generated sprite for {!r} in {:.1f}s", i, total, obj.id, elapsed)
-                pbar.update(1)
-                if on_progress:
-                    on_progress(i, total, obj.id)
-        log.info("Sprite generation complete — {} sprite(s)", len(sprites))
-        return sprites
-
-    # One slot for the local pipeline, one per remote worker.
-    slots: list = [generate_object_sprite] + [
-        (lambda obj, _url=url: _generate_via_remote(_url, obj)) for url in _REMOTE_WORKERS
-    ]
-    log.info("Distributing sprite generation across {} machine(s) (1 local + {} remote)", len(slots), len(_REMOTE_WORKERS))
-
-    sprites: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=len(slots)) as pool:
-        batch_start = time.monotonic()
-        futures = {
-            pool.submit(slots[i % len(slots)], obj): obj
-            for i, obj in enumerate(objects)
-        }
-        with tqdm(total=total, desc="Sprites", unit="obj") as pbar:
-            for i, future in enumerate(futures, start=1):
-                obj = futures[future]
-                sprites[obj.id] = future.result()
-                elapsed = time.monotonic() - batch_start
-                log.info("  [{}/{}] Generated sprite for {!r} (batch elapsed {:.1f}s)", i, total, obj.id, elapsed)
-                pbar.update(1)
-                if on_progress:
-                    on_progress(i, total, obj.id)
-
+    sprites = {}
+    with tqdm(total=total, desc="Sprites", unit="obj") as pbar:
+        for i, obj in enumerate(objects, start=1):
+            log.trace("  Generating sprite for {!r} — {!r}", obj.id, (obj.description or "")[:50])
+            start = time.monotonic()
+            sprites[obj.id] = generate_object_sprite(obj)
+            elapsed = time.monotonic() - start
+            log.info("  [{}/{}] Generated sprite for {!r} in {:.1f}s", i, total, obj.id, elapsed)
+            pbar.update(1)
+            if on_progress:
+                on_progress(i, total, obj.id)
     log.info("Sprite generation complete — {} sprite(s)", len(sprites))
     return sprites

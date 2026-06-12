@@ -408,10 +408,6 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
     One theming call is fired per room, concurrently — each call's prompt only
     carries that room's object graph, so per-call output is smaller and rooms
     theme in parallel instead of one large sequential call for the whole world.
-
-    If Settings.ollama_workers lists additional Ollama instances, rooms
-    are split round-robin across `llm` (local) and one ChatOllama per worker —
-    same fan-out pattern as pixel_art.generate_world_sprites/SPRITE_WORKERS.
     """
     log.info("apply_theming: theme={!r}  {} object(s) to theme", theme, len(world.objects))
     names: dict[str, str] = {}  # original_id -> creative_name
@@ -419,19 +415,10 @@ def apply_theming(world: GameWorld, theme: str, llm=None) -> GameWorld:
     if llm is not None:
         from concurrent.futures import ThreadPoolExecutor
 
-        from src.escape_rooms.utils.settings import get_worker_llms
-
-        llms = get_worker_llms("game_master", llm)
-        if len(llms) > 1:
-            log.info(
-                "apply_theming: distributing {} room(s) across {} Ollama instance(s) (1 local + {} remote)",
-                len(world.rooms), len(llms), len(llms) - 1,
-            )
-
         with ThreadPoolExecutor(max_workers=max(1, len(world.rooms))) as pool:
             futures = {
-                pool.submit(_theme_room, world, room, theme, llms[i % len(llms)]): room
-                for i, room in enumerate(world.rooms)
+                pool.submit(_theme_room, world, room, theme, llm): room
+                for room in world.rooms
             }
             for future, room in futures.items():
                 try:
