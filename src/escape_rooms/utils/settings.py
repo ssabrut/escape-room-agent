@@ -25,13 +25,17 @@ def _parse_keep_alive(val: str) -> "int | str":
 class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     # Comma-separated base URLs of additional Ollama instances (e.g. another Mac
-    # on the LAN running the same BUILDER_MODEL). When set, per-room theming
-    # calls (puzzle_graph.apply_theming) are split round-robin across the local
-    # Ollama instance and each of these, generated concurrently — mirrors
-    # SPRITE_WORKERS but talks directly to Ollama's HTTP API (no extra worker
-    # process needed).
-    ollama_theming_workers: list[str] = [
-        u.strip().rstrip("/") for u in os.getenv("OLLAMA_THEMING_WORKERS", "").split(",") if u.strip()
+    # on the LAN running the same BUILDER_MODEL). When set, independent LLM calls
+    # within a generation step — per-room theming (puzzle_graph.apply_theming) and
+    # the storyboard's beats/flavor passes (storyboard_builder) — are split
+    # round-robin across the local Ollama instance and each of these, generated
+    # concurrently. Mirrors SPRITE_WORKERS but talks directly to Ollama's HTTP API
+    # (no extra worker process needed). OLLAMA_THEMING_WORKERS is accepted as a
+    # legacy alias.
+    ollama_workers: list[str] = [
+        u.strip().rstrip("/")
+        for u in os.getenv("OLLAMA_WORKERS", os.getenv("OLLAMA_THEMING_WORKERS", "")).split(",")
+        if u.strip()
     ]
     builder_model: str = os.getenv("BUILDER_MODEL", "llama3.2")
     player_model: str = os.getenv(
@@ -90,7 +94,7 @@ _ROLE_CONFIG = {
 def get_llm(role: str = "game_master", base_url: str | None = None) -> ChatOllama:
     """Return a cached ChatOllama for `role`, optionally pointed at `base_url`
     instead of the default OLLAMA_BASE_URL (used to fan work out to additional
-    Ollama instances — see Settings.ollama_theming_workers)."""
+    Ollama instances — see Settings.ollama_workers)."""
     s = Settings()
     resolver = _ROLE_CONFIG.get(role)
     if resolver is None:
@@ -107,3 +111,18 @@ def get_llm(role: str = "game_master", base_url: str | None = None) -> ChatOllam
         extra_body={"think": False},
         keep_alive=s.ollama_keep_alive,
     )
+
+
+def get_worker_llms(role: str, llm: ChatOllama | None = None) -> list[ChatOllama]:
+    """Return `[llm (local)] + one ChatOllama per Settings.ollama_workers`.
+
+    Lets a caller with N independent LLM calls round-robin them across the
+    local Ollama instance and any additional LAN instances — the same
+    fan-out pattern used by puzzle_graph.apply_theming and
+    storyboard_builder's beats/flavor passes. `llm` defaults to `get_llm(role)`
+    if not given.
+    """
+    if llm is None:
+        llm = get_llm(role)
+    worker_urls = Settings().ollama_workers
+    return [llm] + [get_llm(role, base_url=url) for url in worker_urls]

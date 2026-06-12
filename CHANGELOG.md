@@ -2,6 +2,73 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 14:52:21 WIB
+
+### What changed
+- The LAN fan-out mechanism previously limited to per-room world theming has been generalized into a shared `get_worker_llms(role, llm=None)` helper in `utils/settings.py`, and renamed from `OLLAMA_THEMING_WORKERS` to `OLLAMA_WORKERS` (a comma-separated list of additional Ollama base URLs). `Settings.ollama_workers` reads `OLLAMA_WORKERS`, falling back to `OLLAMA_THEMING_WORKERS` as a legacy alias. `get_worker_llms` returns `[llm (local)] + [get_llm(role, base_url=url) for url in worker_urls]`, defaulting `llm` to `get_llm(role)` if not given — any caller with N independent LLM calls can now round-robin them across the local Ollama instance plus any configured LAN workers.
+- `puzzle_graph.apply_theming` now calls `get_worker_llms("game_master", llm)` instead of building its worker list inline from `Settings().ollama_theming_workers`, preserving its existing round-robin-across-rooms behavior but sharing the new helper.
+- `storyboard_builder_node` now runs its two independent generation passes — pass 2 (`_run_beats_pass`, clue layer) and pass 3 (`_run_flavor_pass`, atmosphere layer) — concurrently instead of sequentially, via a `ThreadPoolExecutor(max_workers=2)`. Each pass now takes an optional `llm` parameter (threaded through to `_call_json(system_prompt, user_prompt, llm=None)`, which defaults to `get_llm("storyboard")` when `llm` is `None`); the two passes are dispatched against `llms = get_worker_llms("storyboard")`, with the beats pass on `llms[0]` (local) and the flavor pass on `llms[1 % len(llms)]` (a worker if one is configured, otherwise local again).
+- Added two new scripts for setting up distributed Ollama inference: `scripts/advertise_ollama.py` (run on each additional Mac; advertises its local Ollama instance via Bonjour/mDNS as `_ollama-worker._tcp.local.` on the port derived from `OLLAMA_HOST`, default 11434 — Ollama itself keeps serving normally, this only registers the mDNS record) and `scripts/discover_ollama.py` (browses for `_ollama-worker._tcp.local.` services for a configurable timeout, default 3s, printing one `<ip>:<port>` per line). Added `scripts/setup_ollama_worker.sh`, a per-worker setup script (mirroring `setup_worker.sh`'s conda-env bootstrap) that sets up the `escape-rooms` conda env, installs `requirements.txt`, prints the manual `OLLAMA_WORKERS=http://<lan-ip>:<port>` value, warns if Ollama isn't reachable on the expected port, and then execs `advertise_ollama.py` (unless run with `--setup`, which only does setup).
+- `scripts/setup_main.sh` was restructured: sprite-worker discovery/health-check logic (previously the whole script) is now conditional on `MERGED` being non-empty (prints "No sprite workers configured or discovered — skipping SPRITE_WORKERS." otherwise), and a new second section handles `OLLAMA_WORKERS` the same way — auto-discovering `_ollama-worker._tcp.local.` instances via `discover_ollama.py` (only when run with no arguments; manual single-worker mode now only adds a sprite worker and skips Ollama discovery), merging with any existing `OLLAMA_WORKERS`/`OLLAMA_THEMING_WORKERS` entries, health-checking each via `GET /` (Ollama's root endpoint, vs. sprite workers' `/health`), and writing only reachable URLs back to `OLLAMA_WORKERS` in `.env`. The script now resolves `PYTHON_BIN` (conda env `escape-rooms` if present, else `python3`) once up front and shares it across both sprite and Ollama discovery.
+- `.env.example` documents the renamed `OLLAMA_WORKERS` setting (with `OLLAMA_THEMING_WORKERS` noted as a legacy alias), describes the new storyboard beats/flavor fan-out alongside the existing per-room theming fan-out, and points to `setup_ollama_worker.sh` (per worker Mac) + `setup_main.sh` with no arguments (auto-discover) as the setup flow.
+
+### Why
+Generalizes the existing LAN-distributed-inference mechanism (previously special-cased to per-room world theming) so the storyboard builder's two independent LLM passes (beats and flavor) can also run concurrently and be spread across additional Ollama instances on the LAN, following the same fan-out pattern already used for sprite generation (`SPRITE_WORKERS`) and theming.
+
+### Files changed
+- `.env.example` — renamed `OLLAMA_THEMING_WORKERS` documentation to `OLLAMA_WORKERS`, describing both the per-room theming and storyboard beats/flavor fan-out, noting the legacy alias, and pointing to the new setup scripts.
+- `scripts/advertise_ollama.py` (new) — `_local_ip()` helper and `main(port)` async entry point; registers an `_ollama-worker._tcp.local.` `ServiceInfo` via `AsyncZeroconf` and keeps it advertised until interrupted.
+- `scripts/discover_ollama.py` (new) — `main()`; browses `_ollama-worker._tcp.local.` via `ServiceBrowser` for a configurable timeout and prints `<ip>:<port>` per discovered instance.
+- `scripts/setup_main.sh` — resolves `PYTHON_BIN` up front; gated sprite-worker health-check/`SPRITE_WORKERS` write behind `MERGED` being non-empty; added a new Ollama-worker section that reads/merges `OLLAMA_WORKERS`/`OLLAMA_THEMING_WORKERS`, optionally auto-discovers via `discover_ollama.py` (no-argument invocation only), health-checks each via `GET /`, and writes `OLLAMA_WORKERS` in `.env`.
+- `scripts/setup_ollama_worker.sh` (new) — bootstraps the `escape-rooms` conda env, installs dependencies, prints the manual `OLLAMA_WORKERS` value derived from the LAN IP and `OLLAMA_HOST`/port, checks local Ollama reachability, and execs `advertise_ollama.py` (unless `--setup`).
+- `src/escape_rooms/graphs/subgraphs/puzzle_graph.py` — `apply_theming` now builds its LLM list via `get_worker_llms("game_master", llm)` instead of `Settings().ollama_theming_workers` + manual `get_llm` calls; updated docstring/log message to reference `Settings.ollama_workers` and `len(llms)`.
+- `src/escape_rooms/nodes/storyboard_builder.py` — `_call_json(system_prompt, user_prompt, llm=None)` gained an `llm` param (defaults to `get_llm("storyboard")`); `_run_beats_pass`/`_run_flavor_pass` gained an `llm` param threaded to `_call_json`; `storyboard_builder_node` now runs both passes concurrently via `ThreadPoolExecutor(max_workers=2)` against `get_worker_llms("storyboard")`.
+- `src/escape_rooms/utils/settings.py` — `Settings.ollama_theming_workers` renamed to `ollama_workers`, now reads `OLLAMA_WORKERS` with `OLLAMA_THEMING_WORKERS` as a fallback env var; added `get_worker_llms(role, llm=None) -> list[ChatOllama]`; updated `get_llm`'s docstring reference.
+
+### Key code
+```python
+# src/escape_rooms/utils/settings.py
+def get_worker_llms(role: str, llm: ChatOllama | None = None) -> list[ChatOllama]:
+    """Return `[llm (local)] + one ChatOllama per Settings.ollama_workers`."""
+    if llm is None:
+        llm = get_llm(role)
+    worker_urls = Settings().ollama_workers
+    return [llm] + [get_llm(role, base_url=url) for url in worker_urls]
+```
+
+```diff
+# src/escape_rooms/nodes/storyboard_builder.py — storyboard_builder_node
+-    beats = _run_beats_pass(world_data, is_mystery, case_facts)
++    from concurrent.futures import ThreadPoolExecutor
++    from src.escape_rooms.utils.settings import get_worker_llms
++
++    llms = get_worker_llms("storyboard")
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        beats_future = pool.submit(_run_beats_pass, world_data, is_mystery, case_facts, llms[0])
++        flavor_future = pool.submit(_run_flavor_pass, world_data, is_mystery, case_facts, llms[1 % len(llms)])
++        beats = beats_future.result()
++        flavor = flavor_future.result()
+```
+
+```diff
+# src/escape_rooms/graphs/subgraphs/puzzle_graph.py — apply_theming
+-        worker_urls = Settings().ollama_theming_workers
+-        llms = [llm] + [get_llm("game_master", base_url=url) for url in worker_urls]
+-        if worker_urls:
++        llms = get_worker_llms("game_master", llm)
++        if len(llms) > 1:
+             log.info(
+                 "apply_theming: distributing {} room(s) across {} Ollama instance(s) (1 local + {} remote)",
+-                len(world.rooms), len(llms), len(worker_urls),
++                len(world.rooms), len(llms), len(llms) - 1,
+             )
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-12 14:01:19 WIB
 
 ### What changed

@@ -192,9 +192,10 @@ def _build_world_data(world: GameWorld, characters: list[Character]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _call_json(system_prompt: str, user_prompt: str) -> dict | None:
+def _call_json(system_prompt: str, user_prompt: str, llm=None) -> dict | None:
     """One LLM call returning a parsed JSON object, or None on any failure."""
-    llm = get_llm("storyboard")
+    if llm is None:
+        llm = get_llm("storyboard")
     try:
         response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     except Exception as exc:
@@ -237,24 +238,24 @@ def _case_facts_section(case_facts: dict | None) -> str:
     return "CASE_FACTS (immutable — use these exact names):\n" + json.dumps(case_facts, indent=2) + "\n\n"
 
 
-def _run_beats_pass(world_data: dict, is_mystery: bool, case_facts: dict | None) -> dict | None:
+def _run_beats_pass(world_data: dict, is_mystery: bool, case_facts: dict | None, llm=None) -> dict | None:
     """Pass 2 — clue layer, grounded in the now-fixed case facts."""
     user_prompt = BEATS_GENERATION_PROMPT.format(
         is_mystery="true" if is_mystery else "false",
         world_data_json=json.dumps(world_data, indent=2),
         case_facts_section=_case_facts_section(case_facts),
     )
-    return _call_json(BEATS_SYSTEM_PROMPT, user_prompt)
+    return _call_json(BEATS_SYSTEM_PROMPT, user_prompt, llm)
 
 
-def _run_flavor_pass(world_data: dict, is_mystery: bool, case_facts: dict | None) -> dict | None:
+def _run_flavor_pass(world_data: dict, is_mystery: bool, case_facts: dict | None, llm=None) -> dict | None:
     """Pass 3 — atmosphere layer: plot, adapted personas, room stories, phase guidance."""
     user_prompt = FLAVOR_GENERATION_PROMPT.format(
         is_mystery="true" if is_mystery else "false",
         world_data_json=json.dumps(world_data, indent=2),
         case_facts_section=_case_facts_section(case_facts),
     )
-    return _call_json(FLAVOR_SYSTEM_PROMPT, user_prompt)
+    return _call_json(FLAVOR_SYSTEM_PROMPT, user_prompt, llm)
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +581,21 @@ def storyboard_builder_node(state: GameState) -> dict:
             log.warning("storyboard_builder: core pass failed — relying on repair")
         case_facts = _case_facts(data)
 
-    beats = _run_beats_pass(world_data, is_mystery, case_facts)
+    # Passes 2 (beats) and 3 (flavor) are independent given case_facts — run them
+    # concurrently, each on its own Ollama instance if Settings.ollama_workers
+    # lists additional LAN instances (same fan-out pattern as
+    # puzzle_graph.apply_theming).
+    from concurrent.futures import ThreadPoolExecutor
+
+    from src.escape_rooms.utils.settings import get_worker_llms
+
+    llms = get_worker_llms("storyboard")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        beats_future = pool.submit(_run_beats_pass, world_data, is_mystery, case_facts, llms[0])
+        flavor_future = pool.submit(_run_flavor_pass, world_data, is_mystery, case_facts, llms[1 % len(llms)])
+        beats = beats_future.result()
+        flavor = flavor_future.result()
+
     if beats:
         data.update({
             k: beats[k]
@@ -591,7 +606,6 @@ def storyboard_builder_node(state: GameState) -> dict:
     else:
         log.warning("storyboard_builder: beats pass failed — relying on repair")
 
-    flavor = _run_flavor_pass(world_data, is_mystery, case_facts)
     if flavor:
         data.update({
             k: flavor[k]
