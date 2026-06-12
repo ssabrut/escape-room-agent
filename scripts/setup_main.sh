@@ -68,11 +68,13 @@ else
 fi
 
 # Merge (dedup) existing + new URLs, preserving order.
+# The ${arr[@]+"${arr[@]}"} form avoids "unbound variable" under `set -u` on
+# bash 3.2 (macOS default) when an array is empty.
 declare -a MERGED=()
-for u in "${URLS[@]}" "${NEW_URLS[@]}"; do
+for u in "${URLS[@]+"${URLS[@]}"}" "${NEW_URLS[@]+"${NEW_URLS[@]}"}"; do
     [[ -z "${u}" ]] && continue
     skip=0
-    for existing in "${MERGED[@]}"; do
+    for existing in "${MERGED[@]+"${MERGED[@]}"}"; do
         [[ "${existing}" == "${u}" ]] && skip=1 && break
     done
     [[ "${skip}" -eq 0 ]] && MERGED+=("${u}")
@@ -96,7 +98,7 @@ echo ""
 echo "Checking worker health..."
 
 FAILED=0
-for url in "${MERGED[@]}"; do
+for url in "${MERGED[@]+"${MERGED[@]}"}"; do
     if curl -fsS --max-time 5 "${url}/health" >/dev/null 2>&1; then
         echo "  OK    ${url}"
     else
