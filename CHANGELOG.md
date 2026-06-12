@@ -2,6 +2,61 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 08:03:27 WIB
+
+### What changed
+- `./scripts/setup_main.sh` now supports configuring **multiple** sprite-generation workers instead of just one. With no arguments, it auto-discovers every `_sprite-worker._tcp.local.` instance currently advertising on the LAN (via `scripts/discover_worker.py`, which already prints one `<ip>:<port>` per line) and adds all of them. With a `<worker-hostname-or-ip> [port]` argument, it appends that single worker to the existing list rather than overwriting it.
+- The script now reads any existing `SPRITE_WORKERS=` value from `.env`, merges (deduplicating, preserving order) newly discovered/specified worker URLs with the existing ones, and writes the merged comma-separated list back to `SPRITE_WORKERS`.
+- After writing `.env`, the script checks `/health` on **every** configured worker URL (not just one), printing a per-worker `OK`/`FAIL` line, and reports overall success only if all workers are reachable (exits 1 with a hint to run `./scripts/setup_worker.sh` if any fail).
+- Updated `.env.example`, `scripts/setup_main.sh`, `scripts/setup_worker.sh`, and `sprite_worker.py` docs/comments to describe `SPRITE_WORKERS` as a comma-separated list of one or more worker URLs (e.g. `SPRITE_WORKERS=http://192.168.1.50:8001,http://192.168.1.51:8001`), and to say workers can be run "on as many machines as you have" rather than assuming exactly one second Mac.
+
+### Why
+Not specified in conversation — the diff generalizes the sprite-worker setup from a fixed "one main + one worker" pairing to support an arbitrary number of LAN worker machines.
+
+### Files changed
+- `.env.example` — updated `SPRITE_WORKERS` comment block to describe a comma-separated multi-worker list and changed the example value to `SPRITE_WORKERS=http://192.168.1.50:8001,http://192.168.1.51:8001`.
+- `scripts/setup_main.sh` — rewrote the script to read existing `SPRITE_WORKERS` from `.env` into `URLS`, collect `NEW_URLS` from either the CLI arg or all lines of `discover_worker.py`'s output, merge+dedupe into `MERGED`/`MERGED_CSV`, write that back to `SPRITE_WORKERS`, then loop over `MERGED` checking `/health` for each worker and printing `OK`/`FAIL` per URL; exits 1 if any worker fails health check.
+- `scripts/setup_worker.sh` — updated header comments to describe running the script on "each ADDITIONAL MacBook Pro" / "as many machines as you have" instead of "the SECOND MacBook Pro"; no behavioral change.
+- `sprite_worker.py` — updated module docstring to say "Run this on one or more additional machines" instead of "Run this on a second machine"; no behavioral change.
+
+### Key code
+```bash
+# scripts/setup_main.sh
+EXISTING="$(grep "^SPRITE_WORKERS=" "${ENV_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+declare -a URLS=()
+if [[ -n "${EXISTING}" ]]; then
+    IFS=',' read -ra URLS <<< "${EXISTING}"
+fi
+
+# ... NEW_URLS populated from $1 or from `discover_worker.py` (one per line) ...
+
+declare -a MERGED=()
+for u in "${URLS[@]}" "${NEW_URLS[@]}"; do
+    [[ -z "${u}" ]] && continue
+    skip=0
+    for existing in "${MERGED[@]}"; do
+        [[ "${existing}" == "${u}" ]] && skip=1 && break
+    done
+    [[ "${skip}" -eq 0 ]] && MERGED+=("${u}")
+done
+MERGED_CSV="$(IFS=,; echo "${MERGED[*]}")"
+
+FAILED=0
+for url in "${MERGED[@]}"; do
+    if curl -fsS --max-time 5 "${url}/health" >/dev/null 2>&1; then
+        echo "  OK    ${url}"
+    else
+        echo "  FAIL  ${url}"
+        FAILED=1
+    fi
+done
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-11 20:22:54 WIB
 
 ### What changed

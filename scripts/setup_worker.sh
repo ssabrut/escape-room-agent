@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Set up and run the sprite generation worker on this Mac.
 #
-# Run this on the SECOND MacBook Pro (the one that will help generate
-# pixel-art sprites over LAN). The repo must already be present on this
-# machine (e.g. `git clone` or copied over) — run this script from its root.
+# Run this on each ADDITIONAL MacBook Pro that will help generate pixel-art
+# sprites over LAN (you can run it on as many machines as you have). The repo
+# must already be present on this machine (e.g. `git clone` or copied over) —
+# run this script from its root.
 #
 # Usage:
 #   ./scripts/setup_worker.sh          # set up env, install deps, then start the worker

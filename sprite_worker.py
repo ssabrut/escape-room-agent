@@ -1,7 +1,7 @@
 """Standalone sprite-generation worker.
 
-Run this on a second machine (e.g. another Apple Silicon Mac) to offload
-part of the SDXL pixel-art sprite generation workload. The main process
+Run this on one or more additional machines (e.g. other Apple Silicon Macs) to
+offload part of the SDXL pixel-art sprite generation workload. The main process
 (`src.escape_rooms.utils.pixel_art`) dispatches sprite jobs to any worker
 URLs listed in `SPRITE_WORKERS`, splitting work across local + remote
 generation in parallel.
