@@ -2,6 +2,71 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 10:10:07 WIB
+
+### What changed
+- The `/generate` API endpoint now produces live narration alongside the solver run. When `solve` is requested, `_run_pipeline` instantiates a `GameMasterNarrator(storyboard=storyboard or Storyboard())` and emits an `{"type": "narration", "stage": "opening", "text": ...}` event up front via `narrator.narrate_opening(scenario=world.scenario or req.theme, objective=world.objective, room_ids=[room.id for room in world.rooms])`. After the solve completes, it emits a matching `{"type": "narration", "stage": "ending", "text": ...}` event from `narrator.narrate_ending(objective=world.objective, won=solver_result.won)`. The final `GenerateResponse` gained two new fields, `narration_opening: str | None` and `narration_ending: str | None`, carrying these same strings.
+- Each solver tick emitted from `/generate` and `/generate/solve` now includes a `"narration"` string alongside the existing `render`/record fields, produced by a new shared helper `_narrate_tick(narrator, *, record, ps, scenario, objective, total_puzzles)`. It derives an `actor_name` from `record["agent_id"]` (e.g. `"agent_1"` -> `"Agent 1"`), pulls the action/outcome/success from `record["final_action"]`/`record["prev_outcome"]` (defaulting success to `True` and the outcome note to `"Nothing notable happens."` when absent), and calls `narrator.narrate_turn(...)` with `actor_role="escape room agent"`, a fixed `actor_backstory`, `looped=bool(record.get("gates_fired"))`, `solved_count=len(ps.known_info)`, and `total_puzzles` (the count of rooms with a non-`None` `goal_completion`).
+- `/generate/solve`'s `SolveRequest` gained an optional `storyboard: dict | None` field (the `storyboard` field from a prior `/generate` response). `_run_solve_pipeline` builds a `Storyboard.model_validate(req.storyboard)` if provided (else an empty `Storyboard()`), constructs its own `GameMasterNarrator`, and emits the same opening/per-tick/ending narration events; `SolveResponse` gained matching `narration_opening`/`narration_ending` fields. When no storyboard is supplied, `world.scenario or "mystery"` is used as the narrator's scenario.
+
+### Why
+Wires the previously standalone, importable-but-unused `GameMasterNarrator` (added in a prior session) into the live `/generate` and `/generate/solve` streams so API clients receive game-master narration text — opening scene-setting, per-tick in-character commentary, and an ending beat — alongside the existing render/solver data, using the storyboard's plot/personas/discovery beats when available.
+
+### Files changed
+- `api/routers/generate.py` — imports `GameMasterNarrator`; added module-level `_narrate_tick(narrator, *, record, ps, scenario, objective, total_puzzles)` helper; `GenerateResponse` gained `narration_opening`/`narration_ending`; `_run_pipeline` constructs a `GameMasterNarrator`, emits opening/ending `"narration"` events, and adds `"narration"` to each `"tick"` event via `_narrate_tick`; `SolveRequest` gained `storyboard: dict | None`; `SolveResponse` gained `narration_opening`/`narration_ending`; `_run_solve_pipeline` builds a `Storyboard` from `req.storyboard` (or an empty one), constructs its own `GameMasterNarrator`, and emits the same opening/per-tick/ending narration events.
+
+### Key code
+```python
+# api/routers/generate.py
+def _narrate_tick(
+    narrator: GameMasterNarrator,
+    *,
+    record: dict,
+    ps: PartyState,
+    scenario: str,
+    objective: str,
+    total_puzzles: int,
+) -> str:
+    """Turn one solver tick record into a single narration line."""
+    agent_id = record.get("agent_id") or "agent_1"
+    actor_name = agent_id.replace("_", " ").title()
+    ...
+    return narrator.narrate_turn(
+        scenario=scenario,
+        objective=objective,
+        turn=record.get("tick", ps.tick),
+        actor_name=actor_name,
+        actor_role="escape room agent",
+        ...
+        looped=bool(record.get("gates_fired")),
+        solved_count=len(ps.known_info),
+        total_puzzles=total_puzzles,
+    )
+```
+
+```diff
+# api/routers/generate.py — GenerateResponse / SolveResponse
+     storyboard: dict | None = None
++    narration_opening: str | None = None
++    narration_ending: str | None = None
+```
+
+```diff
+# api/routers/generate.py — _run_pipeline
++        narrator = GameMasterNarrator(storyboard=storyboard or Storyboard())
++        opening_narration = narrator.narrate_opening(
++            scenario=world.scenario or req.theme,
++            objective=world.objective,
++            room_ids=[room.id for room in world.rooms],
++        )
++        emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-12 09:21:11 WIB
 
 ### What changed

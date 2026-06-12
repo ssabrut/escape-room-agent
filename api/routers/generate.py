@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from src.escape_rooms.agents.narrator import GameMasterNarrator
 from src.escape_rooms.nodes.world_builder import world_builder_node
 from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
 from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
@@ -65,6 +66,46 @@ class GenerateResponse(BaseModel):
     solver: SolverLog | None = None
     sprites: dict[str, str] = {}  # object_id → base64 PNG
     storyboard: dict | None = None
+    narration_opening: str | None = None
+    narration_ending: str | None = None
+
+
+def _narrate_tick(
+    narrator: GameMasterNarrator,
+    *,
+    record: dict,
+    ps: PartyState,
+    scenario: str,
+    objective: str,
+    total_puzzles: int,
+) -> str:
+    """Turn one solver tick record into a single narration line."""
+    agent_id = record.get("agent_id") or "agent_1"
+    actor_name = agent_id.replace("_", " ").title()
+
+    prev_outcome = record.get("prev_outcome") or {}
+    action_text = record.get("final_action") or prev_outcome.get("action") or "look around"
+    outcome = prev_outcome.get("note") or "Nothing notable happens."
+    success = prev_outcome.get("success")
+    if success is None:
+        success = True
+
+    return narrator.narrate_turn(
+        scenario=scenario,
+        objective=objective,
+        turn=record.get("tick", ps.tick),
+        actor_name=actor_name,
+        actor_role="escape room agent",
+        actor_backstory="a sharp investigator working against the clock",
+        action_text=action_text,
+        speech=record.get("thought"),
+        outcome=outcome,
+        success=success,
+        looped=bool(record.get("gates_fired")),
+        room_id=record.get("room", ps.current_room),
+        solved_count=len(ps.known_info),
+        total_puzzles=total_puzzles,
+    )
 
 
 def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
@@ -126,9 +167,21 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
 
     solver_result = None
     last_render: dict | None = None
+    opening_narration: str | None = None
+    ending_narration: str | None = None
     if req.solve:
         emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
         state = state.model_copy(update={"world": world})
+
+        narrator = GameMasterNarrator(storyboard=storyboard or Storyboard())
+        opening_narration = narrator.narrate_opening(
+            scenario=world.scenario or req.theme,
+            objective=world.objective,
+            room_ids=[room.id for room in world.rooms],
+        )
+        emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
+
+        total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
 
         def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
             nonlocal last_render
@@ -142,10 +195,22 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
                 agent_rooms=dict(ps.agent_rooms),
                 agent_inventories={k: list(v) for k, v in ps.agent_inventories.items()},
             )
-            emit.put({"type": "tick", "render": last_render, **record})
+            narration = _narrate_tick(
+                narrator,
+                record=record,
+                ps=ps,
+                scenario=world.scenario or req.theme,
+                objective=world.objective,
+                total_puzzles=total_puzzles,
+            )
+            emit.put({"type": "tick", "render": last_render, "narration": narration, **record})
 
         solver_update = solver_node(state, on_tick=on_tick, num_agents=req.num_agents)
         solver_result = solver_update.get("solver_result")
+
+        if solver_result is not None:
+            ending_narration = narrator.narrate_ending(objective=world.objective, won=solver_result.won)
+            emit.put({"type": "narration", "stage": "ending", "text": ending_narration})
 
     solver_log = None
     if solver_result is not None:
@@ -172,6 +237,8 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
         solver=solver_log,
         sprites=sprites,
         storyboard=storyboard.model_dump(mode="json", exclude_none=True) if storyboard else None,
+        narration_opening=opening_narration,
+        narration_ending=ending_narration,
     )
 
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -295,12 +362,15 @@ def get_run(filename: str) -> GenerateResponse:
 class SolveRequest(BaseModel):
     world: dict = Field(..., description="A previously generated world (the 'world' field of a /generate response)")
     num_agents: int = Field(1, ge=1, le=4, description="Number of cooperating solver agents")
+    storyboard: dict | None = Field(None, description="Optional storyboard (the 'storyboard' field of a /generate response) for narration")
 
 
 class SolveResponse(BaseModel):
     render: dict
     solution_path: list[str]
     solver: SolverLog | None = None
+    narration_opening: str | None = None
+    narration_ending: str | None = None
 
 
 def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
@@ -319,6 +389,17 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
 
     emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
 
+    storyboard = Storyboard.model_validate(req.storyboard) if req.storyboard else Storyboard()
+    narrator = GameMasterNarrator(storyboard=storyboard)
+    opening_narration = narrator.narrate_opening(
+        scenario=world.scenario or "mystery",
+        objective=world.objective,
+        room_ids=[room.id for room in world.rooms],
+    )
+    emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
+
+    total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
+
     last_render: dict | None = None
 
     def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
@@ -333,7 +414,15 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
             agent_rooms=dict(ps.agent_rooms),
             agent_inventories={k: list(v) for k, v in ps.agent_inventories.items()},
         )
-        emit.put({"type": "tick", "render": last_render, **record})
+        narration = _narrate_tick(
+            narrator,
+            record=record,
+            ps=ps,
+            scenario=world.scenario or "mystery",
+            objective=world.objective,
+            total_puzzles=total_puzzles,
+        )
+        emit.put({"type": "tick", "render": last_render, "narration": narration, **record})
 
     solver_update = solver_node(state, on_tick=on_tick, num_agents=req.num_agents)
     solver_result = solver_update.get("solver_result")
@@ -350,6 +439,11 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
             history=solver_result.history,
         )
 
+    ending_narration = None
+    if solver_result is not None:
+        ending_narration = narrator.narrate_ending(objective=world.objective, won=solver_result.won)
+        emit.put({"type": "narration", "stage": "ending", "text": ending_narration})
+
     response = SolveResponse(
         render=last_render or render_world(
             rooms=world.rooms,
@@ -358,6 +452,8 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
         ),
         solution_path=world.solution_path or [],
         solver=solver_log,
+        narration_opening=opening_narration,
+        narration_ending=ending_narration,
     )
     return response.model_dump()
 
