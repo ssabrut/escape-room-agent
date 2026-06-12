@@ -62,12 +62,14 @@ API_RUNS_DIR = Path("api_runs")
 NODE_NAMES = (
     "world_builder",
     "puzzle_builder",
+    "storyboard_builder",
     "solver",
 )
 # Subset runnable standalone via --node (backed by _node_registry()).
 RUNNABLE_NODE_NAMES = (
     "world_builder",
     "puzzle_builder",
+    "storyboard_builder",
 )
 
 
@@ -307,6 +309,30 @@ def _write_run_summary(
     else:
         lines.append("  (no objects generated)")
 
+    # --- storyboard_builder ---
+    storyboard = result.get("storyboard")
+    lines.append("")
+    _h1("STORYBOARD")
+    if storyboard:
+        lines.append(f"  Plot victim : {storyboard.plot_victim}")
+        lines.append(f"  Plot threat : {storyboard.plot_threat}")
+        lines.append(f"  Plot stakes : {storyboard.plot_stakes}")
+        if storyboard.mystery.killer_name:
+            lines.append(f"  Killer      : {storyboard.mystery.killer_name}")
+            lines.append(f"  Proof object: {storyboard.mystery.proof_object_id}")
+        if storyboard.suspects:
+            _h2("Suspects")
+            for s in storyboard.suspects:
+                lines.append(f"  - {s.get('name', '')}: {s.get('apparent_motive', '')}")
+        _h2("Room stories")
+        for room_id, story in storyboard.room_stories.items():
+            lines.append(f"  [{room_id}] {story}")
+        _h2("Discovery beats")
+        for obj_id, beat in storyboard.discovery_beats.items():
+            lines.append(f"  [{obj_id}] {beat}")
+    else:
+        lines.append("  (no storyboard generated)")
+
     if node_times:
         lines.extend(_format_timing_table(node_times))
 
@@ -341,6 +367,7 @@ def run(
 
     from src.escape_rooms.nodes.world_builder import world_builder_node
     from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+    from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
     from src.escape_rooms.state import GameState as _GS
 
     state = _GS(theme=theme)
@@ -364,6 +391,16 @@ def run(
     result = {**wb_update, **pb_update}
     if trace_eval and not _eval_node("puzzle_builder", result, eval_root):
         eval_failures.append("puzzle_builder")
+
+    state = state.model_copy(update={"world": result.get("world")})
+    t0 = time.perf_counter()
+    sb_update = storyboard_builder_node(state)
+    node_times["storyboard_builder"] = time.perf_counter() - t0
+    if "storyboard_builder" in log_set:
+        node_dir = _write_node_log("storyboard_builder", sb_update)
+        print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+    result = {**result, **sb_update}
 
     _render(result)
     _print_timing_table(node_times)
@@ -407,6 +444,7 @@ def _run_once_captured(
     try:
         from src.escape_rooms.nodes.world_builder import world_builder_node
         from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+        from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
         from src.escape_rooms.state import GameState as _GS
 
         state = _GS(theme=theme)
@@ -432,6 +470,19 @@ def _run_once_captured(
             print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
 
         result = {**wb_update, **pb_update}
+
+        state = state.model_copy(update={"world": result.get("world")})
+
+        t0 = time.perf_counter()
+        sb_update = storyboard_builder_node(state)
+        node_times["storyboard_builder"] = time.perf_counter() - t0
+        if log_set and "storyboard_builder" in log_set:
+            node_dir = _write_node_log(
+                "storyboard_builder", sb_update, root=log_root or LOG_DIR
+            )
+            print(f"  [log] wrote {node_dir}/output.json + {node_dir}/raw.txt")
+
+        result = {**result, **sb_update}
         _render(result)
     finally:
         sys.stdout = orig_stdout
@@ -576,10 +627,12 @@ def _load_game_state_from_json(path: Path, theme: str = "") -> "GameState | None
 def _node_registry() -> dict:
     from src.escape_rooms.nodes.world_builder import world_builder_node
     from src.escape_rooms.nodes.puzzle_builder import puzzle_builder_node
+    from src.escape_rooms.nodes.storyboard_builder import storyboard_builder_node
 
     return {
         "world_builder": (world_builder_node, ()),
         "puzzle_builder": (puzzle_builder_node, ("world",)),
+        "storyboard_builder": (storyboard_builder_node, ("world",)),
     }
 
 

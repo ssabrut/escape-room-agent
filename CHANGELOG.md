@@ -2,6 +2,77 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 09:13:28 WIB
+
+### What changed
+- A new `storyboard_builder` pipeline stage runs after `puzzle_builder` and before the solver: `world_builder -> puzzle_builder -> storyboard_builder -> (solver?) -> END`. It takes the fully assembled `GameWorld` and generates a `Storyboard` — the narrative layer (plot, per-character `adapted_personas`, `room_stories`, `discovery_beats`, `phase_guidance`, `conversation_seeds`, `ending_guidance`) plus, only when the theme contains "mystery", a `mystery`/`solution`/`suspects` set (victim, killer, proof object, hints, answer aliases for deduction matching).
+- Added new Pydantic models in `state/schema.py`: `Storyboard`, `StoryboardMystery`, `StoryboardSolution`, and `StoryboardPersona`, plus a module-level `_normalize_answer(text)` helper (lowercase, strip punctuation/whitespace) used by `StoryboardSolution.matches(human_answer)` to check a player's deduction guess against the canonical answer or any alias. `GameState` gained a new `storyboard: Storyboard | None = None` field.
+- `Storyboard` exposes helper methods consumed by gameplay/narration: `lore_excerpt(actor_name=, room_id=, object_id=)`, `persona_for(name)`, `discovery_beat(object_id)`, `room_story(room_id)`, `phase_for_turn(turn, total_turns=40)` / `phase_guidance_for_turn(...)`, `ending_text(won, wrong_deduction=False)`, `pop_seed(actor_name, used)`, and `suspects_context()` (formats suspects without revealing who is guilty).
+- Added `storyboard_builder_node(state)` in `nodes/storyboard_builder.py`. It classifies plot-critical objects via `_classify_objects(world, proof_object_id="")` (clue types: `story_clue`, `key`, `code`, `lock`, `other`, based on `requires_tool`/`requires_code`/`contains_info`), builds a compact world summary via `_build_world_data`/`_build_user_prompt`, calls the LLM, and parses the JSON response with `_parse_json`. For mystery themes, `_repair_mystery(data, world)` patches common LLM omissions (missing killer/proof/hints/suspect fields, recovers a mis-specified `proof_object_id` by scanning objects/discovery beats); for non-mystery themes `_strip_mystery_sections(data)` forces `mystery`/`solution`/`suspects` empty. `_ensure_personas`/`_sanitize_personas` backfill default personas per character and strip vocabulary containing tech/mechanical "contamination words" (e.g. "circuit", "mainframe", "override"). On any parse failure or missing world, the node degrades to returning an empty `Storyboard` (or `{}`) rather than failing the pipeline.
+- Added a standalone `GameMasterNarrator` dataclass in `agents/narrator.py` (ported from the "Escapee" project), a presentation-only LLM narrator with a rolling memory (`recent_window=6`) of recent story beats. Methods: `narrate_opening`, `narrate_turn` (builds a `CONTEXT_PACKAGE` dialogue prompt via `build_dialogue_context_package`, including a `TENSION_LEVEL` from `_tension_level(turn, solved_count, total_puzzles)` and mystery/revelation-mode gating via `reveal_proof()`/`_proof_revealed`), `narrate_system_event` (loop_avoided/planner_override/critical_stuck/milestone), `narrate_room_entry`, `narrate_discovery` (uses a pre-written `storyboard.discovery_beat` if present, else falls back to LLM), `narrate_milestone`, and `narrate_ending` (uses `storyboard.ending_text(won, wrong_deduction=)`). All LLM calls go through `_say()`, which degrades to a deterministic fallback string on any exception. Not yet wired into `gameplay.py`'s tick loop — importable/testable standalone for now.
+- Added new prompt files: `prompts/storyboard_builder/system.txt` and `prompts/storyboard_builder/generation.txt` (189 lines, the storyboard generation template consumed by `storyboard_builder_node`), and `prompts/narrator/system.txt` / `prompts/narrator/event_system.txt` (dialogue vs. atmospheric-event system prompts for `GameMasterNarrator`).
+- Added two new settings roles in `utils/settings.py`: `storyboard` (`STORYBOARD_MODEL`, falling back to `BUILDER_MODEL`; `STORYBOARD_TEMPERATURE` default `0.85` for creative variety, since storyboard generation runs once per world) and `narrator` (`NARRATOR_MODEL`, falling back to `PLAYER_MODEL` then `BUILDER_MODEL`; `NARRATOR_TEMPERATURE` default `0.8`).
+- Wired `storyboard_builder` into `main.py`: added to `NODE_NAMES` and `RUNNABLE_NODE_NAMES` (registered in `_node_registry()` with upstream dependency `("world",)`), run after `puzzle_builder` in both `run()` and `_run_once_captured()` with its own timing entry and optional `--log` node dump, and `_write_run_summary` now prints a `STORYBOARD` section (plot victim/threat/stakes, killer/proof object for mysteries, suspects with apparent motives, per-room stories, and discovery beats).
+- `graphs/main_graph.py` adds a `storyboard_builder` node between `puzzle_builder` and the solver-routing conditional edge (`_route_solver`), and `nodes/__init__.py` / `state/__init__.py` export the new node function and schema classes.
+
+### Why
+Splits narrative generation out as its own pipeline stage so the puzzle's mechanical structure (objects, locks, solution path) and its human-facing story (plot, character voices, room atmosphere, and — for mystery themes — the killer/suspects/deduction answer key) are produced and validated independently, with the storyboard degrading gracefully rather than failing generation if the LLM call or JSON parse fails.
+
+### Files changed
+- `main.py` — added `storyboard_builder` to `NODE_NAMES`/`RUNNABLE_NODE_NAMES`; `_write_run_summary` gained a `STORYBOARD` section; `run()` and `_run_once_captured()` invoke `storyboard_builder_node` after `puzzle_builder` with timing/log support; `_node_registry()` registers `"storyboard_builder": (storyboard_builder_node, ("world",))`.
+- `src/escape_rooms/graphs/main_graph.py` — `build_graph()` adds a `storyboard_builder` node and edge `puzzle_builder -> storyboard_builder -> _route_solver`; updated module/function docstrings.
+- `src/escape_rooms/nodes/__init__.py` — exports `storyboard_builder_node`.
+- `src/escape_rooms/nodes/storyboard_builder.py` (new) — `storyboard_builder_node(state)` plus helpers `_parse_json`, `_s`, `_classify_objects`, `_is_plot_critical`, `_build_world_data`, `_build_user_prompt`, `_repair_mystery`, `_strip_mystery_sections`, `_ensure_personas`, `_sanitize_personas`, `_build_storyboard`.
+- `src/escape_rooms/state/__init__.py` — exports `Storyboard`, `StoryboardMystery`, `StoryboardPersona`, `StoryboardSolution`.
+- `src/escape_rooms/state/schema.py` — added `_normalize_answer`, `StoryboardMystery`, `StoryboardSolution` (with `matches()`), `StoryboardPersona`, `Storyboard` (with `lore_excerpt`, `persona_for`, `discovery_beat`, `room_story`, `phase_for_turn`, `phase_guidance_for_turn`, `ending_text`, `pop_seed`, `suspects_context`, `is_empty`); `GameState` gained `storyboard: Storyboard | None = None`.
+- `src/escape_rooms/utils/settings.py` — added `storyboard_model`/`storyboard_temperature` and `narrator_model`/`narrator_temperature` fields and corresponding entries in `_ROLE_CONFIG`.
+- `src/escape_rooms/agents/narrator.py` (new) — `GameMasterNarrator` dataclass and prompt builders `build_dialogue_context_package`, `build_opening_user_prompt`, `build_room_entry_prompt`, `build_discovery_prompt`, `build_system_event_prompt`, `build_ending_user_prompt`, plus helpers `humanize_text`, `_tension_level`, `_mood_for`.
+- `src/escape_rooms/prompts/storyboard_builder/system.txt`, `src/escape_rooms/prompts/storyboard_builder/generation.txt` (new) — storyboard generation prompts.
+- `src/escape_rooms/prompts/narrator/system.txt`, `src/escape_rooms/prompts/narrator/event_system.txt` (new) — narrator dialogue and atmospheric-event system prompts.
+- `graph.png`, `.DS_Store` — regenerated/binary artifacts; non-behavioral.
+
+### Key code
+```python
+# src/escape_rooms/state/schema.py
+class StoryboardSolution(BaseModel):
+    ...
+    def matches(self, human_answer: str) -> bool:
+        """True if the human's answer matches the canonical answer or any alias."""
+        normalized = _normalize_answer(human_answer)
+        ...
+```
+
+```python
+# src/escape_rooms/graphs/main_graph.py
+builder.add_edge("world_builder", "puzzle_builder")
+builder.add_edge("puzzle_builder", "storyboard_builder")
+builder.add_conditional_edges("storyboard_builder", _route_solver, ["solver", END])
+builder.add_edge("solver", END)
+```
+
+```python
+# src/escape_rooms/nodes/storyboard_builder.py
+def storyboard_builder_node(state: GameState) -> dict:
+    """Generate the narrative storyboard for the assembled world."""
+    world = state.world
+    if not world or not world.rooms:
+        return {}
+    is_mystery = "mystery" in state.theme.lower()
+    ...
+    if not isinstance(data, dict):
+        return {"storyboard": Storyboard(world_id=world_id), "messages": [...]}
+    if is_mystery:
+        _repair_mystery(data, world)
+    else:
+        _strip_mystery_sections(data)
+    ...
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-12 08:03:27 WIB
 
 ### What changed

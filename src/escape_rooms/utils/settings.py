@@ -46,6 +46,17 @@ class Settings:
     player_temperature: float = float(os.getenv("PLAYER_TEMPERATURE", "0.3"))
     # Solving wants determinism, not creativity — low temperature by default.
     solver_temperature: float = float(os.getenv("SOLVER_TEMPERATURE", "0.2"))
+    # Storyboard generation runs once per world and benefits from a higher
+    # temperature for creative variety; falls back to BUILDER_MODEL.
+    storyboard_model: str = os.getenv(
+        "STORYBOARD_MODEL", os.getenv("BUILDER_MODEL", "llama3.2")
+    )
+    storyboard_temperature: float = float(os.getenv("STORYBOARD_TEMPERATURE", "0.85"))
+    # Narrator runs per-turn during gameplay — falls back to PLAYER_MODEL.
+    narrator_model: str = os.getenv(
+        "NARRATOR_MODEL", os.getenv("PLAYER_MODEL", os.getenv("BUILDER_MODEL", "llama3.2"))
+    )
+    narrator_temperature: float = float(os.getenv("NARRATOR_TEMPERATURE", "0.8"))
     # Inference tuning. keep_alive "-1" never unloads the model (no per-call reload
     # of a multi-GB model); num_predict caps tokens generated per call so a model
     # that runs away can't burn minutes on a single response.
@@ -70,6 +81,8 @@ _ROLE_CONFIG = {
     "game_master": lambda s: (s.builder_model, s.builder_temperature),
     "player": lambda s: (s.player_model, s.player_temperature),
     "solver": lambda s: (s.solver_model, s.solver_temperature),
+    "storyboard": lambda s: (s.storyboard_model, s.storyboard_temperature),
+    "narrator": lambda s: (s.narrator_model, s.narrator_temperature),
 }
 
 
