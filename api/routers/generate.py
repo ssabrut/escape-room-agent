@@ -165,21 +165,20 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     sprites = generate_world_sprites(world.objects, on_progress=on_sprite_progress)
     emit.put({"type": "sprites", "sprites": sprites})
 
+    narrator = GameMasterNarrator(storyboard=storyboard or Storyboard())
+    opening_narration = narrator.narrate_opening(
+        scenario=world.scenario or req.theme,
+        objective=world.objective,
+        room_ids=[room.id for room in world.rooms],
+    )
+    emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
+
     solver_result = None
     last_render: dict | None = None
-    opening_narration: str | None = None
     ending_narration: str | None = None
     if req.solve:
         emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
         state = state.model_copy(update={"world": world})
-
-        narrator = GameMasterNarrator(storyboard=storyboard or Storyboard())
-        opening_narration = narrator.narrate_opening(
-            scenario=world.scenario or req.theme,
-            objective=world.objective,
-            room_ids=[room.id for room in world.rooms],
-        )
-        emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
 
         total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
 
@@ -369,7 +368,6 @@ class SolveResponse(BaseModel):
     render: dict
     solution_path: list[str]
     solver: SolverLog | None = None
-    narration_opening: str | None = None
     narration_ending: str | None = None
 
 
@@ -391,12 +389,6 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
 
     storyboard = Storyboard.model_validate(req.storyboard) if req.storyboard else Storyboard()
     narrator = GameMasterNarrator(storyboard=storyboard)
-    opening_narration = narrator.narrate_opening(
-        scenario=world.scenario or "mystery",
-        objective=world.objective,
-        room_ids=[room.id for room in world.rooms],
-    )
-    emit.put({"type": "narration", "stage": "opening", "text": opening_narration})
 
     total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
 
@@ -452,7 +444,6 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
         ),
         solution_path=world.solution_path or [],
         solver=solver_log,
-        narration_opening=opening_narration,
         narration_ending=ending_narration,
     )
     return response.model_dump()
