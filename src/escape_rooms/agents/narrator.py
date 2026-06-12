@@ -89,6 +89,9 @@ def build_dialogue_context_package(
     recent_story: list[str],
     lore_excerpt: str = "",
     adapted_world_role: str = "",
+    persona_voice: str = "",
+    persona_vocabulary: list[str] | None = None,
+    persona_sample_lines: list[str] | None = None,
     conversation_seed: str = "",
     proof_revealed: bool = False,
     killer_name: str = "",
@@ -109,6 +112,17 @@ def build_dialogue_context_package(
         role_line = f"- ROLE IN THIS WORLD: {adapted_world_role}"
     else:
         role_line = f"- ROLE: {actor_role}"
+
+    voice_line = f"- VOICE: {persona_voice}\n" if persona_voice else ""
+    vocabulary_line = (
+        f"- VOCABULARY (work these phrasings in naturally, don't force all of them): {', '.join(persona_vocabulary)}\n"
+        if persona_vocabulary else ""
+    )
+    sample_lines_section = (
+        "- REGISTER EXAMPLES (match this rhythm and attitude, do not copy verbatim):\n"
+        + "\n".join(f'  "{line}"' for line in persona_sample_lines) + "\n"
+        if persona_sample_lines else ""
+    )
 
     seed_section = (
         f"PLOT_OBSERVATION (surface this naturally if the moment fits):\n"
@@ -150,7 +164,11 @@ def build_dialogue_context_package(
         f"- NAME: {actor_name}\n"
         f"{role_line}\n"
         f"- BACKSTORY_HINT: {actor_backstory or 'ordinary survivor under pressure'}\n"
-        f"- MOOD: {_mood_for(success=success, looped=looped)}\n\n"
+        f"- MOOD: {_mood_for(success=success, looped=looped)}\n"
+        f"{voice_line}"
+        f"{vocabulary_line}"
+        f"{sample_lines_section}"
+        "\n"
         "ACTION_EVENT:\n"
         f"- ATTEMPT: {action_text}\n"
         f"- PLAYER_MOTIVATION (background only — DO NOT echo this as your line; it is what the character is thinking, not what they say):\n"
@@ -459,6 +477,9 @@ class GameMasterNarrator:
                 recent_story=list(self._recent),
                 lore_excerpt=lore_excerpt,
                 adapted_world_role=persona.world_role if persona else "",
+                persona_voice=persona.voice if persona else "",
+                persona_vocabulary=persona.vocabulary if persona else None,
+                persona_sample_lines=persona.sample_lines if persona else None,
                 conversation_seed=seed or "",
                 proof_revealed=self._proof_revealed,
                 killer_name=killer_name,

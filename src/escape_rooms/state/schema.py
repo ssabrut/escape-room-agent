@@ -260,6 +260,10 @@ class StoryboardPersona(BaseModel):
     world_role: str = ""
     voice: str = ""
     vocabulary: list[str] = Field(default_factory=list)
+    # Few-shot style anchors for the dialogue model: example lines in this
+    # character's register. Far more effective than abstract style adjectives
+    # for local models — they imitate examples, not descriptions.
+    sample_lines: list[str] = Field(default_factory=list)
 
 
 class Storyboard(BaseModel):

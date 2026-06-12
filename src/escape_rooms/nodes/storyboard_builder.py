@@ -5,7 +5,19 @@ the solution path. This node receives the fully assembled GameWorld and
 generates a Storyboard: plot, adapted personas, room stories, discovery beats,
 and — only for mystery themes — the victim/killer/suspects/solution.
 
-Degrades gracefully: any LLM/parse failure returns an empty Storyboard so the
+Generation runs in up to three focused LLM passes instead of one giant JSON
+document:
+  1. core   — mystery / solution / suspects (mystery themes only)
+  2. beats  — discovery_beats / conversation_seeds / ending_guidance
+  3. flavor — plot / adapted_personas / room_stories / phase_guidance
+
+A local model drops random fields when asked for everything at once (attention
+degrades as output grows). Each pass is small enough that critical fields
+cannot get lost, and passes 2-3 receive pass 1's decisions as immutable
+CASE_FACTS so they cannot contradict them.
+
+Degrades gracefully: any LLM/parse failure for a pass leaves that section
+empty and relies on _repair_mystery / _ensure_personas to backfill it, so the
 pipeline never fails because of this node.
 """
 
@@ -32,8 +44,12 @@ from src.escape_rooms.state import (
 
 log = get_node_logger("storyboard_builder")
 
-SYSTEM_PROMPT = load_prompt("storyboard_builder", "system")
-GENERATION_PROMPT = load_prompt("storyboard_builder", "generation")
+CORE_SYSTEM_PROMPT = load_prompt("storyboard_builder", "system_core")
+CORE_GENERATION_PROMPT = load_prompt("storyboard_builder", "generation_core")
+BEATS_SYSTEM_PROMPT = load_prompt("storyboard_builder", "system_beats")
+BEATS_GENERATION_PROMPT = load_prompt("storyboard_builder", "generation_beats")
+FLAVOR_SYSTEM_PROMPT = load_prompt("storyboard_builder", "system_flavor")
+FLAVOR_GENERATION_PROMPT = load_prompt("storyboard_builder", "generation_flavor")
 
 # Object ids with these prefixes are scenic/filler — never plot-critical.
 _NON_PLOT_PREFIXES = ("scenic_", "gate_", "filler_")
@@ -171,12 +187,74 @@ def _build_world_data(world: GameWorld, characters: list[Character]) -> dict:
     }
 
 
-def _build_user_prompt(world: GameWorld, characters: list[Character], is_mystery: bool) -> str:
-    world_data = _build_world_data(world, characters)
-    return GENERATION_PROMPT.format(
+# ---------------------------------------------------------------------------
+# LLM passes
+# ---------------------------------------------------------------------------
+
+
+def _call_json(system_prompt: str, user_prompt: str) -> dict | None:
+    """One LLM call returning a parsed JSON object, or None on any failure."""
+    llm = get_llm("storyboard")
+    try:
+        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+    except Exception as exc:
+        log.warning("storyboard pass: LLM call failed: {}", exc)
+        return None
+    data = _parse_json(response.content)
+    if not isinstance(data, dict):
+        log.warning("storyboard pass: could not parse LLM response")
+        return None
+    return data
+
+
+def _run_core_pass(world_data: dict) -> dict | None:
+    """Pass 1 — mystery/solution/suspects. Small output: victim/killer cannot be dropped."""
+    user_prompt = CORE_GENERATION_PROMPT.format(world_data_json=json.dumps(world_data, indent=2))
+    return _call_json(CORE_SYSTEM_PROMPT, user_prompt)
+
+
+def _case_facts(data: dict) -> dict:
+    """Extract the immutable case facts decided by the core pass."""
+    m = data.get("mystery") if isinstance(data.get("mystery"), dict) else {}
+    sol = data.get("solution") if isinstance(data.get("solution"), dict) else {}
+    suspects = data.get("suspects") if isinstance(data.get("suspects"), list) else []
+    return {
+        "victim": _s(m.get("victim")),
+        "killer_name": _s(m.get("killer_name")) or _s(sol.get("answer")),
+        "proof_object_id": _s(m.get("proof_object_id")) or _s(sol.get("proof_object")),
+        "motive_hint": _s(m.get("motive_hint")),
+        "suspects": [
+            {"name": _s(s.get("name")), "is_killer": bool(s.get("is_killer"))}
+            for s in suspects
+            if isinstance(s, dict) and s.get("name")
+        ],
+    }
+
+
+def _case_facts_section(case_facts: dict | None) -> str:
+    if not case_facts or not case_facts.get("killer_name"):
+        return ""
+    return "CASE_FACTS (immutable — use these exact names):\n" + json.dumps(case_facts, indent=2) + "\n\n"
+
+
+def _run_beats_pass(world_data: dict, is_mystery: bool, case_facts: dict | None) -> dict | None:
+    """Pass 2 — clue layer, grounded in the now-fixed case facts."""
+    user_prompt = BEATS_GENERATION_PROMPT.format(
         is_mystery="true" if is_mystery else "false",
         world_data_json=json.dumps(world_data, indent=2),
+        case_facts_section=_case_facts_section(case_facts),
     )
+    return _call_json(BEATS_SYSTEM_PROMPT, user_prompt)
+
+
+def _run_flavor_pass(world_data: dict, is_mystery: bool, case_facts: dict | None) -> dict | None:
+    """Pass 3 — atmosphere layer: plot, adapted personas, room stories, phase guidance."""
+    user_prompt = FLAVOR_GENERATION_PROMPT.format(
+        is_mystery="true" if is_mystery else "false",
+        world_data_json=json.dumps(world_data, indent=2),
+        case_facts_section=_case_facts_section(case_facts),
+    )
+    return _call_json(FLAVOR_SYSTEM_PROMPT, user_prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +426,11 @@ def _ensure_personas(data: dict, characters: list[Character]) -> None:
             entry["voice"] = "Precise and observational — states what the evidence implies, not what they feel."
         if not entry.get("vocabulary"):
             entry["vocabulary"] = ["who had access", "this was deliberate", "something is missing here"]
+        if not entry.get("sample_lines"):
+            entry["sample_lines"] = [
+                "Scratches around the keyhole. Fresh ones. This was forced by someone in a hurry.",
+                "The frame is intact but the hinge is bent. That takes deliberate force, not an accident.",
+            ]
 
 
 def _sanitize_personas(data: dict, characters: list[Character]) -> None:
@@ -388,6 +471,7 @@ def _build_storyboard(data: dict, world_id: str) -> Storyboard:
             world_role=_s(v.get("world_role")),
             voice=_s(v.get("voice")),
             vocabulary=[p for p in v.get("vocabulary", []) if isinstance(p, str)],
+            sample_lines=[p for p in v.get("sample_lines", []) if isinstance(p, str)],
         )
         for name, v in personas_raw.items()
         if isinstance(v, dict)
@@ -468,9 +552,11 @@ def _build_storyboard(data: dict, world_id: str) -> Storyboard:
 def storyboard_builder_node(state: GameState) -> dict:
     """Generate the narrative storyboard for the assembled world.
 
-    Runs after puzzle_builder. mystery/solution/suspects are populated only
-    when the theme is a mystery theme. Degrades to an empty Storyboard on any
-    LLM/parse failure so the pipeline never fails because of this node.
+    Runs after puzzle_builder, in three focused LLM passes: core facts
+    (mystery themes only), the clue layer, and the flavor layer. mystery/
+    solution/suspects are populated only when the theme is a mystery theme.
+    Degrades to an empty/partial Storyboard on any LLM/parse failure so the
+    pipeline never fails because of this node.
     """
     world = state.world
     if not world or not world.rooms:
@@ -480,16 +566,47 @@ def storyboard_builder_node(state: GameState) -> dict:
     is_mystery = "mystery" in state.theme.lower()
     world_id = world.scenario[:40] if world.scenario else ""
 
-    llm = get_llm("storyboard")
-    prompt = _build_user_prompt(world, state.characters, is_mystery)
-    response = llm.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)])
+    world_data = _build_world_data(world, state.characters)
+    data: dict = {}
+    transcript_parts: list[str] = []
 
-    data = _parse_json(response.content)
-    if not isinstance(data, dict):
-        log.warning("storyboard_builder: could not parse LLM response — returning empty storyboard")
+    case_facts: dict | None = None
+    if is_mystery:
+        core = _run_core_pass(world_data)
+        if core:
+            data.update({k: core[k] for k in ("mystery", "solution", "suspects") if k in core})
+            transcript_parts.append(f"--- core pass ---\n{json.dumps(core, indent=2)}")
+        else:
+            log.warning("storyboard_builder: core pass failed — relying on repair")
+        case_facts = _case_facts(data)
+
+    beats = _run_beats_pass(world_data, is_mystery, case_facts)
+    if beats:
+        data.update({
+            k: beats[k]
+            for k in ("discovery_beats", "conversation_seeds", "ending_guidance")
+            if k in beats
+        })
+        transcript_parts.append(f"--- beats pass ---\n{json.dumps(beats, indent=2)}")
+    else:
+        log.warning("storyboard_builder: beats pass failed — relying on repair")
+
+    flavor = _run_flavor_pass(world_data, is_mystery, case_facts)
+    if flavor:
+        data.update({
+            k: flavor[k]
+            for k in ("plot", "adapted_personas", "room_stories", "phase_guidance")
+            if k in flavor
+        })
+        transcript_parts.append(f"--- flavor pass ---\n{json.dumps(flavor, indent=2)}")
+    else:
+        log.warning("storyboard_builder: flavor pass failed — relying on repair")
+
+    if not transcript_parts:
+        log.warning("storyboard_builder: all passes failed — returning empty storyboard")
         return {
             "storyboard": Storyboard(world_id=world_id),
-            "messages": [AIMessage(content=f"=== STORYBOARD (parse failed) ===\n\n{response.content}")],
+            "messages": [AIMessage(content="=== STORYBOARD (all passes failed) ===")],
         }
 
     if is_mystery:
@@ -520,5 +637,5 @@ def storyboard_builder_node(state: GameState) -> dict:
 
     return {
         "storyboard": storyboard,
-        "messages": [AIMessage(content=f"=== STORYBOARD ===\n\n{response.content}")],
+        "messages": [AIMessage(content="=== STORYBOARD ===\n\n" + "\n\n".join(transcript_parts))],
     }

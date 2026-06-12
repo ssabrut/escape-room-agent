@@ -1,0 +1,41 @@
+Decide the mystery for this world.
+
+WORLD_DATA:
+{world_data_json}
+
+Output a single JSON object with exactly three top-level keys: "mystery", "solution", "suspects". Nothing else.
+
+{{
+  "mystery": {{
+    "victim": "FULL NAME of the person killed + one clause on how they died. NEVER leave blank.",
+    "killer_name": "Full name of the murderer. Invent a name that fits this world. NEVER leave blank.",
+    "proof_object_id": "COPY the exact `id` of ONE WORLD_DATA.plot_objects entry with clue_type='story_clue'. The id string, NOT the description.",
+    "motive_hint": "1 sentence. The killer's motive — specific but not spoiling."
+  }},
+  "solution": {{
+    "question": "'Who murdered [victim's full name]?'",
+    "answer": "Must equal mystery.killer_name exactly.",
+    "answer_aliases": ["surname only", "title plus surname"],
+    "answer_type": "person",
+    "motive": "2 sentences. Full explanation, shown only after the win.",
+    "proof_object": "Must equal mystery.proof_object_id exactly.",
+    "proof_sentence": "1 sentence. What that evidence specifically proves.",
+    "hint_1": "Vague directional hint after the first wrong guess.",
+    "hint_2": "More specific hint after the second wrong guess — still no name.",
+    "victory_narration_hook": "1 sentence naming the killer and the proof.",
+    "defeat_narration_hook": "1 sentence for the defeat ending."
+  }},
+  "suspects": [
+    {{"name": "...", "connection_to_victim": "1 sentence", "apparent_motive": "1 sentence", "is_killer": true}},
+    {{"name": "...", "connection_to_victim": "1 sentence", "apparent_motive": "1 sentence", "is_killer": false}}
+  ]
+}}
+
+RULES:
+- victim and killer_name are the two most important fields — fill them FIRST, never blank.
+- 2-3 suspects. Exactly ONE has is_killer=true and their name equals mystery.killer_name.
+- Red-herring motives must be genuinely plausible. Vary them: financial / personal / opportunistic.
+- Suspects must NOT be characters from WORLD_DATA.players (those are the investigators).
+- Invent names that fit THIS world's scenario. Do NOT reuse any name from these instructions.
+- proof_object_id must be the `id` of a plot_objects entry with clue_type='story_clue'.
+- Output raw JSON only — no markdown, no commentary.

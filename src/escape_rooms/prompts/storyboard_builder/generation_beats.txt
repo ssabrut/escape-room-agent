@@ -1,0 +1,73 @@
+Write the clue layer for this world.
+
+IS_MYSTERY = {is_mystery}
+
+WORLD_DATA:
+{world_data_json}
+
+{case_facts_section}
+Output a single JSON object with exactly three top-level keys: "discovery_beats", "conversation_seeds", "ending_guidance". Nothing else.
+
+{{
+  "discovery_beats": {{
+    "<object_id from WORLD_DATA.plot_objects>": "See DISCOVERY_BEATS RULES below — content depends on clue_type and IS_MYSTERY."
+  }},
+  "conversation_seeds": {{
+    "<character name from WORLD_DATA.players>": [
+      "Only if IS_MYSTERY is true: 2 seeds naming suspects and connecting evidence to them (see CONVERSATION_SEEDS RULES). Otherwise an empty list."
+    ]
+  }},
+  "ending_guidance": {{
+    "won": "2 sentences. Emotional close for victory, specific to this world. If IS_MYSTERY, name the killer (from CASE_FACTS).",
+    "lost": "2 sentences. Emotional close for failure, specific to this world.",
+    "lost_by_wrong_deduction": "Only if IS_MYSTERY is true: 1 sentence — the killer escaped because the wrong name was called. Otherwise empty string."
+  }}
+}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DISCOVERY_BEATS RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every discovery beat MUST provide investigative or atmospheric value — never just object description.
+Write one beat per WORLD_DATA.plot_objects entry, EXCEPT clue_type='lock' — skip those entirely.
+
+BEAT RULES BY CLUE_TYPE:
+- clue_type='key': 2 sentences. Physical detail + what its presence implies (timeline, access, urgency). If IS_MYSTERY, do NOT name any suspect.
+  GOOD: "The key is still warm — whoever placed it left this room within the hour."
+  BAD:  "A key with carved ornaments." <- description only, REJECTED
+
+- clue_type='story_clue' that is NOT the proof object: 2 sentences.
+  If IS_MYSTERY: name ONE suspect from CASE_FACTS.suspects (not the killer) and connect this evidence to their access, opportunity, or motive. Use the ACTUAL suspect name from CASE_FACTS — not a placeholder.
+  If NOT IS_MYSTERY: connect this clue to the plot — what it reveals about the timeline, threat, or stakes.
+  GOOD (mystery): "[suspect name] — the initials match, and they lied about being here."
+  BAD:  "A slender key with initials." <- no investigative value, REJECTED
+
+- clue_type='story_clue' that IS the proof object (CASE_FACTS.proof_object_id): 2 sentences. ONLY relevant if IS_MYSTERY.
+  MUST name CASE_FACTS.killer_name explicitly. State exactly what this proves. This is the climax — be definitive.
+  GOOD: "[killer_name]'s handwriting is on this — they were here the night of the murder."
+  BAD:  "A yellowed letter with smudged ink." <- killer not named, REJECTED
+
+- clue_type='code': Flavor only — atmosphere, no numbers, no codes revealed.
+- clue_type='other': Flavor only — 1-2 sentences of atmosphere connecting it to the plot.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONVERSATION_SEEDS RULES (IS_MYSTERY only — emit [] per character otherwise)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Exactly 2 seeds per character in WORLD_DATA.players.
+- Each seed MUST name at least one suspect from CASE_FACTS.suspects by their full name.
+- Seeds must NOT name the killer as the killer — name them as suspicious, not guilty.
+- Mix: one seed pointing toward a red-herring suspect, one hinting at the real killer's motive or opportunity.
+  GOOD: "[suspect A] was the last to see the victim alive — their account has two gaps."
+  GOOD: "[suspect B] owed the victim a debt large enough to destroy them."
+  BAD: "The bloodstains suggest a violent struggle." (no suspect named — rejected)
+  BAD: "[killer name] is the killer." (names killer as guilty — rejected)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRICT ANTI-HALLUCINATION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. discovery_beats keys MUST be object ids from WORLD_DATA.plot_objects — no others.
+2. conversation_seeds keys MUST be character names from WORLD_DATA.players — no others.
+3. Do NOT reveal mechanical lock codes (numbers, sequences) in any narrative field.
+4. Do NOT invent new rooms, objects, or characters not in WORLD_DATA.
+5. If IS_MYSTERY is false, emit [] for every character's conversation_seeds list and emit "" for ending_guidance.lost_by_wrong_deduction. Still generate discovery_beats and ending_guidance.won/lost fully.
+
+Output raw JSON only.

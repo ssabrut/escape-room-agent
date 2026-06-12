@@ -1,0 +1,107 @@
+Write the narrative flavor layer for this world.
+
+This must work for ANY genre WORLD_DATA implies:
+- Murder mystery in a manor -> victim, killer, suspects
+- Sci-fi orbital station -> system failure, saboteur, crew dynamics
+- Asylum horror -> institutional abuse, patient records, hidden doctor
+- Nautical curse -> drowned crew, sea legend, cursed object
+- Heist -> stolen asset, inside man, escape window
+
+Read WORLD_DATA.scenario and WORLD_DATA.objective to infer the genre, then generate every section below appropriate to that genre.
+
+IS_MYSTERY = {is_mystery}
+
+WORLD_DATA:
+{world_data_json}
+
+{case_facts_section}
+Output a single JSON object with exactly four top-level keys: "plot", "adapted_personas", "room_stories", "phase_guidance". Nothing else.
+
+{{
+  "plot": {{
+    "victim": "1 sentence. Who/what was harmed or lost, when, and how — specific to this world. If IS_MYSTERY, name the victim from CASE_FACTS; otherwise describe the central loss/threat of this scenario.",
+    "threat": "1 sentence. The antagonist or danger — CONCRETE, not 'the unknown'. Do NOT name a suspect or killer here unless IS_MYSTERY is false.",
+    "stakes": "1 sentence. What happens if the team fails. If IS_MYSTERY, do NOT name the killer or any suspect.",
+    "timeline": "2 sentences. Key events BEFORE the players arrived.",
+    "tension_hint": "1 sentence. Vague hint at the hidden motive or danger — not enough to spoil.",
+    "atmosphere": "2 sentences. Specific sensory details — smell, sound, light, temperature.",
+    "protagonist_context": "1 sentence. Why these specific people are in this exact place."
+  }},
+
+  "adapted_personas": {{
+    "<character name from WORLD_DATA.players>": {{
+      "world_role": "1-2 sentences. HOW this character investigates — their specific lens on clues. NOT their job title. NOT their technical skills. Concretely describe what they notice first and how they interpret it in THIS WORLD'S genre.",
+      "voice": "1 sentence. Their distinct speaking style. Must sound different from every other character.",
+      "vocabulary": ["3-to-6-word phrase 1", "3-to-6-word phrase 2", "3-to-6-word phrase 3"],
+      "sample_lines": ["one full example line of dialogue in this character's exact register (10-18 words)", "a second example line, different situation (10-18 words)"]
+    }}
+  }},
+
+  "room_stories": {{
+    "<room_id from WORLD_DATA.rooms>": "1 sentence. The narrative role of this room."
+  }},
+
+  "phase_guidance": {{
+    "establishing": "1 sentence. Narrator tone guidance for the opening phase of the game — setting the scene, introducing tension.",
+    "investigating": "1 sentence. Narrator tone guidance for the middle phase — characters gathering clues, atmosphere building.",
+    "converging": "1 sentence. Narrator tone guidance as pieces start connecting — rising tension.",
+    "revealing": "1 sentence. Narrator tone guidance for the final phase — climax and resolution approaching."
+  }}
+}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ADAPTED_PERSONAS RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Each character has a mechanical game role (Systems Operator, Field Analyst, Scout, etc). Translate this COMPLETELY into an investigator archetype that fits WORLD_DATA's genre — do NOT copy or paraphrase the original role.
+
+TRANSLATION EXAMPLES FOR COMMON ROLES:
+  MANOR MYSTERY / CRIME / GOTHIC:
+  - Systems Operator -> reads the SEQUENCE of events: who was in which room, when, and whether timing was deliberate
+  - Field Analyst -> reads PHYSICAL EVIDENCE: what objects reveal about intent and action
+  - Scout -> reads the ENVIRONMENT: disturbances, traces, what doesn't fit
+
+  SCI-FI / STATION:
+  - Systems Operator -> reads SYSTEM LOGS for sabotage signatures
+  - Field Analyst -> reads SENSOR DATA for anomalies
+  - Scout -> reads HULL / PHYSICAL SPACES for breaches and tampering
+
+  HORROR / ASYLUM:
+  - All roles -> read RECORDS, TESTIMONY, and PHYSICAL TRACES for cover-ups
+
+VOCABULARY RULES (enforce strictly):
+- Exactly 3 phrases per character, each 3 to 6 words — short, speakable, natural.
+- Must sound like something said during an INVESTIGATION in this world's genre.
+- FORBIDDEN in vocabulary: system, power, restore, circuit, override, scan, malfunction, panel, grid, reboot, diagnostic, mainframe, electrical, machinery, "check it out", "let's go", "be careful", "something amiss".
+- Each character's vocabulary must sound DIFFERENT from every other character's.
+
+SAMPLE_LINES RULES:
+- Exactly 2 full dialogue lines per character, 10-18 words each, reacting to evidence.
+- These define the character's REGISTER: sentence rhythm, attitude, how blunt or careful they are.
+- Each character's register must be clearly different from every other character's —
+  e.g. one clipped and declarative, one probing and wry.
+  Example contrast (invent your own content, match the world):
+    clipped: "Three scratches on the lock plate. Fresh. Someone forced this in a hurry."
+    wry:     "Curious that the dust stops at the cabinet edge, as if someone tidied up after themselves."
+
+CONCRETE EXAMPLE — BAD vs GOOD (Systems Operator in a gothic manor mystery):
+BAD (copies original role, forbidden vocabulary):
+  world_role: "A systems operator skilled in restoring old machinery to function properly."
+  vocabulary: ["system check", "restore power", "practical solution"]
+GOOD (translated to manor-mystery investigator):
+  world_role: "Maps the sequence of events — who entered which room, in what order, and whether the timing points to premeditation."
+  vocabulary: ["the timing is off", "someone planned this", "who had access"]
+  sample_lines: [
+    "Follow the order here. The door was locked after the lamp was broken, not before.",
+    "If the letter arrived that morning, someone had hours to prepare. That changes everything."
+  ]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRICT ANTI-HALLUCINATION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. room_stories keys MUST be room ids from WORLD_DATA.rooms — no others.
+2. adapted_personas keys MUST be character names from WORLD_DATA.players — no others.
+3. phase_guidance MUST contain exactly these 4 keys: "establishing", "investigating", "converging", "revealing" — no others.
+4. Do NOT reveal mechanical lock codes (numbers, sequences) in any narrative field.
+5. Do NOT invent new rooms, objects, or characters not in WORLD_DATA.
+
+Output raw JSON only.

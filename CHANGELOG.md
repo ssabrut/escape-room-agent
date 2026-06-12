@@ -2,6 +2,71 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 13:15:24 WIB
+
+### What changed
+- `storyboard_builder_node` now generates the storyboard in up to three focused LLM passes instead of one large JSON document, each with its own system/generation prompt pair: pass 1 `_run_core_pass` (mystery themes only) produces `mystery`/`solution`/`suspects` via `system_core.txt`/`generation_core.txt`; pass 2 `_run_beats_pass` produces `discovery_beats`/`conversation_seeds`/`ending_guidance` via `system_beats.txt`/`generation_beats.txt`; pass 3 `_run_flavor_pass` produces `plot`/`adapted_personas`/`room_stories`/`phase_guidance` via `system_flavor.txt`/`generation_flavor.txt`. A shared `_call_json(system_prompt, user_prompt)` helper makes the LLM call and parses the JSON response, returning `None` on any invoke or parse failure (logged as a warning).
+- Passes 2 and 3 are grounded in pass 1's decisions via a new immutable `CASE_FACTS` block. `_case_facts(data)` extracts `victim`, `killer_name`, `proof_object_id`, `motive_hint`, and a `suspects` list (`name`/`is_killer`) from the core pass output (falling back to `solution.answer`/`solution.proof_object` if the mystery block is missing those fields). `_case_facts_section(case_facts)` renders this as a `"CASE_FACTS (immutable — use these exact names):\n<json>\n\n"` string (empty if there's no `killer_name`), which is interpolated into the beats and flavor prompts via a new `case_facts_section` format field so later passes can't contradict the case decided in pass 1.
+- `storyboard_builder_node` merges each pass's output into `data` only for that pass's expected top-level keys, and degrades per-pass: a failed pass leaves its keys absent (relying on existing `_repair_mystery`/`_ensure_personas` backfill) and logs a warning, rather than failing the whole node. Only if ALL passes fail does it return an empty `Storyboard(world_id=world_id)` with a `"=== STORYBOARD (all passes failed) ==="` message; otherwise the returned `AIMessage` content is `"=== STORYBOARD ===\n\n"` joined with each pass's `"--- <name> pass ---\n<json>"` transcript.
+- Adapted personas now include `sample_lines`: each `StoryboardPersona` (in `state/schema.py`) gained a `sample_lines: list[str]` field (default `[]`), populated by the new flavor-pass prompt's `adapted_personas.<character>.sample_lines` (exactly 2 full dialogue lines, 10-18 words each, illustrating the character's register). `_ensure_personas` backfills two default sample lines (`"Scratches around the keyhole..."` / `"The frame is intact but the hinge is bent..."`) when missing, and `_build_storyboard` copies `sample_lines` (filtered to strings) from the raw persona dict into the `StoryboardPersona`.
+- The narrator's dialogue prompt now incorporates persona voice/vocabulary/register. `build_dialogue_context_package` in `agents/narrator.py` gained three new optional parameters — `persona_voice: str = ""`, `persona_vocabulary: list[str] | None = None`, `persona_sample_lines: list[str] | None = None` — which render as new `- VOICE: ...`, `- VOCABULARY (work these phrasings in naturally, don't force all of them): ...`, and `- REGISTER EXAMPLES (match this rhythm and attitude, do not copy verbatim): "..."` lines inserted after the existing `- MOOD: ...` line. `GameMasterNarrator` now passes `persona.voice`, `persona.vocabulary`, and `persona.sample_lines` (each `if persona else ""`/`None`) into this call.
+
+### Why
+A local model drops random fields when asked to generate the full storyboard JSON in one shot (attention degrades as output grows). Splitting generation into three smaller, focused passes keeps each pass's output small enough that critical fields (victim, killer, proof object) can't get lost, and feeding pass 1's decisions to later passes as immutable `CASE_FACTS` prevents the beats/flavor passes from inventing a different killer or suspect set. The new `sample_lines` persona field gives the dialogue model concrete few-shot register examples, which work better than abstract style adjectives for steering a local model's voice.
+
+### Files changed
+- `src/escape_rooms/nodes/storyboard_builder.py` — replaced single `SYSTEM_PROMPT`/`GENERATION_PROMPT`/`_build_user_prompt` with `CORE_SYSTEM_PROMPT`/`CORE_GENERATION_PROMPT`, `BEATS_SYSTEM_PROMPT`/`BEATS_GENERATION_PROMPT`, `FLAVOR_SYSTEM_PROMPT`/`FLAVOR_GENERATION_PROMPT`; added `_call_json`, `_run_core_pass`, `_case_facts`, `_case_facts_section`, `_run_beats_pass`, `_run_flavor_pass`; `_ensure_personas` now backfills `sample_lines`; `_build_storyboard` copies `sample_lines` into `StoryboardPersona`; `storyboard_builder_node` rewritten to run the three passes sequentially and merge/transcript their results.
+- `src/escape_rooms/prompts/storyboard_builder/generation.txt` — deleted (replaced by the three per-pass generation prompts below).
+- `src/escape_rooms/prompts/storyboard_builder/system.txt` — deleted (replaced by the three per-pass system prompts below).
+- `src/escape_rooms/prompts/storyboard_builder/generation_core.txt` — new prompt for pass 1: outputs `mystery`/`solution`/`suspects` only, with victim/killer-name-first rules and suspect/red-herring guidance.
+- `src/escape_rooms/prompts/storyboard_builder/system_core.txt` — new system prompt for pass 1 ("STORY ARCHITECT" persona deciding victim/killer/proof/suspects).
+- `src/escape_rooms/prompts/storyboard_builder/generation_beats.txt` — new prompt for pass 2: outputs `discovery_beats`/`conversation_seeds`/`ending_guidance`, referencing `{case_facts_section}` and `CASE_FACTS.suspects`/`CASE_FACTS.killer_name`/`CASE_FACTS.proof_object_id` for naming suspects and the proof beat.
+- `src/escape_rooms/prompts/storyboard_builder/system_beats.txt` — new system prompt for pass 2 ("CLUE WRITER" persona).
+- `src/escape_rooms/prompts/storyboard_builder/generation_flavor.txt` — new prompt for pass 3: outputs `plot`/`adapted_personas`/`room_stories`/`phase_guidance`, with new `adapted_personas.<character>.sample_lines` field and SAMPLE_LINES RULES (2 lines, 10-18 words, register contrast across characters).
+- `src/escape_rooms/prompts/storyboard_builder/system_flavor.txt` — new system prompt for pass 3 ("NARRATIVE DESIGNER" persona).
+- `src/escape_rooms/state/schema.py` — `StoryboardPersona` gained `sample_lines: list[str] = Field(default_factory=list)`.
+- `src/escape_rooms/agents/narrator.py` — `build_dialogue_context_package` gained `persona_voice`, `persona_vocabulary`, `persona_sample_lines` params and corresponding `VOICE`/`VOCABULARY`/`REGISTER EXAMPLES` prompt lines; `GameMasterNarrator` passes `persona.voice`/`persona.vocabulary`/`persona.sample_lines` through.
+- `.DS_Store` — binary, no behavioral change.
+
+### Key code
+```python
+# src/escape_rooms/nodes/storyboard_builder.py
+def _run_core_pass(world_data: dict) -> dict | None:
+    """Pass 1 — mystery/solution/suspects. Small output: victim/killer cannot be dropped."""
+    user_prompt = CORE_GENERATION_PROMPT.format(world_data_json=json.dumps(world_data, indent=2))
+    return _call_json(CORE_SYSTEM_PROMPT, user_prompt)
+
+
+def _case_facts_section(case_facts: dict | None) -> str:
+    if not case_facts or not case_facts.get("killer_name"):
+        return ""
+    return "CASE_FACTS (immutable — use these exact names):\n" + json.dumps(case_facts, indent=2) + "\n\n"
+```
+
+```diff
+# src/escape_rooms/agents/narrator.py — build_dialogue_context_package
+     recent_story: list[str],
+     lore_excerpt: str = "",
+     adapted_world_role: str = "",
++    persona_voice: str = "",
++    persona_vocabulary: list[str] | None = None,
++    persona_sample_lines: list[str] | None = None,
+     conversation_seed: str = "",
+```
+
+```diff
+# src/escape_rooms/state/schema.py — StoryboardPersona
+     world_role: str = ""
+     voice: str = ""
+     vocabulary: list[str] = Field(default_factory=list)
++    sample_lines: list[str] = Field(default_factory=list)
+```
+
+### Verification
+Not verified in conversation.
+
+---
+
 ## 2026-06-12 10:10:07 WIB
 
 ### What changed
