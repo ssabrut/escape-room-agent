@@ -40,6 +40,7 @@ def solver_node(
     debug_log: list[dict] = []
     result, optimal = solve_world_cooperative(
         world, num_agents=num_agents, trace=trace, debug_log=debug_log, on_tick=on_tick,
+        storyboard=state.storyboard,
     )
     score = objective(world, result, optimal_len=len(optimal))
 
@@ -62,6 +63,7 @@ def solver_node(
             efficiency=score["efficiency"],
             wasted=score["wasted"],
             history=result.history,
+            wrong_deduction=result.wrong_deduction,
         ),
         "messages": [
             AIMessage(

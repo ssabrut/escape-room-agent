@@ -55,6 +55,7 @@ class SolverLog(BaseModel):
     efficiency: float
     wasted: int
     history: list[str]
+    wrong_deduction: bool = False
 
 
 class GenerateResponse(BaseModel):
@@ -178,12 +179,14 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
     ending_narration: str | None = None
     if req.solve:
         emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
-        state = state.model_copy(update={"world": world})
+        state = state.model_copy(update={"world": world, "storyboard": storyboard})
 
         total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
 
         def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
             nonlocal last_render
+            if ps.proof_found:
+                narrator.reveal_proof()
             last_render = render_world(
                 rooms=tick_world.rooms,
                 objects=tick_world.objects,
@@ -208,7 +211,11 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
         solver_result = solver_update.get("solver_result")
 
         if solver_result is not None:
-            ending_narration = narrator.narrate_ending(objective=world.objective, won=solver_result.won)
+            ending_narration = narrator.narrate_ending(
+                objective=world.objective,
+                won=solver_result.won,
+                wrong_deduction=solver_result.wrong_deduction,
+            )
             emit.put({"type": "narration", "stage": "ending", "text": ending_narration})
 
     solver_log = None
@@ -221,6 +228,7 @@ def _run_pipeline(req: GenerateRequest, emit: "queue.Queue[dict]") -> dict:
             efficiency=solver_result.efficiency,
             wasted=solver_result.wasted,
             history=solver_result.history,
+            wrong_deduction=solver_result.wrong_deduction,
         )
 
     response = GenerateResponse(
@@ -383,11 +391,10 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
     if not world.win_condition.object_id:
         raise ValueError("World has no win condition — cannot solve")
 
-    state = GameState(theme=world.scenario or "mystery", world=world)
-
     emit.put({"type": "progress", "stage": "solving", "message": "Solving the room to verify it's winnable..."})
 
     storyboard = Storyboard.model_validate(req.storyboard) if req.storyboard else Storyboard()
+    state = GameState(theme=world.scenario or "mystery", world=world, storyboard=storyboard)
     narrator = GameMasterNarrator(storyboard=storyboard)
 
     total_puzzles = sum(1 for room in world.rooms if room.goal_completion is not None)
@@ -396,6 +403,8 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
 
     def on_tick(record: dict, ps: PartyState, tick_world: GameWorld, agent_id: str) -> None:
         nonlocal last_render
+        if ps.proof_found:
+            narrator.reveal_proof()
         last_render = render_world(
             rooms=tick_world.rooms,
             objects=tick_world.objects,
@@ -429,11 +438,16 @@ def _run_solve_pipeline(req: SolveRequest, emit: "queue.Queue[dict]") -> dict:
             efficiency=solver_result.efficiency,
             wasted=solver_result.wasted,
             history=solver_result.history,
+            wrong_deduction=solver_result.wrong_deduction,
         )
 
     ending_narration = None
     if solver_result is not None:
-        ending_narration = narrator.narrate_ending(objective=world.objective, won=solver_result.won)
+        ending_narration = narrator.narrate_ending(
+            objective=world.objective,
+            won=solver_result.won,
+            wrong_deduction=solver_result.wrong_deduction,
+        )
         emit.put({"type": "narration", "stage": "ending", "text": ending_narration})
 
     response = SolveResponse(

@@ -178,6 +178,10 @@ class PartyState(BaseModel):
     global_object_observations: dict[str, ObjectObservation] = Field(
         default_factory=dict
     )  # object_id -> latest structured observation across all rooms
+    proof_found: bool = False  # storyboard.mystery.proof_object_id has been examined/taken
+    deduction_attempts: int = 0  # number of 'accuse' guesses made so far
+    wrong_deduction: bool = False  # deduction attempts exhausted without a correct guess
+    accusation: str = ""  # the suspect name from the most recent 'accuse' action
 
 
 class SolverResult(BaseModel):
@@ -190,6 +194,9 @@ class SolverResult(BaseModel):
     efficiency: float
     wasted: int
     history: list[str] = Field(default_factory=list)
+    # True when the solver exhausted all 'accuse' attempts without the correct
+    # suspect (mystery themes only — always False otherwise).
+    wrong_deduction: bool = False
 
 
 def _normalize_answer(text: str) -> str:

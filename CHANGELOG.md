@@ -2,6 +2,83 @@
 
 Chronological log of code changes. Newest entries appear first.
 
+## 2026-06-12 14:01:19 WIB
+
+### What changed
+- Mystery worlds now require a final **deduction step**: once the storyboard's proof object (`storyboard.mystery.proof_object_id`) has been examined or taken, `PartyState.proof_found` flips to `True` and a new `accuse <suspect_token>` action becomes available in the action space (`_build_action_space` in `nodes/gameplay.py`), built from `storyboard.suspects` via a new `_suspect_token(name)` helper (e.g. "Marcus Webb" -> `marcus_webb`).
+- Added `_resolve_accuse(token, storyboard, ps)` in `nodes/gameplay.py`: it looks up the suspect by token, and if `storyboard.solution.matches(name)` is true sets `ps.accusation = name` (a correct guess); otherwise increments `ps.deduction_attempts` and, once `MAX_DEDUCTION_ATTEMPTS` (3) guesses are wrong, sets `ps.wrong_deduction = True` to end the game. Wrong guesses before the limit return a remaining-attempts message plus a hint from `storyboard.solution.hint_1`/`hint_2` (first vs. subsequent wrong guesses).
+- `PartyState` gained four new fields: `proof_found: bool`, `deduction_attempts: int`, `wrong_deduction: bool`, and `accusation: str` (the most recently accused name).
+- `_check_victory(world, ps, storyboard=None)` now takes an optional `storyboard` argument: for mystery themes (non-empty `storyboard.solution`) the win condition's object-state check alone is no longer sufficient — `_check_victory` also requires `bool(ps.accusation)` (i.e. a correct `accuse` has been made). Non-mystery worlds behave exactly as before.
+- `_resolve_examine` and `_resolve_take` now take an optional `storyboard` param and call a new `_mark_proof_found(obj, ps, storyboard)` helper, which sets `ps.proof_found = True` the first time the proof object is examined (with or without new info) or picked up. `_resolve_action` threads `storyboard` through to these and to the new `accuse` verb branch.
+- `HeadlessEpisode` and `MultiAgentEpisode` (in `benchmark/engine.py`) both gained an optional `storyboard: Storyboard | None` constructor param, pass it to `_check_victory`/`_build_action_space`/`_resolve_action`, and break out of their run loop early if `ps.wrong_deduction` becomes true (in addition to the existing victory break). Both `EpisodeResult` and `CooperativeEpisodeResult` gained a `wrong_deduction: bool = False` field copied from `ps.wrong_deduction` at the end of the run.
+- `cognitive_solver_policy`, `cognitive_solver_policy_multi`, `solve_world_multi`, and `solve_world_cooperative` (in `agents/multi_solver.py`) all gained an optional `storyboard: Storyboard | None = None` param, threaded down to `HeadlessEpisode`/`MultiAgentEpisode` and into a new `_accusation_guidance(action_space, storyboard)` call appended to each tick's prompt. `"accuse"` was added to `_PROGRESS_GATE_EXEMPT_VERBS` so the planner's dominance gate doesn't override an LLM-chosen `accuse` action in favor of a higher-scored exploration move.
+- `_accusation_guidance(action_space, storyboard)` (new, in `nodes/gameplay.py`) returns "" unless an `accuse <...>` action is present in `action_space`; otherwise it renders a block: "The proof has been found — you may now accuse a suspect:", `storyboard.suspects_context()`, an optional `Motive hint: {storyboard.mystery.motive_hint}` line, and a closing caution that wrong guesses cost an attempt. This is surfaced to the live gameplay agent via a new `accusation_guidance` format field in `_agent_act` (new `storyboard` param) and a new `{accusation_guidance}` placeholder in `prompts/gameplay_agent/action.txt`, which also documents the new `"accuse <suspect_token>"` action grammar.
+- `solver_node` now passes `storyboard=state.storyboard` into `solve_world_cooperative`, and `SolverResult`/`SolverLog` (in `state/schema.py` and `api/routers/generate.py`) both gained `wrong_deduction: bool = False`, populated from `result.wrong_deduction`/`solver_result.wrong_deduction`.
+- `gameplay_node`'s end-of-tick check gained a new `elif ps.wrong_deduction` branch (between the victory check and the time-up check): it sets `ps.game_over = True`, prints a `"WRONG DEDUCTION"` banner, streams `"Party exhausted all {MAX_DEDUCTION_ATTEMPTS} accusations without naming the killer."`, renders the final state, and appends a `"[gameplay] WRONG DEDUCTION at tick {ps.tick}"` message.
+- In `api/routers/generate.py`, `_run_pipeline` and `_run_solve_pipeline`'s `on_tick` closures now call `narrator.reveal_proof()` as soon as `ps.proof_found` is true (so subsequent narration can reference the proof/mystery solution), and both pass `wrong_deduction=solver_result.wrong_deduction` into `narrator.narrate_ending(...)` (using the existing `storyboard.ending_text(won, wrong_deduction=...)` machinery) so the ending narration distinguishes a true loss from a "ran out of accusations" loss. `_run_pipeline` now copies `state` with both `world` and `storyboard` (previously only `world`) before solving, and `_run_solve_pipeline` builds `GameState(..., storyboard=storyboard)` directly instead of constructing a plain `GameState` and assigning the narrator's storyboard separately.
+
+### Why
+Completes the mystery gameplay loop: previously a mystery world could be "won" purely by escaping (satisfying the win condition's object state) without ever identifying the killer, even though the storyboard already carried a sealed `solution`/`suspects` answer key. This adds the missing deduction gate — find the proof, then `accuse` the correct suspect — with a bounded number of wrong guesses (with hints) before the run ends in a "wrong deduction" loss distinct from a generic failure, and surfaces that distinction through to the live narration and solver logs.
+
+### Files changed
+- `api/routers/generate.py` — `SolverLog` gained `wrong_deduction: bool = False`; `_run_pipeline`'s `on_tick` calls `narrator.reveal_proof()` when `ps.proof_found`, copies `state` with `world` and `storyboard`, and passes `wrong_deduction=solver_result.wrong_deduction` to `narrator.narrate_ending(...)` and the constructed `SolverLog`; `_run_solve_pipeline` now builds `GameState(theme=..., world=world, storyboard=storyboard)` directly (removing a separate earlier `GameState` construction), and its `on_tick`/`narrate_ending` call get the same `reveal_proof()`/`wrong_deduction` treatment.
+- `benchmark/engine.py` — imports `Storyboard`; `EpisodeResult` and `CooperativeEpisodeResult` gained `wrong_deduction: bool = False`; `HeadlessEpisode.__init__`/`MultiAgentEpisode.__init__` gained `storyboard: Storyboard | None = None`; both `.run()` methods pass `storyboard` to `_check_victory`/`_build_action_space`/`_resolve_action`, break early on `ps.wrong_deduction`, and return `wrong_deduction=ps.wrong_deduction`.
+- `src/escape_rooms/agents/multi_solver.py` — imports `_accusation_guidance` and `Storyboard`; added `"accuse"` to `_PROGRESS_GATE_EXEMPT_VERBS`; `cognitive_solver_policy`, `cognitive_solver_policy_multi`, `solve_world_multi`, `solve_world_cooperative` all gained `storyboard: Storyboard | None = None` and thread it to `HeadlessEpisode`/`MultiAgentEpisode` and into each tick's prompt via `_accusation_guidance(action_space, storyboard)`.
+- `src/escape_rooms/nodes/gameplay.py` — imports `Storyboard`; added `_suspect_token(name)`, `_mark_proof_found(obj, ps, storyboard)`, `MAX_DEDUCTION_ATTEMPTS = 3`, `_resolve_accuse(token, storyboard, ps)`, `_accusation_guidance(action_space, storyboard)`; `_build_action_space`, `_resolve_examine`, `_resolve_take`, `_resolve_action`, `_agent_act`, `_check_victory` all gained an optional `storyboard` param and use it as described above; `gameplay_node` reads `state.storyboard`, threads it through all the above calls, and adds the `elif ps.wrong_deduction` end-of-tick branch.
+- `src/escape_rooms/nodes/solver.py` — `solver_node` passes `storyboard=state.storyboard` to `solve_world_cooperative` and copies `result.wrong_deduction` into the returned `SolverResult`.
+- `src/escape_rooms/prompts/gameplay_agent/action.txt` — added `{accusation_guidance}` placeholder line and documented the `"accuse <suspect_token>"` action in the action grammar list.
+- `src/escape_rooms/state/schema.py` — `PartyState` gained `proof_found`, `deduction_attempts`, `wrong_deduction`, `accusation` fields; `SolverResult` gained `wrong_deduction: bool = False`.
+
+### Key code
+```python
+# src/escape_rooms/nodes/gameplay.py
+MAX_DEDUCTION_ATTEMPTS = 3
+
+
+def _resolve_accuse(token: str, storyboard: Storyboard | None, ps: PartyState) -> str:
+    """Resolve an 'accuse <suspect_token>' action against the sealed solution.
+
+    A correct guess sets ps.accusation to the matched name (checked by
+    _check_victory). A wrong guess consumes one of MAX_DEDUCTION_ATTEMPTS;
+    exhausting all attempts sets ps.wrong_deduction and ends the game.
+    """
+    ...
+```
+
+```diff
+# src/escape_rooms/nodes/gameplay.py — _check_victory
+-def _check_victory(world: GameWorld, ps: PartyState) -> bool:
++def _check_victory(world: GameWorld, ps: PartyState, storyboard: Storyboard | None = None) -> bool:
+     win = world.win_condition
+     if not win.object_id:
+         return False
+-    return _state_satisfies(ps.object_states.get(win.object_id), win.state)
++    if not _state_satisfies(ps.object_states.get(win.object_id), win.state):
++        return False
++    if storyboard is not None and not storyboard.solution.is_empty():
++        return bool(ps.accusation)
++    return True
+```
+
+```diff
+# src/escape_rooms/nodes/gameplay.py — gameplay_node end-of-tick
+     if _check_victory(world, ps, storyboard):
+         ps.victory = True
+         ...
++    elif ps.wrong_deduction:
++        ps.game_over = True
++        _banner("WRONG DEDUCTION", char="*")
++        _stream(f"  Party exhausted all {MAX_DEDUCTION_ATTEMPTS} accusations without naming the killer.")
++        _render_final(ps, world)
++        new_messages.append(AIMessage(content=f"[gameplay] WRONG DEDUCTION at tick {ps.tick}"))
+     elif ps.tick >= MAX_TICKS:
+```
+
+### Verification
+Not verified in conversation (no tests or manual runs were executed).
+
+---
+
 ## 2026-06-12 13:15:24 WIB
 
 ### What changed

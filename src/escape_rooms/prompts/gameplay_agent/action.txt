@@ -30,6 +30,8 @@ Your teammate may have JUST acted this same tick. Do NOT pick the same action or
 Your own recent actions (most recent last) and their outcomes:
 {agent_recent_history}
 
+{accusation_guidance}
+
 If an action above produced no new information ("examined X — no hidden info", "examined X again — nothing new", "code unknown"), repeating it WILL fail again. Do NOT repeat any action whose outcome contained "no hidden info", "nothing new", "dead end", "already", or "code unknown". Try a different object, apply a tool/code/liquid/power, or move to an adjacent room via "go <room_id>". If every object in this room has been examined with no new info, MOVE to a different room.
 
 This tick you MUST choose exactly ONE action from the menu below. Reply with the action string verbatim (or its number).
@@ -46,6 +48,7 @@ Action grammar:
 - "flip_fuse <object_id> <label>" — toggle a fuse on a panel
 - "open <object_id>" — open a powered door once its power line is on
 - "go <room_id>" — walk to an adjacent room
+- "accuse <suspect_token>" — name a suspect as the culprit (only available once the proof is found — wrong guesses cost an attempt)
 - "wait" — do nothing
 
 Coordinate with your teammate. Say ONE short line (max 15 words) explaining your move.

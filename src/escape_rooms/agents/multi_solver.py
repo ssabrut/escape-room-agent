@@ -29,11 +29,12 @@ from src.escape_rooms.agents.cognition import (
 )
 from src.escape_rooms.nodes.gameplay import (
     IDLE_ACTION,
+    _accusation_guidance,
     _objects_in_room,
     _parse_json,
     _resolve_choice,
 )
-from src.escape_rooms.state import GameWorld, PartyState
+from src.escape_rooms.state import GameWorld, PartyState, Storyboard
 from src.escape_rooms.utils.settings import get_llm
 
 from src.escape_rooms.agents.solver_agent import REACT_SYSTEM, _build_prompt
@@ -42,7 +43,7 @@ from src.escape_rooms.agents.solver_agent import REACT_SYSTEM, _build_prompt
 _PROGRESS_GATE_DOMINANT_MIN = 90.0
 _PROGRESS_GATE_GAP = 30.0
 _PROGRESS_GATE_LOW_VALUE = 3.0
-_PROGRESS_GATE_EXEMPT_VERBS = {"enter_code", "use_tool", "insert_liquid", "flip_fuse"}
+_PROGRESS_GATE_EXEMPT_VERBS = {"enter_code", "use_tool", "insert_liquid", "flip_fuse", "accuse"}
 
 
 def cognitive_solver_policy(
@@ -53,6 +54,7 @@ def cognitive_solver_policy(
     on_tick: Callable[[dict, PartyState, GameWorld], None] | None = None,
     *,
     enforce_candidate_policy: bool = True,
+    storyboard: Storyboard | None = None,
 ):
     """Cognitive policy: TeamCognition brief + ActionPlanner recommendation each tick.
 
@@ -150,8 +152,10 @@ def cognitive_solver_policy(
 
         pad_lines = [f"Current plan: {current_plan[0]}"] + scratchpad[-scratchpad_limit:]
         pad = "\n".join(pad_lines)
+        guidance = _accusation_guidance(action_space, storyboard)
         prompt = (
             _build_prompt(world, ps, action_space, visible, dead_ends, blocked_exits)
+            + (f"\n{guidance}\n" if guidance else "")
             + f"\nTEAM COGNITION BRIEF:\n{brief.render()}\n"
             + f"\nSCRATCHPAD (plan + recent thought -> action -> observation):\n{pad}\n"
         )
@@ -279,13 +283,18 @@ def cognitive_solver_policy(
     return _policy
 
 
-def solve_world_multi(world: GameWorld, role: str = "solver", trace: list | None = None):
+def solve_world_multi(
+    world: GameWorld,
+    role: str = "solver",
+    trace: list | None = None,
+    storyboard: Storyboard | None = None,
+):
     """Run the cognitive solver once. Returns (EpisodeResult, optimal_path_steps)."""
     from benchmark.engine import HeadlessEpisode
     from benchmark.policies import bfs_solution_path
 
-    policy = cognitive_solver_policy(role, trace=trace)
-    result = HeadlessEpisode(world).run(policy, record_history=True)
+    policy = cognitive_solver_policy(role, trace=trace, storyboard=storyboard)
+    result = HeadlessEpisode(world, storyboard=storyboard).run(policy, record_history=True)
     optimal = bfs_solution_path(world)
     return result, optimal
 
@@ -299,6 +308,7 @@ def cognitive_solver_policy_multi(
     on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
     *,
     enforce_candidate_policy: bool = True,
+    storyboard: Storyboard | None = None,
 ):
     """Cooperative variant of :func:`cognitive_solver_policy` for N agents.
 
@@ -413,9 +423,11 @@ def cognitive_solver_policy_multi(
 
         pad_lines = [f"Current plan: {current_plan[0]}"] + scratchpad[-scratchpad_limit:]
         pad = "\n".join(pad_lines)
+        guidance = _accusation_guidance(action_space, storyboard)
         prompt = (
             f"You are {agent_id}, one of {len(agent_ids)} agents cooperating in this room.\n"
             + _build_prompt(world, ps, action_space, visible, dead_ends, blocked_exits)
+            + (f"\n{guidance}\n" if guidance else "")
             + f"\nTEAM COGNITION BRIEF:\n{brief.render()}\n"
             + f"\nSCRATCHPAD (plan + recent thought -> action -> observation):\n{pad}\n"
         )
@@ -547,6 +559,7 @@ def solve_world_cooperative(
     trace: list | None = None,
     debug_log: list[dict] | None = None,
     on_tick: Callable[[dict, PartyState, GameWorld, str], None] | None = None,
+    storyboard: Storyboard | None = None,
 ):
     """Run N cooperating cognitive-solver agents.
 
@@ -557,8 +570,10 @@ def solve_world_cooperative(
 
     agent_ids = [f"agent_{i + 1}" for i in range(num_agents)]
     policy = cognitive_solver_policy_multi(
-        agent_ids, role, trace=trace, debug_log=debug_log, on_tick=on_tick
+        agent_ids, role, trace=trace, debug_log=debug_log, on_tick=on_tick, storyboard=storyboard
     )
-    result = MultiAgentEpisode(world, agent_ids).run(policy, record_history=True)
+    result = MultiAgentEpisode(world, agent_ids, storyboard=storyboard).run(
+        policy, record_history=True
+    )
     optimal = bfs_solution_path(world)
     return result, optimal

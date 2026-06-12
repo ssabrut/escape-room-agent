@@ -25,6 +25,7 @@ from src.escape_rooms.state import (
     ObjectObservation,
     PartyMember,
     PartyState,
+    Storyboard,
     TickAction,
     WorldObject,
 )
@@ -253,6 +254,11 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9_ ]+", " ", text.lower()).strip()
 
 
+def _suspect_token(name: str) -> str:
+    """Turn a suspect's display name (e.g. 'Marcus Webb') into an action token ('marcus_webb')."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
 # ---------- object visibility ----------
 
 
@@ -393,7 +399,10 @@ def _verbs_for(
 
 
 def _build_action_space(
-    world: GameWorld, ps: PartyState, visible: list[WorldObject]
+    world: GameWorld,
+    ps: PartyState,
+    visible: list[WorldObject],
+    storyboard: Storyboard | None = None,
 ) -> list[str]:
     seen: set[str] = set()
     space: list[str] = []
@@ -413,6 +422,24 @@ def _build_action_space(
             if move not in seen:
                 seen.add(move)
                 space.append(move)
+    # 'accuse <suspect>' only becomes available once the proof object has been
+    # found — naming a suspect before then would be a blind guess, not deduction.
+    if (
+        ps.proof_found
+        and not ps.wrong_deduction
+        and storyboard is not None
+        and not storyboard.solution.is_empty()
+    ):
+        for suspect in storyboard.suspects:
+            if not isinstance(suspect, dict):
+                continue
+            name = suspect.get("name", "")
+            if not name:
+                continue
+            accuse = f"accuse {_suspect_token(name)}"
+            if accuse not in seen:
+                seen.add(accuse)
+                space.append(accuse)
     # Only offer 'wait' as a true last resort — when no productive action exists.
     # Otherwise agents idle instead of examining, applying clues, or moving.
     if not space:
@@ -423,9 +450,20 @@ def _build_action_space(
 # ---------- action resolution ----------
 
 
-def _resolve_examine(obj: WorldObject, ps: PartyState) -> str:
+def _mark_proof_found(obj: WorldObject, ps: PartyState, storyboard: Storyboard | None) -> None:
+    """Flip ps.proof_found once the storyboard's proof object is examined/taken."""
+    if (
+        storyboard is not None
+        and not storyboard.mystery.is_empty()
+        and obj.id == storyboard.mystery.proof_object_id
+    ):
+        ps.proof_found = True
+
+
+def _resolve_examine(obj: WorldObject, ps: PartyState, storyboard: Storyboard | None = None) -> str:
     if obj.contains_info and obj.contains_info not in ps.known_info:
         ps.known_info.append(obj.contains_info)
+        _mark_proof_found(obj, ps, storyboard)
         return f"examined {obj.id}; learned {obj.contains_info}"
     already = any(
         e.action == f"examine {obj.id}" and e.note.startswith("examined")
@@ -434,11 +472,12 @@ def _resolve_examine(obj: WorldObject, ps: PartyState) -> str:
     if already:
         return f"examined {obj.id} again — nothing new (dead end)"
     if obj.contains_info:
+        _mark_proof_found(obj, ps, storyboard)
         return f"examined {obj.id}; already knew {obj.contains_info}"
     return f"examined {obj.id} — no hidden info"
 
 
-def _resolve_take(obj: WorldObject, ps: PartyState) -> str:
+def _resolve_take(obj: WorldObject, ps: PartyState, storyboard: Storyboard | None = None) -> str:
     if not obj.takeable:
         return f"cannot take {obj.id}"
     state = ps.object_states.get(obj.id, obj.state)
@@ -447,6 +486,7 @@ def _resolve_take(obj: WorldObject, ps: PartyState) -> str:
     if obj.id in ps.inventory:
         return f"{obj.id} already carried"
     ps.inventory.append(obj.id)
+    _mark_proof_found(obj, ps, storyboard)
     return f"took {obj.id}"
 
 
@@ -562,8 +602,43 @@ def _format_goal_completion(completion) -> str:
     return completion.type
 
 
+MAX_DEDUCTION_ATTEMPTS = 3
+
+
+def _resolve_accuse(token: str, storyboard: Storyboard | None, ps: PartyState) -> str:
+    """Resolve an 'accuse <suspect_token>' action against the sealed solution.
+
+    A correct guess sets ps.accusation to the matched name (checked by
+    _check_victory). A wrong guess consumes one of MAX_DEDUCTION_ATTEMPTS;
+    exhausting all attempts sets ps.wrong_deduction and ends the game.
+    """
+    if storyboard is None or storyboard.solution.is_empty():
+        return "no accusation to make"
+    name = next(
+        (
+            s.get("name", "")
+            for s in storyboard.suspects
+            if isinstance(s, dict) and _suspect_token(s.get("name", "")) == token
+        ),
+        "",
+    )
+    if not name:
+        return f"unknown suspect {token}"
+    if storyboard.solution.matches(name):
+        ps.accusation = name
+        return f"accused {name} — correct!"
+    ps.deduction_attempts += 1
+    remaining = MAX_DEDUCTION_ATTEMPTS - ps.deduction_attempts
+    if remaining <= 0:
+        ps.wrong_deduction = True
+        return f"accused {name} — wrong. No attempts remaining."
+    hint = storyboard.solution.hint_1 if ps.deduction_attempts == 1 else storyboard.solution.hint_2
+    hint_text = f" Hint: {hint}" if hint else ""
+    return f"accused {name} — wrong. {remaining} attempt(s) remaining.{hint_text}"
+
+
 def _resolve_action(
-    action: str, world: GameWorld, ps: PartyState
+    action: str, world: GameWorld, ps: PartyState, storyboard: Storyboard | None = None
 ) -> tuple[str, str | None]:
     """Return (outcome note, target_object_id or None)."""
     parts = action.split()
@@ -576,6 +651,8 @@ def _resolve_action(
 
     if verb == IDLE_ACTION:
         return ("idle", None)
+    if verb == "accuse" and len(parts) >= 2:
+        return (_resolve_accuse(parts[1], storyboard, ps), None)
     if verb == "go" and len(parts) >= 2:
         dest = parts[1]
         if dest in rooms_by_id:
@@ -609,9 +686,9 @@ def _resolve_action(
         return (f"unknown object {target_id}", None)
 
     if verb == "examine":
-        return (_resolve_examine(obj, ps), obj.id)
+        return (_resolve_examine(obj, ps, storyboard), obj.id)
     if verb == "take":
-        return (_resolve_take(obj, ps), obj.id)
+        return (_resolve_take(obj, ps, storyboard), obj.id)
     if verb == "enter_code":
         return (_resolve_enter_code(obj, ps), obj.id)
     if verb == "use_tool":
@@ -722,6 +799,21 @@ def _party_stalled(ps: PartyState, party_size: int) -> bool:
     return all(e.action == IDLE_ACTION for e in window)
 
 
+def _accusation_guidance(action_space: list[str], storyboard: Storyboard | None) -> str:
+    """Build the suspects/evidence section shown only once 'accuse' is offered."""
+    accuse_actions = [a for a in action_space if a.startswith("accuse ")]
+    if not accuse_actions or storyboard is None:
+        return ""
+    suspects_context = storyboard.suspects_context()
+    lines = ["The proof has been found — you may now accuse a suspect:"]
+    if suspects_context:
+        lines.append(suspects_context)
+    if storyboard.mystery.motive_hint:
+        lines.append(f"Motive hint: {storyboard.mystery.motive_hint}")
+    lines.append("Only accuse once you are confident — wrong guesses cost an attempt.")
+    return "\n".join(lines)
+
+
 def _agent_act(
     agent_id: str,
     member: PartyMember,
@@ -733,6 +825,7 @@ def _agent_act(
     stalled: bool = False,
     escape_plan: str = "",
     gm_directive: str = "",
+    storyboard: Storyboard | None = None,
 ) -> dict:
     room = next((r for r in world.rooms if r.id == ps.current_room), None)
     inventory_str = ", ".join(ps.inventory) if ps.inventory else "(empty)"
@@ -801,6 +894,7 @@ def _agent_act(
         teammate_last_say=teammate_last.say if teammate_last else "(none)",
         teammate_last_action=teammate_last.action if teammate_last else "(none)",
         agent_recent_history=history_str,
+        accusation_guidance=_accusation_guidance(action_space, storyboard),
     )
 
     llm = get_llm("player")
@@ -1285,11 +1379,17 @@ def _save_agent_view(ps: PartyState, agent_id: str) -> None:
     ps.agent_inventories[agent_id] = list(ps.inventory)
 
 
-def _check_victory(world: GameWorld, ps: PartyState) -> bool:
+def _check_victory(world: GameWorld, ps: PartyState, storyboard: Storyboard | None = None) -> bool:
     win = world.win_condition
     if not win.object_id:
         return False
-    return _state_satisfies(ps.object_states.get(win.object_id), win.state)
+    if not _state_satisfies(ps.object_states.get(win.object_id), win.state):
+        return False
+    # For mystery themes, escaping isn't enough — the party must also have
+    # correctly named the killer via 'accuse' before victory fires.
+    if storyboard is not None and not storyboard.solution.is_empty():
+        return bool(ps.accusation)
+    return True
 
 
 def _render_party_map(world: GameWorld, ps: PartyState) -> None:
@@ -1501,6 +1601,8 @@ def gameplay_node(state: GameState) -> dict:
     if not world or not state.party:
         return {}
 
+    storyboard = state.storyboard
+
     _tick_start = time.perf_counter()
     is_first_tick = state.party_state is None
     ps = state.party_state or _build_initial_party_state(world)
@@ -1515,7 +1617,7 @@ def gameplay_node(state: GameState) -> dict:
 
     ps.tick += 1
     visible = _objects_in_room(world, ps)
-    action_space = _build_action_space(world, ps, visible)
+    action_space = _build_action_space(world, ps, visible, storyboard)
 
     _render_tick_header(world, ps, state.party)
 
@@ -1635,6 +1737,7 @@ def gameplay_node(state: GameState) -> dict:
             stalled,
             plan,
             gm_directive_text,
+            storyboard,
         )
 
         chosen_action = decided["action"]
@@ -1653,7 +1756,7 @@ def gameplay_node(state: GameState) -> dict:
             note, target = "", None
             deferred_renders.append((member, decided, teammate))
         else:
-            note, target = _resolve_action(chosen_action, world, ps)
+            note, target = _resolve_action(chosen_action, world, ps, storyboard)
 
         this_action = TickAction(
             tick=ps.tick,
@@ -1670,14 +1773,14 @@ def gameplay_node(state: GameState) -> dict:
             _render_agent_action(member, decided, note, teammate)
 
         visible = _objects_in_room(world, ps)
-        action_space = _build_action_space(world, ps, visible)
+        action_space = _build_action_space(world, ps, visible, storyboard)
 
     # Resolve the single deferred go action now that all agents have chosen.
     # Pydantic models are frozen — rebuild any go entries with the real note,
     # then render them in agent order with the correct outcome.
     if pending_go is not None:
         go_action = f"go {pending_go[1]}"
-        real_note, _ = _resolve_action(go_action, world, ps)
+        real_note, _ = _resolve_action(go_action, world, ps, storyboard)
         tick_actions = [
             TickAction(
                 tick=ta.tick,
@@ -1717,13 +1820,19 @@ def gameplay_node(state: GameState) -> dict:
     _update_global_observations(world, ps)
 
     # --- end-of-tick: victory / time-up check ---
-    if _check_victory(world, ps):
+    if _check_victory(world, ps, storyboard):
         ps.victory = True
         ps.game_over = True
         _banner("VICTORY", char="*")
         _stream(f"  Party achieved the win condition at tick {ps.tick}.")
         _render_final(ps, world)
         new_messages.append(AIMessage(content=f"[gameplay] VICTORY at tick {ps.tick}"))
+    elif ps.wrong_deduction:
+        ps.game_over = True
+        _banner("WRONG DEDUCTION", char="*")
+        _stream(f"  Party exhausted all {MAX_DEDUCTION_ATTEMPTS} accusations without naming the killer.")
+        _render_final(ps, world)
+        new_messages.append(AIMessage(content=f"[gameplay] WRONG DEDUCTION at tick {ps.tick}"))
     elif ps.tick >= MAX_TICKS:
         ps.game_over = True
         _banner("TIME UP", char="*")
