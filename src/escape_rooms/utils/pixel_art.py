@@ -37,6 +37,7 @@ import requests
 from diffusers.utils import logging as diffusers_logging
 from dotenv import load_dotenv
 from PIL import Image
+from rembg import new_session, remove
 from tqdm import tqdm
 
 from src.escape_rooms.utils.logging import get_node_logger
@@ -74,6 +75,7 @@ _SD_STEPS = 25       # steps for good results with the pixel-art-xl LoRA
 # Module-level lazy singletons — loaded once, reused across all calls.
 _pipeline = None
 _cpu_pipeline = None
+_rembg_session = None
 
 # The pipeline's scheduler holds mutable per-call state (step index, sigmas),
 # so concurrent pipe(...) calls from multiple threads corrupt each other's
@@ -129,6 +131,13 @@ def _get_cpu_pipeline():
         return _cpu_pipeline
     _cpu_pipeline = _load_pipeline("cpu")
     return _cpu_pipeline
+
+
+def _get_rembg_session():
+    global _rembg_session
+    if _rembg_session is None:
+        _rembg_session = new_session("u2net")
+    return _rembg_session
 
 
 def _build_prompt(obj: "WorldObject") -> str:
@@ -202,7 +211,11 @@ def _run_pipeline(obj: "WorldObject") -> Image.Image:
 
 def _generate_via_sd(obj: "WorldObject") -> str:
     img = _run_pipeline(obj)
-    # Nearest-neighbour downscale gives the blocky pixel-art look
+    # Remove the background at full resolution, where the segmentation model
+    # has the most detail to work with, before the blocky pixel-art downscale.
+    img = remove(img, session=_get_rembg_session())
+    # Nearest-neighbour downscale gives the blocky pixel-art look and keeps
+    # the alpha mask crisp/binary rather than introducing soft edges.
     img = img.resize((_OUTPUT_SIZE, _OUTPUT_SIZE), Image.NEAREST)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
